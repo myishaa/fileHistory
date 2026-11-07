@@ -119,12 +119,12 @@ export function SnapshotChartRenderer({
   const monthly =
     categories.length > 0 &&
     categories.every((label) => /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(label));
-  const axisStyle = { fill: "#707078", fontSize: 12 };
+  const axisStyle = { fill: "#707078", fontSize: "0.75rem" };
   const axisStroke = { stroke: "#9ca3af", strokeWidth: 1 };
   const categoryLabel = monthly ? "Month" : "Category";
   const axisTitleStyle = {
     fill: "#707078",
-    fontSize: 12,
+    fontSize: "0.75rem",
   };
   const formatter = (value: number, name: string) =>
     formatValue?.(Number(value), series.find((item) => item.label === name)?.key ?? name) ??

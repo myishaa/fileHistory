@@ -21,6 +21,7 @@ import {
   type FileMessage,
   type FileMarker,
   type FileRecord,
+  type FileDetailDeleteRequest,
   type FileRemark,
   type FirmDetail,
   type FirmRatingConfig,
@@ -31,6 +32,7 @@ import {
   type AdvancePaymentDetail,
   type StageDeliveryDetail,
   type SupplyOrderDetail,
+  removeFileDetailRowFromRecord,
   type ValueThresholdLevel,
   useAccessibleDivisions,
   useActiveUser,
@@ -40,6 +42,7 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import {
+  ChevronDown,
   ChevronRight,
   FileSpreadsheet,
   MessageSquare,
@@ -52,7 +55,11 @@ import {
   Unlock,
   Info,
 } from "lucide-react";
-import { promptDeletionPassword, requestDeletionPassword } from "@/lib/delete-password";
+import {
+  promptDeletionPassword,
+  requestDeletionPassword,
+  requestVerifiedDeletionPassword,
+} from "@/lib/delete-password";
 import { hasCapability } from "@/lib/permissions";
 import { downloadBackendExport, getExportFileName } from "@/lib/export-download";
 import {
@@ -69,16 +76,28 @@ import { isAutoTenderLive } from "@/lib/bidding-status";
 import {
   clearInapplicableBgCoverageFields,
   getClearedBgCoverageFieldLabels,
+  normalizeBgCoverageType,
 } from "@/lib/bg-coverage-cleanup";
-import { displayFinancialYearLabel } from "@/lib/year-filter";
+import { ALL_FILES_YEAR, displayFinancialYearLabel } from "@/lib/year-filter";
+import { clearUnsavedChanges, useUnsavedChanges } from "@/lib/unsaved-changes";
 import { DateInput } from "@/components/date-input";
+import { DeleteConfirmation, useDeleteConfirmation } from "@/components/delete-confirmation";
 import { HelperContent } from "@/components/helper-content";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   fileTypeGroupOptions,
   getConfiguredFileTypeGroup,
   isBiddingApplicableForFile,
   isContractFileType,
+  isDeliveryInspectionApplicableByGroup,
 } from "@/lib/file-type-groups";
 import {
   addEditRibbonFieldOptions,
@@ -101,6 +120,38 @@ type AddFileSearchParams = {
   drillPath?: string;
   quickFocus?: boolean;
   returnToQuickEntry?: boolean;
+};
+
+type DraftAnomalyWarning = {
+  signature: string;
+  fileRef: string;
+  controlNo: string;
+  division: string;
+  indentor: string;
+  description: string;
+  block: string;
+  rule: string;
+  ruleKey?: string;
+  previousField: string;
+  previousDate: string;
+  laterField: string;
+  laterDate: string;
+};
+
+type AnomalyWarningPrompt = {
+  key: string;
+  warnings: DraftAnomalyWarning[];
+};
+
+type SupplyOrderRemovalPrompt = {
+  currentCount: number;
+  targetCount: number;
+  selectedIndexes: number[];
+};
+
+type PendingSupplyOrderRemoval = {
+  originalIndex: number;
+  order: SupplyOrderDetail;
 };
 
 export const Route = createFileRoute("/add")({
@@ -145,6 +196,7 @@ const empty = {
   mode: "",
   gem: "No",
   gemBiddingMode: "",
+  refloatGemBiddingMode: "",
   highValue: "No",
   ad: "No",
   rqa: "No",
@@ -171,6 +223,9 @@ const empty = {
   refloatRecommendationDate: "",
   rfpVettingInitiationDate: "",
   rfpVettingApprovalDate: "",
+  refloatRfpVetting: "No",
+  refloatRfpVettingInitiationDate: "",
+  refloatRfpVettingApprovalDate: "",
   preBidMeeting: "No",
   preBidMeetingDate: "",
   tenderLive: "No",
@@ -178,6 +233,9 @@ const empty = {
   bidDate: "",
   bidOpeningDate: "",
   bidOpened: "NO",
+  refloatTenderLive: "No",
+  refloatBidNumber: "",
+  refloatBidOpened: "NO",
   refloat: "No",
   refloatPreBidMeeting: "No",
   refloatPreBidMeetingDate: "",
@@ -612,12 +670,23 @@ function getAutoCompletedMilestones(
   applicableMilestones: Set<string>,
   form: FormState,
 ) {
-  if (!isYes(form.biddingStageOver)) return [];
-  const biddingMilestone = milestones.find(
-    (milestone) =>
-      normalizeMilestoneName(milestone) === "bidding" && applicableMilestones.has(milestone),
-  );
-  return biddingMilestone ? [biddingMilestone] : [];
+  const completed: string[] = [];
+  if (isYes(form.biddingStageOver)) {
+    const biddingMilestone = milestones.find(
+      (milestone) =>
+        normalizeMilestoneName(milestone) === "bidding" && applicableMilestones.has(milestone),
+    );
+    if (biddingMilestone) completed.push(biddingMilestone);
+  }
+  if (isYes(form.refloatBiddingStageOver)) {
+    const refloatBiddingMilestone = milestones.find(
+      (milestone) =>
+        normalizeMilestoneName(milestone) === "refloatbidding" &&
+        applicableMilestones.has(milestone),
+    );
+    if (refloatBiddingMilestone) completed.push(refloatBiddingMilestone);
+  }
+  return completed;
 }
 
 function getCompletedMilestonesForSave(
@@ -628,6 +697,7 @@ function getCompletedMilestonesForSave(
   supplyOrderMilestoneProgress: Record<string, { completed: number; total: number }> = {},
 ) {
   const autoCompleted = getAutoCompletedMilestones(milestones, applicableMilestones, form);
+  const applicableKeys = new Set(Array.from(applicableMilestones).map(normalizeMilestoneName));
   const orderDrivenMilestones = new Set(
     milestones
       .filter((milestone) => supplyOrderMilestoneProgress[normalizeMilestoneName(milestone)])
@@ -640,12 +710,17 @@ function getCompletedMilestonesForSave(
   const completedSet = new Set([
     ...completedMilestones.filter((milestone) => {
       const key = normalizeMilestoneName(milestone);
-      return key !== "delivery" && !orderDrivenMilestones.has(key);
+      if (key === "delivery" || orderDrivenMilestones.has(key)) return false;
+      if (!applicableKeys.has(key)) return false;
+      if (key === "bidding" && !isYes(form.biddingStageOver)) return false;
+      if (key === "refloatbidding" && !isYes(form.refloatBiddingStageOver)) return false;
+      return true;
     }),
     ...autoCompleted,
     ...autoCompletedOrderMilestones,
   ]);
-  return milestones.filter((milestone) => completedSet.has(milestone));
+  const completedKeys = new Set(Array.from(completedSet).map(normalizeMilestoneName));
+  return milestones.filter((milestone) => completedKeys.has(normalizeMilestoneName(milestone)));
 }
 
 function createSupplyOrdersFromFile(file: FileRecord | undefined): SupplyOrderDetail[] {
@@ -661,10 +736,13 @@ function areSupplyOrderRowsEqual(left: SupplyOrderDetail[], right: SupplyOrderDe
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function normalizeFirmRows(rows: FirmDetail[] | undefined): Required<FirmDetail>[] {
+type NormalizedFirmDetail = Required<Omit<FirmDetail, "id">> & Pick<FirmDetail, "id">;
+
+function normalizeFirmRows(rows: FirmDetail[] | undefined): NormalizedFirmDetail[] {
   const normalized =
     rows
       ?.map((row) => ({
+        id: row.id,
         firmName: row.firmName ?? "",
         firmUniqueNo: row.firmUniqueNo ?? "",
         emailId: row.emailId ?? "",
@@ -712,21 +790,33 @@ const tcecDisabledKeys: FieldKey[] = [
   "cncDate",
   "cncApprovalDate",
 ];
-const nonTcecDisabledKeys: FieldKey[] = ["refloatRecommendationDate", "refloatBiddingStageOver"];
+const nonTcecDisabledKeys: FieldKey[] = ["refloatRecommendationDate"];
 
 const gemDisabledKeys: FieldKey[] = [
   "gemBiddingMode",
+  "refloatGemBiddingMode",
   "gemUndertakingDate",
   "refloatGemUndertakingDate",
   "gemSoNo",
 ];
 const rfpVettingDisabledKeys: FieldKey[] = ["rfpVettingInitiationDate", "rfpVettingApprovalDate"];
+const refloatRfpVettingDisabledKeys: FieldKey[] = [
+  "refloatRfpVettingInitiationDate",
+  "refloatRfpVettingApprovalDate",
+];
 const highValueDisabledKeys: FieldKey[] = ["highValueMeetingDate", "highValueMinutesDate"];
 const rqaDisabledKeys: FieldKey[] = ["rqaSentDate", "rqaApprovalDate"];
 const ifaDisabledKeys: FieldKey[] = ["ifaSentDate", "ifaFinalDate"];
 const bgDisabledKeys: FieldKey[] = [];
 const preBidMeetingDisabledKeys: FieldKey[] = ["preBidMeetingDate"];
 const refloatDisabledKeys: FieldKey[] = [
+  "refloatGemBiddingMode",
+  "refloatRfpVetting",
+  "refloatRfpVettingInitiationDate",
+  "refloatRfpVettingApprovalDate",
+  "refloatBidNumber",
+  "refloatTenderLive",
+  "refloatBidOpened",
   "refloatPreBidMeeting",
   "refloatPreBidMeetingDate",
   "refloatBiddingDate",
@@ -739,15 +829,15 @@ const refloatDisabledKeys: FieldKey[] = [
   "refloatPostTcecCommitteeNo",
 ];
 const refloatPreBidMeetingDisabledKeys: FieldKey[] = ["refloatPreBidMeetingDate"];
-const biddingStageOverDisabledKeys: FieldKey[] = [
+const postTcecDisabledKeys: FieldKey[] = [
   "postTcecDate",
   "postTcecMinutesDate",
   "postTcecCommitteeNumber",
+];
+const refloatPostTcecDisabledKeys: FieldKey[] = [
   "refloatPostTcecDate",
   "refloatPostTcecMinutesDate",
   "refloatPostTcecCommitteeNo",
-  "cncDate",
-  "cncApprovalDate",
 ];
 const supplyOrderBgDisabledKeys: SupplyOrderKey[] = [];
 const supplyOrderIrDisabledKeys: SupplyOrderKey[] = [
@@ -789,7 +879,7 @@ type FirmDetailsState = {
   bidderFirms: FirmDetail[];
 };
 
-const emptyFirmDetail: Required<FirmDetail> = {
+const emptyFirmDetail: NormalizedFirmDetail = {
   firmName: "",
   city: "",
   address: "",
@@ -808,6 +898,19 @@ function firmUniqueNoOption(firm: MasterFirm) {
 
 function normalizeFirmLookupValue(value: string | undefined) {
   return (value ?? "").trim().toLowerCase();
+}
+
+function findExistingMasterFirm(
+  firms: MasterFirm[],
+  row: Pick<FirmDetail, "firmName" | "firmUniqueNo">,
+) {
+  const firmName = normalizeFirmLookupValue(row.firmName);
+  const firmUniqueNo = normalizeFirmLookupValue(row.firmUniqueNo);
+  return firms.find(
+    (firm) =>
+      (firmName && normalizeFirmLookupValue(firm.firmName) === firmName) ||
+      (firmUniqueNo && normalizeFirmLookupValue(firm.firmUniqueNo) === firmUniqueNo),
+  );
 }
 
 function findLinkedMasterFirm(
@@ -1003,7 +1106,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   },
   {
     key: "actualJobCompletionDate",
-    label: "Work Completion Date",
+    label: "Job Completion Date",
     type: "date",
     helper:
       "Records when the work was completed. Use this for measures that require work completion, including non-inspection PWB delay.\nExample table: Work completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | Work completed on 10 Oct; completion was received/recorded on 14 Oct. The dates serve different purposes.",
@@ -1072,7 +1175,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   },
   {
     key: "actualJobCompletionDate",
-    label: "Work Completion Date",
+    label: "Job Completion Date",
     type: "date",
     helper:
       "Records when this stage's work was completed. Use it for measures that require work completion, including non-inspection PWB delay.\nExample table: Work completion | Completion received | Meaning\nExample row: 10 Oct | 14 Oct | This stage's work completed on 10 Oct; completion was received/recorded on 14 Oct.",
@@ -1404,7 +1507,7 @@ type SupplementaryBillDraft = {
 
 function createSupplementaryBillDraft(): SupplementaryBillDraft {
   return {
-    id: `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    id: createDetailRowId(),
     includeInPaymentTiming: true,
     billNo: "",
     billAmountCapital: "",
@@ -1566,25 +1669,48 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
     fields: [
       { key: "gemBiddingMode", label: "GeM Bidding Mode", options: defaultGemBiddingModes },
       { key: "gemUndertakingDate", label: "GeM undertaking date", type: "date" },
-      { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking", type: "date" },
       { key: "rfpVettingInitiationDate", label: "RFP vetting initiation", type: "date" },
       { key: "rfpVettingApprovalDate", label: "RFP vetting approval", type: "date" },
+      { key: "bidNumber", label: "Bid number" },
       { key: "preBidMeeting", label: "Pre-Bid Meeting", options: yesNo },
       { key: "preBidMeetingDate", label: "Pre-Bid Meeting date", type: "date" },
-      { key: "bidNumber", label: "Bid number" },
       { key: "bidDate", label: "Bid date", type: "date" },
-      { key: "bidOpeningDate", label: "Bid closing", type: "date" },
+      { key: "bidOpeningDate", label: "Bid Opening Date", type: "date" },
       { key: "tenderLive", label: "Bid Live", options: yesNo },
       { key: "bidOpened", label: "Bid opened", options: yesNoCaps },
+      { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
       { key: "refloat", label: "Refloat", options: yesNo },
+      {
+        key: "refloatGemBiddingMode",
+        label: "Refloat GeM Bidding Mode",
+        options: defaultGemBiddingModes,
+      },
+      { key: "refloatGemUndertakingDate", label: "Refloat GeM undertaking date", type: "date" },
+      { key: "refloatRfpVetting", label: "Refloat RFP vetting", options: yesNo },
+      {
+        key: "refloatRfpVettingInitiationDate",
+        label: "Refloat RFP vetting initiation",
+        type: "date",
+      },
+      {
+        key: "refloatRfpVettingApprovalDate",
+        label: "Refloat RFP vetting approval",
+        type: "date",
+      },
+      { key: "refloatBidNumber", label: "Refloat bid number" },
       { key: "refloatPreBidMeeting", label: "Refloat Pre-Bid Meeting", options: yesNo },
       { key: "refloatPreBidMeetingDate", label: "Refloat Pre-Bid Meeting date", type: "date" },
       { key: "refloatBiddingDate", label: "Refloat bidding date", type: "date" },
-      { key: "refloatBidOpeningDate", label: "Refloat bid closing date", type: "date" },
+      { key: "refloatBidOpeningDate", label: "Refloat bid opening date", type: "date" },
+      { key: "refloatTenderLive", label: "Refloat Bid Live", options: yesNo },
+      { key: "refloatBidOpened", label: "Refloat bid opened", options: yesNoCaps },
       { key: "refloatBiddingStageOver", label: "Refloat Bidding Stage Over", options: yesNo },
-      { key: "refloatRecommendationDate", label: "Refloat recommendation", type: "date" },
+      {
+        key: "refloatRecommendationDate",
+        label: "Refloat recommendation date for Non-TCEC cases",
+        type: "date",
+      },
       { key: "rst", label: "RST", options: yesNo },
-      { key: "biddingStageOver", label: "Bidding stage over", options: yesNo },
     ],
   },
   {
@@ -1600,6 +1726,40 @@ const extraSections: { title: string; fields: ExtraField[] }[] = [
     fields: [],
   },
 ];
+
+const biddingTabFieldKeys = new Set<FieldKey>([
+  "gemBiddingMode",
+  "gemUndertakingDate",
+  "rfpVettingInitiationDate",
+  "rfpVettingApprovalDate",
+  "preBidMeeting",
+  "preBidMeetingDate",
+  "bidNumber",
+  "bidDate",
+  "bidOpeningDate",
+  "tenderLive",
+  "bidOpened",
+  "biddingStageOver",
+  "refloatRecommendationDate",
+]);
+
+const refloatBiddingTabFieldKeys = new Set<FieldKey>([
+  "refloatGemBiddingMode",
+  "refloatGemUndertakingDate",
+  "refloat",
+  "refloatRfpVetting",
+  "refloatRfpVettingInitiationDate",
+  "refloatRfpVettingApprovalDate",
+  "refloatBidNumber",
+  "refloatTenderLive",
+  "refloatBidOpened",
+  "refloatPreBidMeeting",
+  "refloatPreBidMeetingDate",
+  "refloatBiddingDate",
+  "refloatBidOpeningDate",
+  "refloatBiddingStageOver",
+  "rst",
+]);
 
 const cfaApprovalGatedSectionTitles = new Set([
   "Bidding details",
@@ -1650,6 +1810,7 @@ function AddFilePage() {
 }
 
 function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
+  const { confirmDeletion, confirmationDialog } = useDeleteConfirmation();
   const divisions = useAccessibleDivisions();
   const files = useFiles();
   const messages = useMessages();
@@ -1720,6 +1881,18 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     ),
   );
   const [saved, setSaved] = useState(false);
+  const [savedSupplyOrderIndex, setSavedSupplyOrderIndex] = useState<number>();
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string>();
+  const [anomalyWarningPrompt, setAnomalyWarningPrompt] = useState<AnomalyWarningPrompt>();
+  const [stageWarningPrompt, setStageWarningPrompt] = useState<string[]>();
+  const [stageCountAdvisoryPrompt, setStageCountAdvisoryPrompt] = useState<string>();
+  const [milestoneErrorPrompt, setMilestoneErrorPrompt] = useState<string[]>();
+  const [supplyOrderRemovalPrompt, setSupplyOrderRemovalPrompt] =
+    useState<SupplyOrderRemovalPrompt>();
+  const [pendingSupplyOrderRemovals, setPendingSupplyOrderRemovals] = useState<
+    PendingSupplyOrderRemoval[]
+  >([]);
   const [unlockedSections, setUnlockedSections] = useState<Set<string>>(() => new Set());
   const [demandCancelledUnlocked, setDemandCancelledUnlocked] = useState(false);
   const [paidStageUnfreezeKeys, setPaidStageUnfreezeKeys] = useState<Set<string>>(() => new Set());
@@ -1727,12 +1900,31 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     () => new Set(),
   );
   const [activeBoardSection, setActiveBoardSection] = useState(section ?? "File details");
+  const [activeBiddingTab, setActiveBiddingTab] = useState<"bidding" | "refloat">("bidding");
   const [focusedMilestone, setFocusedMilestone] = useState(milestone ?? "");
   const quickFieldRefs = useRef<Record<string, HTMLElement | null>>({});
+  const stageCountAdvisoryResolveRef = useRef<(() => void) | null>(null);
   const quickFocusAppliedRef = useRef("");
   const fieldFocusAppliedRef = useRef("");
   const skipMilestonePruneRef = useRef(false);
   const confirmedBgCleanupOrdersRef = useRef(new Set<string>());
+  const pendingAnomalySaveRef = useRef<
+    | {
+        options?: {
+          returnToQuickEntry?: boolean;
+          skipStageWarning?: boolean;
+          supplyOrderIndex?: number;
+        };
+        warningKey: string;
+      }
+    | undefined
+  >(undefined);
+  const pendingStageWarningSaveRef = useRef<
+    { returnToQuickEntry?: boolean; supplyOrderIndex?: number } | undefined
+  >(undefined);
+  const anomalyEntryScopeRef = useRef(
+    editingFile?.id ?? `new:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+  );
   const divisionsRef = useRef(divisions);
   const filesRef = useRef(files);
   divisionsRef.current = divisions;
@@ -1804,11 +1996,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     setPaidAdvanceUnfreezeKeys((current) => new Set(current).add(orderIndex));
   };
   const savedFormForLocks = useMemo(
-    () =>
-      editingFile
-        ? applyConditionalRules(createFormFromFile(editingFile, effectiveFinancialYear))
-        : createEmptyForm(effectiveFinancialYear),
-    [editingFile, effectiveFinancialYear],
+    () => {
+      const baseline = editingFile
+        ? createFormFromFile(editingFile, effectiveFinancialYear)
+        : createEmptyForm(effectiveFinancialYear);
+      return applyConditionalRules({
+        ...baseline,
+        fileTypeGroup: getConfiguredFileTypeGroup(baseline.fileType, settings.fileTypeGroups),
+      });
+    },
+    [editingFile, effectiveFinancialYear, settings.fileTypeGroups],
   );
   const savedFirmDetailsForLocks = useMemo(
     () => createFirmDetailsFromFile(editingFile),
@@ -2036,16 +2233,32 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     formWithLockedYear,
     supplyOrders,
   );
+  const useSupplyOrderMilestones = shouldUseSupplyOrderMilestones(
+    supplyOrders,
+    currentMilestone,
+    completedMilestones,
+  );
+  const supplyOrderMilestoneDisplayRows = useMemo(
+    () => bridgeMainCurrentMilestoneToSupplyOrder(supplyOrders, currentMilestone),
+    [currentMilestone, supplyOrders],
+  );
   const supplyOrderMilestoneProgress = useMemo(
     () =>
       getSupplyOrderMilestoneProgress(
         milestoneOptions,
         supplyOrders,
         formWithLockedYear,
-        shouldUseSupplyOrderMilestones(supplyOrders, currentMilestone, completedMilestones),
+        useSupplyOrderMilestones,
         currentMilestone,
       ),
-    [completedMilestones, currentMilestone, formWithLockedYear, milestoneOptions, supplyOrders],
+    [currentMilestone, formWithLockedYear, milestoneOptions, supplyOrders, useSupplyOrderMilestones],
+  );
+  const supplyOrderMilestoneProgressByOrder = useMemo(
+    () =>
+      supplyOrderMilestoneDisplayRows.map((order) =>
+        getSupplyOrderMilestoneProgress(milestoneOptions, [order], formWithLockedYear, true),
+      ),
+    [formWithLockedYear, milestoneOptions, supplyOrderMilestoneDisplayRows],
   );
   const mainMilestoneDisplayLabels = useMemo<Record<string, string>>(() => {
     const labels: Record<string, string> = {};
@@ -2194,48 +2407,118 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     };
   }, [activeSection, editingFile, focusTarget, quickFocus]);
 
-  const reduceSupplyOrderCountWithPassword = async (count: number) => {
-    const currentCount = supplyOrders.length;
-    if (count >= currentCount) return false;
-    const removedOrders = supplyOrders.slice(count);
-    const removedDetails = removedOrders.map((order, index) => {
-      const label = getSupplyOrderDisplayTitle(order, count + index);
-      const fields = getSupplyOrderCleanupLabels(order, emptySupplyOrder);
-      return fields.length ? `${label}: ${fields.join(", ")}` : label;
+  const restorePendingSupplyOrderRows = (
+    rows: SupplyOrderDetail[],
+    removals: PendingSupplyOrderRemoval[],
+  ) => {
+    if (!removals.length) return rows;
+    const removedByIndex = new Map(
+      removals.map((removal) => [removal.originalIndex, removal.order]),
+    );
+    let currentIndex = 0;
+    return Array.from({ length: rows.length + removals.length }, (_, index) => {
+      const removedOrder = removedByIndex.get(index);
+      if (removedOrder) return removedOrder;
+      return rows[currentIndex++] ?? emptySupplyOrder;
     });
-    const confirmed = window.confirm(
-      [
-        `Reducing S.O. count from ${currentCount} to ${count} will permanently delete ${
-          currentCount - count
-        } supply order(s).`,
-        removedDetails.length
-          ? `S.O.s and populated data to be deleted:\n${removedDetails.map((detail) => `- ${detail}`).join("\n")}`
-          : "",
-        "",
-        "Do you want to continue?",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
-    if (!confirmed) {
-      setForm((f) => ({ ...f, noOfSo: String(currentCount) }));
-      return true;
-    }
+  };
 
-    const allowed = await requestDeletionPassword(
-      `reduce S.O. count from ${currentCount} to ${count}`,
-    );
-    if (!allowed) {
-      setForm((f) => ({ ...f, noOfSo: String(currentCount) }));
-      return true;
-    }
-
-    setForm((f) => ({ ...f, noOfSo: String(count) }));
-    setSupplyOrders((current) => current.slice(0, count));
+  const reduceSupplyOrderCountWithPassword = async (
+    count: number,
+    rows: SupplyOrderDetail[] = supplyOrders,
+  ) => {
+    const currentCount = rows.length;
+    if (count >= currentCount) return false;
+    setSupplyOrderRemovalPrompt({
+      currentCount,
+      targetCount: count,
+      selectedIndexes: [],
+    });
     return true;
   };
 
-  const update = (k: keyof typeof form, v: string) => {
+  const toggleSupplyOrderRemoval = (index: number) => {
+    setSupplyOrderRemovalPrompt((current) => {
+      if (!current) return current;
+      const selectedIndexes = current.selectedIndexes.includes(index)
+        ? current.selectedIndexes.filter((item) => item !== index)
+        : [...current.selectedIndexes, index];
+      return { ...current, selectedIndexes };
+    });
+  };
+
+  const confirmSupplyOrderRemovalSelection = async () => {
+    const prompt = supplyOrderRemovalPrompt;
+    if (!prompt || prompt.selectedIndexes.length !== prompt.currentCount - prompt.targetCount) {
+      return;
+    }
+    const selectedIndexes = new Set(prompt.selectedIndexes);
+    const removedOrders = prompt.selectedIndexes.map((index) => ({
+      originalIndex: index,
+      order: supplyOrders[index] ?? emptySupplyOrder,
+    }));
+    const selectedOrders = removedOrders
+      .map(({ order, originalIndex }) => getSupplyOrderDisplayTitle(order, originalIndex))
+      .join(", ");
+    const targetCount = prompt.targetCount;
+    const savedSupplyOrderCount = clampSupplyOrderCount(savedFormForLocks.noOfSo);
+    const savedOrderIds = new Set(
+      savedSupplyOrdersForLocks.flatMap((order) => (order.id?.trim() ? [order.id] : [])),
+    );
+    const hasSavedSelectedOrder = removedOrders.some(
+      ({ order }) => Boolean(order.id?.trim() && savedOrderIds.has(order.id)),
+    );
+    const persistsImmediately = Boolean(
+      editingFile && (targetCount < savedSupplyOrderCount || hasSavedSelectedOrder),
+    );
+    const details = [
+      `Selected: ${selectedOrders}.`,
+      "The entire selected S.O.(s)—including BG, D.P., Delivery, Payment, Advance Payment, milestones, and bills—will be erased.",
+      persistsImmediately
+        ? "After password confirmation, the deletion will be saved immediately. No Update is required."
+        : "The deletion will be applied to this form. Click Update to save the reduced count.",
+    ].join("\n\n");
+    setSupplyOrderRemovalPrompt(undefined);
+    const confirmed = await confirmDeletion(details, "Delete", {
+      title: "Delete selected S.O.?",
+      description: "This permanently erases the selected Supply Order data.",
+    });
+    if (!confirmed) return;
+
+    const deletionPassword = await requestVerifiedDeletionPassword(
+      `remove ${removedOrders.length} Supply Order(s) while reducing the count from ${prompt.currentCount} to ${prompt.targetCount}`,
+    );
+    if (deletionPassword === false) return;
+
+    if (persistsImmediately && editingFile) {
+      const supplyOrderIds = removedOrders.flatMap(({ order }) =>
+        order.id?.trim() ? [order.id] : [],
+      );
+      try {
+        const updatedFile = await store.deleteSupplyOrderRowsImmediately(
+          editingFile.id,
+          targetCount < savedSupplyOrderCount ? targetCount : undefined,
+          supplyOrderIds,
+          deletionPassword,
+        );
+        setLoadedFile(updatedFile);
+      } catch (error) {
+        console.error("Failed to delete selected Supply Order(s)", error);
+        alert(
+          error instanceof Error
+            ? error.message
+            : "The selected Supply Order(s) could not be deleted.",
+        );
+        return;
+      }
+    }
+
+    setForm((f) => ({ ...f, noOfSo: String(targetCount) }));
+    setSupplyOrders((current) => current.filter((_, index) => !selectedIndexes.has(index)));
+    setPendingSupplyOrderRemovals(persistsImmediately ? [] : removedOrders);
+  };
+
+  const update = async (k: keyof typeof form, v: string) => {
     if (readOnlyMode) return;
     if (k === "year") return;
     if (uniqueCodeGateLocked && k !== "division") return;
@@ -2323,7 +2606,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       const warning = getCleanupWarningText(`Changing ${getFormFieldLabel(String(k))} to ${v}`, [
         ...new Set(entries),
       ]);
-      if (warning && !window.confirm(warning)) return;
+      if (warning && !(await confirmDeletion(warning))) return;
     }
     if (k === "bg" && isNo(v)) {
       const nextForm = applyConditionalRules({ ...formWithLockedYear, bg: v });
@@ -2349,7 +2632,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         ...formFields,
         ...affectedOrders.map(({ description }) => description),
       ]);
-      if (warning && !window.confirm(warning)) {
+      if (warning && !(await confirmDeletion(warning))) {
         return;
       }
       affectedOrders.forEach(({ index, labels }) =>
@@ -2362,7 +2645,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       k === "ad" &&
       isNo(v) &&
       (hasFilledValue(form.adSentDate) || hasFilledValue(form.adVettingDate)) &&
-      !window.confirm("Setting AD to No will clear the AD Sent and AD Vetting dates. Continue?")
+      !(await confirmDeletion("Setting AD to No will clear the AD Sent and AD Vetting dates."))
     ) {
       return;
     }
@@ -2374,6 +2657,21 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     if (k === "noOfSo") {
       const count = clampSupplyOrderCount(v);
+      if (pendingSupplyOrderRemovals.length) {
+        const restoredOrders = restorePendingSupplyOrderRows(
+          supplyOrders,
+          pendingSupplyOrderRemovals,
+        );
+        setPendingSupplyOrderRemovals([]);
+        setSupplyOrders(restoredOrders);
+        if (count < restoredOrders.length) {
+          void reduceSupplyOrderCountWithPassword(count, restoredOrders);
+          return;
+        }
+        setForm((f) => ({ ...f, noOfSo: String(count) }));
+        setSupplyOrders((current) => resizeSupplyOrders(current, count, formWithLockedYear));
+        return;
+      }
       if (count < supplyOrders.length) {
         void reduceSupplyOrderCountWithPassword(count);
         return;
@@ -2387,6 +2685,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setForm((current) => ({
           ...current,
           gemBiddingMode: current.gemBiddingMode || "Custom",
+          refloatGemBiddingMode: current.refloatGemBiddingMode || "Custom",
         }));
       }
       setSupplyOrders((current) =>
@@ -2451,6 +2750,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setCurrentMilestone("");
       }
     }
+    if (k === "refloatBiddingStageOver" && isYes(v)) {
+      const currentIsRefloatBidding = normalizeMilestoneName(currentMilestone) === "refloatbidding";
+      if (currentIsRefloatBidding) {
+        setCurrentMilestone("");
+      }
+    }
     setForm((f) => {
       const patch: Partial<FormState> = { [k]: v };
       if (k === "ad" && isNo(v)) {
@@ -2461,16 +2766,19 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         patch.exchangeRate = "1";
       }
       if (k === "refloat" && isYes(v)) {
-        // Keep the first-cycle flag for Non-TCEC refloats; the second cycle
-        // has its own Refloat Bidding Stage Over field.
-        if (!isNo(f.tcec)) patch.biddingStageOver = "No";
-        patch.bidOpened = "NO";
+        patch.refloatBidOpened = "NO";
       }
       if (k === "biddingStageOver" && isYes(v)) {
         patch.tenderLive = "No";
       }
       if (k === "bidOpened" && isYes(v)) {
         patch.tenderLive = "No";
+      }
+      if (k === "refloatBiddingStageOver" && isYes(v)) {
+        patch.refloatTenderLive = "No";
+      }
+      if (k === "refloatBidOpened" && isYes(v)) {
+        patch.refloatTenderLive = "No";
       }
       if (k === "division") {
         if (f.division.trim().toLowerCase() !== v.trim().toLowerCase()) {
@@ -2480,16 +2788,101 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return applyConditionalRules({ ...f, ...patch });
     });
   };
+  const persistImmediateSupplyOrderChange = async (
+    index: number,
+    draftOrder: SupplyOrderDetail,
+    previousDraftOrder: SupplyOrderDetail,
+    cleanup: {
+      action: "reduce" | "disable";
+      deletionPassword: string;
+      stageCount?: number;
+    },
+  ) => {
+    // Apply the cleanup to the visible draft before the network request so the
+    // destructive action is immediate from the user's perspective.
+    setSupplyOrders((current) =>
+      current.map((order, orderIndex) => (orderIndex === index ? draftOrder : order)),
+    );
+
+    // A newly added S.O. has no database row yet. Its cleanup is still
+    // immediate in the form and will be included when the file is first saved.
+    const savedOrder = savedSupplyOrdersForLocks[index];
+    if (!editingFile || !savedOrder?.id?.trim()) return true;
+
+    try {
+      const updatedFile = await store.applyImmediateSupplyOrderStageChange(
+        editingFile.id,
+        index,
+        savedOrder.id,
+        cleanup.action,
+        cleanup.deletionPassword,
+        cleanup.stageCount,
+      );
+      // Refresh only the saved baseline. Keep the other local drafts intact.
+      setLoadedFile(updatedFile);
+      return true;
+    } catch (error) {
+      console.error("Failed to apply immediate Supply Order cleanup", error);
+      setSupplyOrders((current) =>
+        current.map((order, orderIndex) => (orderIndex === index ? previousDraftOrder : order)),
+      );
+      alert(
+        error instanceof Error
+          ? error.message
+          : "The destructive Supply Order change could not be applied.",
+      );
+      return false;
+    }
+  };
   const updateSupplyOrder = async (index: number, key: SupplyOrderKey, value: string) => {
     if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     const orderBeforeUpdate = supplyOrders[index];
+    let deletionPasswordVerified = false;
+    let immediateDraftOrder: SupplyOrderDetail | undefined;
+    if (
+      orderBeforeUpdate &&
+      key === "stageDelivery" &&
+      isYes(orderBeforeUpdate.stageDelivery ?? "") &&
+      isNo(value)
+    ) {
+      const candidate = applySupplyOrderRules(
+        { ...orderBeforeUpdate, stageDelivery: value },
+        formWithLockedYear,
+      );
+      const fieldsToClear = getSupplyOrderCleanupLabels(orderBeforeUpdate, candidate, [
+        String(key),
+      ]);
+      const warning = [
+        `Turning Stage Delivery off for ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} will erase all stages and every field belonging to those stages.`,
+        fieldsToClear.length ? `Fields that will be erased: ${fieldsToClear.join(", ")}.` : "",
+        "After you continue and enter the deletion password, this change will be applied immediately.",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      if (!(await confirmDeletion(warning, "Continue", { applyImmediately: true }))) return;
+      const deletionPassword = await requestVerifiedDeletionPassword(
+        "erase all staged Delivery data",
+      );
+      if (deletionPassword === false) return;
+      deletionPasswordVerified = true;
+      immediateDraftOrder = candidate;
+      if (
+        !(await persistImmediateSupplyOrderChange(
+          index,
+          candidate,
+          orderBeforeUpdate,
+          { action: "disable", deletionPassword },
+        ))
+      ) {
+        return;
+      }
+    }
     const cleanupOrderSwitchKeys = new Set<SupplyOrderKey>([
       "dpExtension",
       "ld",
       "firmType",
       "advancePayment",
       "shortclosure",
-      "stageDelivery",
       "stagePayment",
     ]);
     if (orderBeforeUpdate && cleanupOrderSwitchKeys.has(key)) {
@@ -2502,7 +2895,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         `Changing ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} ${supplyOrderFields.find((field) => field.key === key)?.label ?? key} to ${value}`,
         fields,
       );
-      if (warning && !window.confirm(warning)) return;
+      if (warning && !(await confirmDeletion(warning))) return;
     }
     if (orderBeforeUpdate && (key === "bgCoverageType" || key === "psbApplicable")) {
       const nextOrder = applySupplyOrderRules(
@@ -2512,9 +2905,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       const removedBgFields = getClearedBgCoverageFieldLabels(orderBeforeUpdate, nextOrder);
       if (
         removedBgFields.length &&
-        !window.confirm(
-          `Changing ${key === "bgCoverageType" ? "BG coverage type" : "PSB applicable"} for ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} will clear these inapplicable BG details: ${removedBgFields.join(", ")}. Continue?`,
-        )
+        !(await confirmDeletion(
+          `Changing ${key === "bgCoverageType" ? "BG coverage type" : "PSB applicable"} for ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} will clear these inapplicable BG details: ${removedBgFields.join(", ")}.`,
+        ))
       ) {
         return;
       }
@@ -2523,31 +2916,65 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       );
     }
     if (key === "stageDeliveryCount") {
-      const nextCount = getStageDeliveryCount(formatIntegerInput(value));
+      const formattedCount = formatIntegerInput(value);
+      if (!formattedCount) return;
+      const nextCount = getStageDeliveryCount(formattedCount);
       const order = orderBeforeUpdate;
       const lockedOrder = savedSupplyOrdersForLocks[index];
-      const removedStages = (order?.stageDeliveries ?? []).slice(nextCount);
-      if (
-        nextCount < getStageDeliveryCount(order?.stageDeliveryCount) &&
-        hasStageDeliveryData(removedStages) &&
-        !window.confirm(
-          getCleanupWarningText(
-            `Reducing the stage count for ${getSupplyOrderDisplayTitle(order ?? emptySupplyOrder, index)}`,
-            removedStages.flatMap((stage, offset) =>
-              getClearedFieldLabels(
-                stage as unknown as Record<string, unknown>,
-                {} as Record<string, unknown>,
-                [
-                  ...stageDeliveryFields,
-                  { key: "stageAmountRevenue", label: "Stage amount (Revenue)" },
-                  { key: "actualPaymentRevenue", label: "Recorded payment amount (Revenue)" },
-                ],
-              ).map((label) => `Delivery-${nextCount + offset + 1} ${label}`),
-            ),
-          ),
-        )
-      ) {
-        return;
+      const currentCount = getStageDeliveryCount(order?.stageDeliveryCount);
+      const currentStages = order?.stageDeliveries ?? [];
+      const savedStages = lockedOrder?.stageDeliveries ?? [];
+      if (nextCount !== currentCount) {
+        const title = getSupplyOrderDisplayTitle(order ?? emptySupplyOrder, index);
+        if (nextCount < currentCount) {
+          const savedStageCount = isYes(lockedOrder?.stageDelivery ?? "")
+            ? getStageDeliveryCount(lockedOrder?.stageDeliveryCount)
+            : 0;
+          const lastStageToErase = Math.max(
+            currentCount,
+            savedStageCount,
+            currentStages.length,
+            savedStages.length,
+          );
+          const firstStageToErase = nextCount + 1;
+          const removedRange =
+            firstStageToErase === lastStageToErase
+              ? `Delivery-${lastStageToErase}`
+              : `Delivery-${firstStageToErase} through Delivery-${lastStageToErase}`;
+          const warning = [
+            `Reducing the stage count for ${title} from ${currentCount} to ${nextCount} will erase all fields pertaining to ${removedRange}, including delivery, D.P., payment, and milestone details.`,
+            "After you continue and enter the deletion password, this change will be applied immediately.",
+          ].join("\n\n");
+          if (!(await confirmDeletion(warning, "Continue", { applyImmediately: true }))) {
+            return;
+          }
+          const deletionPassword = await requestVerifiedDeletionPassword(
+            "erase fields from the reduced final stage(s)",
+          );
+          if (deletionPassword === false) {
+            return;
+          }
+          deletionPasswordVerified = true;
+          const draftCandidate = applySupplyOrderRules(
+            { ...(order ?? emptySupplyOrder), stageDeliveryCount: formattedCount },
+            formWithLockedYear,
+          );
+          immediateDraftOrder = draftCandidate;
+          if (
+            !(await persistImmediateSupplyOrderChange(
+              index,
+              draftCandidate,
+              order ?? emptySupplyOrder,
+              { action: "reduce", deletionPassword, stageCount: nextCount },
+            ))
+          ) {
+            return;
+          }
+        } else {
+          await showStageCountAdvisory(
+            `Increasing the stage count for ${title} from ${currentCount} to ${nextCount} adds new Delivery stage(s). Review the applicable BG, D.P., and Advance Payment fields. If any applicable field is left unfilled, an anomaly will be triggered.`,
+          );
+        }
       }
       const protectedStages = (order?.stageDeliveries ?? []).filter(
         (_stage, stageIndex) =>
@@ -2559,7 +2986,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             paidStageUnfreezeKeys,
           ),
       );
-      if (protectedStages.length) {
+      if (protectedStages.length && !deletionPasswordVerified) {
         const allowed = await requestDeletionPassword("reduce stages with paid payment rows");
         if (!allowed) return;
       }
@@ -2568,6 +2995,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     setSupplyOrders((current) =>
       current.map((order, orderIndex) => {
         if (orderIndex !== index) return order;
+        if (immediateDraftOrder) return immediateDraftOrder;
         if (isSupplyOrderDateKey(key) && hasFilledValue(value) && !isCompleteDateValue(value)) {
           return { ...order, [key]: clampDateYearInput(value) };
         }
@@ -2616,6 +3044,24 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ),
     );
   };
+  const deleteSavedSupplyOrderRow = async (
+    orderIndex: number,
+    deletion: FileDetailDeleteRequest,
+  ) => {
+    if (!editingFile) throw new Error("Save the file before deleting this saved entry.");
+    const orderId = savedSupplyOrdersForLocks[orderIndex]?.id;
+    if (!orderId) throw new Error("The saved Supply Order could not be identified.");
+    const request = { ...deletion, orderId };
+    const result = await store.deleteFileDetailRow(editingFile.id, request);
+    if (!result.deleted) throw new Error("This saved entry was not found.");
+    setLoadedFile((current) =>
+      current ? removeFileDetailRowFromRecord(current, request) : current,
+    );
+  };
+  const deleteSupplementaryBill = (orderIndex: number, rowId: string) =>
+    deleteSavedSupplyOrderRow(orderIndex, { kind: "supplementaryBill", rowId });
+  const deleteBillReturnCycle = (orderIndex: number, rowId: string) =>
+    deleteSavedSupplyOrderRow(orderIndex, { kind: "billReturnCycle", rowId });
   const patchSupplyOrder = (index: number, patch: Partial<SupplyOrderDetail>) => {
     if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
     setSupplyOrders((current) =>
@@ -2895,19 +3341,24 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       [group]: [...current[group], { ...emptyFirmDetail }],
     }));
   };
-  const deleteFirmDetail = (group: keyof FirmDetailsState, index: number) => {
+  const deleteFirmDetail = async (group: keyof FirmDetailsState, index: number) => {
     if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
+    const row = firmDetails[group][index];
+    if (editingFile && row?.id && (editingFile[group] ?? []).some((saved) => saved.id === row.id)) {
+      const deletion: FileDetailDeleteRequest = {
+        kind: "firm",
+        rowId: row.id,
+        firmType: group === "bqFirms" ? "bq" : group === "invitedFirms" ? "invited" : "bidder",
+      };
+      const result = await store.deleteFileDetailRow(editingFile.id, deletion);
+      if (!result.deleted) throw new Error("This saved firm entry was not found.");
+      setLoadedFile((current) =>
+        current ? removeFileDetailRowFromRecord(current, deletion) : current,
+      );
+    }
     setFirmDetails((current) => ({
       ...current,
       [group]: current[group].filter((_, rowIndex) => rowIndex !== index),
-    }));
-  };
-  const deleteSelectedFirmDetails = (group: keyof FirmDetailsState, indexes: number[]) => {
-    if (readOnlyMode || uniqueCodeGateLocked || cfaApprovalGateLocked) return;
-    const selected = new Set(indexes);
-    setFirmDetails((current) => ({
-      ...current,
-      [group]: current[group].filter((_, rowIndex) => !selected.has(rowIndex)),
     }));
   };
   const addRemark = (sectionTitle: string) => {
@@ -2951,7 +3402,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       current.map((remark) => (remark.id === remarkId ? { ...remark, createdAt: date } : remark)),
     );
   };
-  const deleteRemark = (remarkId: string) => {
+  const deleteRemark = async (remarkId: string) => {
     if (readOnlyMode || uniqueCodeGateLocked) return;
     if (
       cfaApprovalGateLocked &&
@@ -2960,6 +3411,14 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       )
     ) {
       return;
+    }
+    const deletion: FileDetailDeleteRequest = { kind: "remark", rowId: remarkId };
+    if (editingFile?.remarks?.some((remark) => remark.id === remarkId)) {
+      const result = await store.deleteFileDetailRow(editingFile.id, deletion);
+      if (!result.deleted) throw new Error("This saved remark was not found.");
+      setLoadedFile((current) =>
+        current ? removeFileDetailRowFromRecord(current, deletion) : current,
+      );
     }
     setFileRemarks((current) => current.filter((remark) => remark.id !== remarkId));
   };
@@ -2988,8 +3447,16 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         .map((marker) => ({ ...marker, text: trimmed })),
     ]);
   };
-  const deleteMarker = (markerId: string) => {
+  const deleteMarker = async (markerId: string) => {
     if (readOnlyMode || uniqueCodeGateLocked) return;
+    const deletion: FileDetailDeleteRequest = { kind: "marker", rowId: markerId };
+    if (editingFile?.markers?.some((marker) => marker.id === markerId)) {
+      const result = await store.deleteFileDetailRow(editingFile.id, deletion);
+      if (!result.deleted) throw new Error("This saved marker was not found.");
+      setLoadedFile((current) =>
+        current ? removeFileDetailRowFromRecord(current, deletion) : current,
+      );
+    }
     setFileMarkers((current) => current.filter((marker) => marker.id !== markerId));
   };
   const firmDetailsLocked = isEditing && !unlockedSections.has("Firm details");
@@ -3073,6 +3540,40 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ) || remarksChanged
     );
   };
+  const formForUnsavedCheck = isEditing
+    ? formWithLockedYear
+    : { ...formWithLockedYear, uniqueCode: savedFormForLocks.uniqueCode };
+  const addPageDirty =
+    !readOnlyMode &&
+    (isEditing || !saved) &&
+    (!isDirtyValueEqual(formForUnsavedCheck, savedFormForLocks) ||
+      !isDirtyValueEqual(firmDetails, savedFirmDetailsForLocks) ||
+      !isDirtyValueEqual(
+        cleanSupplyOrderRows(supplyOrders, formWithLockedYear).map((order) =>
+          normalizeDirtyObject(order as Record<string, unknown>),
+        ),
+        cleanSupplyOrderRows(savedSupplyOrdersForLocks, formWithLockedYear).map((order) =>
+          normalizeDirtyObject(order as Record<string, unknown>),
+        ),
+      ) ||
+      !isDirtyValueEqual(
+        cleanFileRemarks(fileRemarks) ?? [],
+        cleanFileRemarks(createRemarksFromFile(editingFile)) ?? [],
+      ) ||
+      !isDirtyValueEqual(
+        cleanFileMarkers(fileMarkers) ?? [],
+        cleanFileMarkers(createMarkersFromFile(editingFile)) ?? [],
+      ) ||
+      !isDirtyValueEqual(
+        normalizeDirtyValue("currentMilestone", currentMilestone),
+        normalizeDirtyValue("currentMilestone", editingFile?.currentMilestone),
+      ) ||
+      !isDirtyValueEqual(
+        normalizeDirtyValue("completedMilestones", completedMilestones),
+        normalizeDirtyValue("completedMilestones", savedCompletedMilestonesForLocks),
+      ) ||
+      !isDirtyValueEqual(activeYears, savedActiveYearsForDirty));
+  useUnsavedChanges("add-file-editor", addPageDirty);
   useEffect(() => {
     if (!fileId) return;
     let cancelled = false;
@@ -3100,31 +3601,41 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       window.removeEventListener("storage", refreshFromStorage);
     };
   }, [fileId]);
-  const renderSectionUnlockButton = (sectionTitle: string) => {
+  const renderSectionUnlockButton = (sectionTitle: string, updateControl?: ReactNode) => {
     if (!isEditing || readOnlyMode) return null;
-    if (cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(sectionTitle)) return null;
+    const canUnlock = !(cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(sectionTitle));
+    if (!canUnlock && !updateControl) return null;
 
     return (
-      <span className="flex flex-col items-end gap-1">
-        <button
-          type="button"
-          onClick={() => toggleSectionLock(sectionTitle)}
-          className="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-background text-xs font-medium text-foreground border border-border hover:bg-accent"
-        >
-          {unlockedSections.has(sectionTitle) ? (
-            <>
-              <Unlock className="size-3.5" /> Unlocked
-            </>
-          ) : (
-            <>
-              <Lock className="size-3.5" /> Edit block
-            </>
-          )}
-        </button>
-        <span className="text-[11px] font-normal text-foreground">
-          Click Update to save, else data will be lost.
-        </span>
-      </span>
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {canUnlock ? (
+            <button
+              type="button"
+              onClick={() => toggleSectionLock(sectionTitle)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground hover:bg-accent"
+            >
+              {unlockedSections.has(sectionTitle) ? (
+                <>
+                  <Unlock className="size-3.5" /> Unlocked
+                </>
+              ) : (
+                <>
+                  <Lock className="size-3.5" /> Edit block
+                </>
+              )}
+            </button>
+          ) : null}
+          {updateControl}
+        </div>
+        {canUnlock ? (
+          <span className="text-[0.6875rem] font-normal text-foreground">
+            {sectionTitle === "Supply order and payment"
+              ? "Use each S.O.’s Update button to save that order."
+              : "Click Update to save, else data will be lost."}
+          </span>
+        ) : null}
+      </div>
     );
   };
   const renderSectionUpdateButton = (
@@ -3135,7 +3646,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     return (
       <InlineUpdateButton
         saved={saved}
-        disabled={uniqueCodeGateLocked || !dirty}
+        saving={saving}
+        disabled={uniqueCodeGateLocked || saving || !dirty}
         testId={options.testId === undefined ? "add-save" : (options.testId ?? undefined)}
         className={options.className}
         onSave={() =>
@@ -3146,14 +3658,85 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       />
     );
   };
+  const activeSectionSaveTitle =
+    activeBoardSection === "Milestones" ? "Milestones" : activeSection?.title;
+  const activeSectionSaveDirty =
+    activeSectionSaveTitle &&
+    activeBoardSection !== "Timeline" &&
+    activeBoardSection !== "Remarks Summary"
+      ? isSectionDirty(activeSectionSaveTitle)
+      : false;
+  const renderActiveSectionUpdateButton = () =>
+    renderSectionUpdateButton({ testId: null, dirty: activeSectionSaveDirty });
   const renderLocalUpdateButton = (dirty?: boolean) =>
     renderSectionUpdateButton({ testId: null, dirty });
-  const confirmValueTypeChange = (
+  const renderSupplyOrderUpdateButton = (orderIndex: number, dirty?: boolean) => {
+    if (readOnlyMode || !isEditing) return null;
+    return (
+      <InlineUpdateButton
+        saved={savedSupplyOrderIndex === orderIndex}
+        saving={saving}
+        disabled={
+          uniqueCodeGateLocked ||
+          cfaApprovalGateLocked ||
+          saving ||
+          !dirty ||
+          orderIndex >= savedSupplyOrdersForLocks.length
+        }
+        testId={`add-supply-order-${orderIndex}-save`}
+        onSave={() => save({ supplyOrderIndex: orderIndex })}
+      />
+    );
+  };
+  const saveSupplyOrderCount = async () => {
+    if (readOnlyMode || !editingFile) return;
+    const nextCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
+    setSaveError(undefined);
+    setSaving(true);
+    setSavedSupplyOrderIndex(undefined);
+    try {
+      const supplyOrderIdsToRemove = pendingSupplyOrderRemovals.flatMap(({ order }) =>
+        order.id?.trim() ? [order.id] : [],
+      );
+      const updatedFile = await store.updateSupplyOrderCount(
+        editingFile.id,
+        nextCount,
+        supplyOrderIdsToRemove,
+      );
+      setLoadedFile(updatedFile);
+      setForm((current) => ({ ...current, noOfSo: String(nextCount) }));
+      setSupplyOrders((current) => resizeSupplyOrders(current, nextCount, formWithLockedYear));
+      setPendingSupplyOrderRemovals([]);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 1200);
+    } catch (error) {
+      console.error("Failed to save Supply Order count", error);
+      setSaved(false);
+      setSaveError(
+        error instanceof Error ? error.message : "Supply Order count could not be saved.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+  const renderSupplyOrderCountUpdateButton = (dirty?: boolean) => {
+    if (readOnlyMode || !isEditing) return null;
+    return (
+      <InlineUpdateButton
+        saved={saved && savedSupplyOrderIndex === undefined}
+        saving={saving}
+        disabled={uniqueCodeGateLocked || cfaApprovalGateLocked || saving || !dirty}
+        testId="add-supply-order-count-save"
+        onSave={saveSupplyOrderCount}
+      />
+    );
+  };
+  const confirmValueTypeChange = async (
     patch: Pick<
       FormState,
       "valueCapital" | "valueRevenue" | "valueCapitalSelected" | "valueRevenueSelected"
     >,
-  ) => {
+  ): Promise<boolean> => {
     const nextForm = applyConditionalRules({ ...formWithLockedYear, ...patch });
     const entries = getClearedFieldLabels(
       formWithLockedYear as unknown as Record<string, unknown>,
@@ -3180,12 +3763,17 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     });
     return (
       entries.length === 0 ||
-      window.confirm(getCleanupWarningText("Changing the value basis", [...new Set(entries)]))
+      (await confirmDeletion(
+        getCleanupWarningText("Changing the value basis", [...new Set(entries)]),
+      ))
     );
   };
-  const renderSectionFields = (section: (typeof extraSections)[number]) => (
+  const renderSectionFields = (
+    section: (typeof extraSections)[number],
+    fields = section.fields,
+  ) => (
     <div className="grid grid-cols-1 gap-4">
-      {section.fields.map((field) => {
+      {fields.map((field) => {
         const sectionCfaApprovalLocked =
           cfaApprovalGateLocked && cfaApprovalGatedSectionTitles.has(section.title);
         const renderedField =
@@ -3215,7 +3803,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                       ...field,
                       options: configuredModeOptions,
                     }
-                  : field.key === "gemBiddingMode"
+                  : field.key === "gemBiddingMode" || field.key === "refloatGemBiddingMode"
                     ? {
                         ...field,
                         options: getConfiguredGemBiddingModes(settings.gemBiddingModes),
@@ -3262,9 +3850,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               inputRef={(element) => {
                 quickFieldRefs.current.valueCapital = element;
               }}
-              onChange={(patch) => {
+              onChange={async (patch) => {
                 if (readOnlyMode || uniqueCodeGateLocked || sectionCfaApprovalLocked) return;
-                if (!confirmValueTypeChange(patch)) return;
+                if (!(await confirmValueTypeChange(patch))) return;
                 const nextForm = applyConditionalRules({ ...formWithLockedYear, ...patch });
                 setForm((current) => applyConditionalRules({ ...current, ...patch }));
                 setSupplyOrders((current) =>
@@ -3308,13 +3896,17 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           );
         }
 
-        if (field.key === "gemBiddingMode" && !isYes(formWithLockedYear.gem)) {
+        if (
+          (field.key === "gemBiddingMode" || field.key === "refloatGemBiddingMode") &&
+          !isYes(formWithLockedYear.gem)
+        ) {
           return null;
         }
         if (
           section.title === "Bidding details" &&
           !biddingApplicable &&
-          field.key !== "gemBiddingMode"
+          field.key !== "gemBiddingMode" &&
+          field.key !== "refloatGemBiddingMode"
         ) {
           return null;
         }
@@ -3323,6 +3915,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           field.key === "year" ||
           field.key === "uniqueCode" ||
           field.key === "tenderLive" ||
+          field.key === "refloatTenderLive" ||
           fieldReadOnly ||
           (uniqueCodeGateLocked && field.key !== "division") ||
           sectionCfaApprovalLocked ||
@@ -3336,9 +3929,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           (ifaIsNo && ifaDisabledKeys.includes(field.key)) ||
           (bgIsNo && bgDisabledKeys.includes(field.key)) ||
           (rfpVettingIsNo && rfpVettingDisabledKeys.includes(field.key)) ||
+          (isNo(formWithLockedYear.refloatRfpVetting) &&
+            refloatRfpVettingDisabledKeys.includes(field.key)) ||
           (preBidMeetingIsNo && preBidMeetingDisabledKeys.includes(field.key)) ||
           (!isYes(formWithLockedYear.biddingStageOver) &&
-            biddingStageOverDisabledKeys.includes(field.key)) ||
+            postTcecDisabledKeys.includes(field.key)) ||
+          (!isYes(formWithLockedYear.refloatBiddingStageOver) &&
+            refloatPostTcecDisabledKeys.includes(field.key)) ||
           (refloatIsNo && refloatDisabledKeys.includes(field.key)) ||
           (refloatPreBidMeetingIsNo && refloatPreBidMeetingDisabledKeys.includes(field.key)) ||
           (field.key === "demandCancelled" &&
@@ -3354,6 +3951,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             field={renderedField}
             value={formWithLockedYear[field.key]}
             disabled={dynamicFieldDisabled}
+            compactWidth={section.title === "Bidding details"}
             onChange={(value) => update(field.key, value)}
             inputRef={(element) => {
               quickFieldRefs.current[field.key] = element;
@@ -3399,11 +3997,69 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     </div>
   );
 
-  const save = async (options?: { returnToQuickEntry?: boolean }) => {
+  const ignoredAnomalyWarningStorageKey = `recordkeeper:ignored-entry-anomalies:${activeUser?.id ?? "anonymous"}`;
+  const getAnomalyWarningKey = (warnings: DraftAnomalyWarning[]) =>
+    `${anomalyEntryScopeRef.current}|${warnings
+      .map((warning) =>
+        [
+          warning.block,
+          warning.rule,
+          warning.ruleKey ?? "",
+          warning.previousField,
+          warning.previousDate,
+          warning.laterField,
+          warning.laterDate,
+        ].join("\u001e"),
+      )
+      .sort()
+      .join("\u001f")}`;
+  const isAnomalyWarningIgnored = (warningKey: string) => {
+    if (typeof window === "undefined") return false;
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(ignoredAnomalyWarningStorageKey) ?? "[]",
+      );
+      return Array.isArray(stored) && stored.includes(warningKey);
+    } catch {
+      return false;
+    }
+  };
+  const rememberIgnoredAnomalyWarning = (warningKey: string) => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = JSON.parse(
+        window.localStorage.getItem(ignoredAnomalyWarningStorageKey) ?? "[]",
+      );
+      const keys = Array.isArray(stored)
+        ? stored.filter((item): item is string => typeof item === "string")
+        : [];
+      if (!keys.includes(warningKey)) keys.push(warningKey);
+      window.localStorage.setItem(
+        ignoredAnomalyWarningStorageKey,
+        JSON.stringify(keys.slice(-200)),
+      );
+    } catch {
+      // Saving remains available even when browser storage is unavailable.
+    }
+  };
+
+  const save = async (options?: {
+    returnToQuickEntry?: boolean;
+    ignoreAnomalyWarningKey?: string;
+    skipStageWarning?: boolean;
+    supplyOrderIndex?: number;
+  }) => {
     if (readOnlyMode) return;
+    const scopedSupplyOrderIndex = options?.supplyOrderIndex ?? -1;
+    const isScopedSupplyOrderSave = scopedSupplyOrderIndex >= 0;
+    if (isScopedSupplyOrderSave && !editingFile) return;
+    setSaveError(undefined);
+    setSaving(true);
+    setSavedSupplyOrderIndex(undefined);
     let formForSave = formWithLockedYear;
-    if (!hasFilledValue(formForSave.uniqueCode)) {
+    if (!isScopedSupplyOrderSave && !hasFilledValue(formForSave.uniqueCode)) {
       if (!selectedDivisionName) {
+        setSaving(false);
         alert("Select Division before saving file details.");
         return;
       }
@@ -3414,6 +4070,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           divisionId: selectedDivisionId || undefined,
         });
         if (!hasFilledValue(uniqueCode)) {
+          setSaving(false);
           alert("Unique code could not be generated. Please try again.");
           return;
         }
@@ -3421,127 +4078,209 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         formForSave = { ...formForSave, uniqueCode };
       } catch (error) {
         console.error(error);
+        setSaving(false);
         alert("Unique code could not be generated. Please check connection and try again.");
         return;
       }
     }
-    const requestedSupplyOrderCount = clampSupplyOrderCount(formForSave.noOfSo);
-    const requestedSupplyOrders = resizeSupplyOrders(supplyOrders, requestedSupplyOrderCount);
+    const savedSupplyOrderCount = clampSupplyOrderCount(savedFormForLocks.noOfSo);
+    if (isScopedSupplyOrderSave && scopedSupplyOrderIndex >= savedSupplyOrderCount) {
+      setSaving(false);
+      alert("Save the updated No. of S.O. before saving this new Supply Order.");
+      return;
+    }
+    const requestedSupplyOrderCount = isScopedSupplyOrderSave
+      ? savedSupplyOrderCount
+      : clampSupplyOrderCount(formForSave.noOfSo);
+    const currentSupplyOrders = resizeSupplyOrders(
+      supplyOrders,
+      clampSupplyOrderCount(formWithLockedYear.noOfSo),
+      formWithLockedYear,
+    );
+    const requestedSupplyOrders = isScopedSupplyOrderSave
+      ? resizeSupplyOrders(
+          savedSupplyOrdersForLocks,
+          requestedSupplyOrderCount,
+          savedFormForLocks,
+        ).map((order, index) =>
+          index === scopedSupplyOrderIndex ? (currentSupplyOrders[index] ?? order) : order,
+        )
+      : resizeSupplyOrders(supplyOrders, requestedSupplyOrderCount);
+    const supplyOrderForm = isScopedSupplyOrderSave ? savedFormForLocks : formForSave;
+    const supplyOrderCurrentMilestone = isScopedSupplyOrderSave
+      ? (editingFile?.currentMilestone ?? "")
+      : currentMilestone;
+    const supplyOrderCompletedMilestones = isScopedSupplyOrderSave
+      ? savedCompletedMilestonesForLocks
+      : completedMilestones;
     const useSupplyOrderMilestonesForSave = shouldUseSupplyOrderMilestones(
       requestedSupplyOrders,
-      currentMilestone,
-      completedMilestones,
+      supplyOrderCurrentMilestone,
+      supplyOrderCompletedMilestones,
     );
     const ordersWithMainMilestoneBridge = useSupplyOrderMilestonesForSave
-      ? bridgeMainCurrentMilestoneToSupplyOrder(requestedSupplyOrders, currentMilestone)
+      ? bridgeMainCurrentMilestoneToSupplyOrder(requestedSupplyOrders, supplyOrderCurrentMilestone)
       : requestedSupplyOrders;
     const cleanedRequestedSupplyOrders = cleanSupplyOrderRows(
       ordersWithMainMilestoneBridge,
-      formForSave,
+      supplyOrderForm,
     );
-    const legacyBgCleanup = (editingFile?.supplyOrders ?? []).flatMap((savedOrder, index) => {
-      const currentOrder = requestedSupplyOrders[index] ?? emptySupplyOrder;
-      const normalizedSavedOrder = cleanSupplyOrderRows(
-        [{ ...emptySupplyOrder, ...savedOrder }],
-        formForSave,
-      )[0];
-      const labels = getClearedBgCoverageFieldLabels(savedOrder, normalizedSavedOrder).filter(
-        (label) =>
-          !confirmedBgCleanupOrdersRef.current.has(`${editingFile?.id ?? "new"}:${index}:${label}`),
-      );
-      return labels.length
-        ? [`${getSupplyOrderDisplayTitle(currentOrder, index)}: ${labels.join(", ")}`]
-        : [];
-    });
+    const legacyBgCleanup = isScopedSupplyOrderSave
+      ? []
+      : (editingFile?.supplyOrders ?? []).flatMap((savedOrder, index) => {
+          const currentOrder = requestedSupplyOrders[index] ?? emptySupplyOrder;
+          const normalizedSavedOrder = cleanSupplyOrderRows(
+            [{ ...emptySupplyOrder, ...savedOrder }],
+            formForSave,
+          )[0];
+          const labels = getClearedBgCoverageFieldLabels(savedOrder, normalizedSavedOrder).filter(
+            (label) =>
+              !confirmedBgCleanupOrdersRef.current.has(
+                `${editingFile?.id ?? "new"}:${index}:${label}`,
+              ),
+          );
+          return labels.length
+            ? [`${getSupplyOrderDisplayTitle(currentOrder, index)}: ${labels.join(", ")}`]
+            : [];
+        });
     if (
       legacyBgCleanup.length &&
-      !window.confirm(
-        `This file has previously saved BG details that do not apply to its current selections. Saving will clear them:\n${legacyBgCleanup.join("\n")}\n\nContinue?`,
-      )
+      !(await confirmDeletion(
+        `These previously saved BG details do not apply to the current selections and will be cleared on save:\n${legacyBgCleanup.join("\n")}`,
+      ))
     ) {
+      setSaving(false);
       return;
     }
-    const cleanedSupplyOrders = cleanedRequestedSupplyOrders.filter(hasMeaningfulSupplyOrderData);
-    if (isYes(formForSave.demandCancelled) && hasPlacedSupplyOrderRows(cleanedSupplyOrders)) {
+    const cleanedSupplyOrders = cleanedRequestedSupplyOrders;
+    if (isYes(supplyOrderForm.demandCancelled) && hasPlacedSupplyOrderRows(cleanedSupplyOrders)) {
       alert(
         "Demand can be cancelled only before any Supply Order is placed. Use S.O. cancelled for placed Supply Orders.",
       );
+      setSaving(false);
       return;
     }
-    const stageAutofilledSupplyOrders = autoFillStageDeliveriesForSave(
-      cleanedSupplyOrders,
-      formForSave,
+    const stageAutofilledSupplyOrders = isScopedSupplyOrderSave
+      ? (() => {
+          const savedRows = cleanSupplyOrderRows(
+            resizeSupplyOrders(savedSupplyOrdersForLocks, savedSupplyOrderCount, savedFormForLocks),
+            savedFormForLocks,
+          );
+          const targetRow =
+            cleanedRequestedSupplyOrders[scopedSupplyOrderIndex] ?? emptySupplyOrder;
+          const targetAfterAutofill = autoFillStageDeliveriesForSave([targetRow], supplyOrderForm, [
+            savedRows[scopedSupplyOrderIndex],
+          ])[0];
+          return savedRows.map((row, index) =>
+            index === scopedSupplyOrderIndex ? targetAfterAutofill : row,
+          );
+        })()
+      : autoFillStageDeliveriesForSave(
+          cleanedSupplyOrders,
+          supplyOrderForm,
+          savedSupplyOrdersForLocks,
+        );
+    const supplyOrdersForSave = isScopedSupplyOrderSave
+      ? useSupplyOrderMilestonesForSave
+        ? stageAutofilledSupplyOrders
+        : stageAutofilledSupplyOrders.map((order, index) =>
+            index === scopedSupplyOrderIndex ? clearSupplyOrderMilestones([order])[0] : order,
+          )
+      : useSupplyOrderMilestonesForSave
+        ? stageAutofilledSupplyOrders
+        : clearSupplyOrderMilestones(stageAutofilledSupplyOrders);
+    const securityWarrantyReminderOrders = getNewlyPlacedSecurityWarrantyOrderNumbers(
+      supplyOrdersForSave,
+      supplyOrderForm,
       savedSupplyOrdersForLocks,
     );
-    const supplyOrdersForSave = useSupplyOrderMilestonesForSave
-      ? stageAutofilledSupplyOrders
-      : clearSupplyOrderMilestones(stageAutofilledSupplyOrders);
+    const showSecurityWarrantyReminder = () => {
+      if (!securityWarrantyReminderOrders.length) return;
+      const orderLabels = securityWarrantyReminderOrders
+        .map((index) => `Supply Order ${index}`)
+        .join(", ");
+      window.alert(
+        `${orderLabels} saved. Please review the Security/Warranty requirements and update applicable fields, if required.`,
+      );
+    };
     const supplyOrderMilestoneProgressForSave = getSupplyOrderMilestoneProgress(
       milestoneOptions,
       supplyOrdersForSave,
-      formForSave,
+      supplyOrderForm,
       useSupplyOrderMilestonesForSave,
-      currentMilestone,
+      supplyOrderCurrentMilestone,
     );
     const completedMilestonesForSave = getCompletedMilestonesForSave(
       fileLevelMilestoneOptions,
       fileLevelApplicableMilestones,
-      completedMilestones,
-      formForSave,
+      supplyOrderCompletedMilestones,
+      supplyOrderForm,
       supplyOrderMilestoneProgressForSave,
     );
     const currentMilestoneForSave =
-      useSupplyOrderMilestonesForSave && getSupplyOrderMilestoneByName(currentMilestone)
+      useSupplyOrderMilestonesForSave && getSupplyOrderMilestoneByName(supplyOrderCurrentMilestone)
         ? ""
-        : currentMilestone;
-    const payload = {
-      ...toFilePayload(applyConditionalRules(formForSave)),
-      ...firstSupplyOrderMirrorPatch(cleanedSupplyOrders),
-      noOfSo: String(requestedSupplyOrderCount),
-      supplyOrders: supplyOrdersForSave,
-      remarks: cleanFileRemarks(fileRemarks) ?? [],
-      markers: cleanFileMarkers(fileMarkers) ?? [],
-      activeYears,
-      bqBasis: biddingApplicable ? formForSave.bqBasis : "",
-      bqFirms:
-        biddingApplicable && formForSave.bqBasis === "Firm"
-          ? (cleanFirmRows(firmDetails.bqFirms) ?? [])
-          : [],
-      invitedFirms: biddingApplicable ? (cleanFirmRows(firmDetails.invitedFirms) ?? []) : [],
-      bidderFirms: biddingApplicable ? (cleanFirmRows(firmDetails.bidderFirms) ?? []) : [],
-      currentMilestone: currentMilestoneForSave || null,
-      completedMilestones: completedMilestonesForSave,
-    };
-    const stageWarnings = getStageDeliveryWarnings(
-      supplyOrdersForSave,
-      formForSave,
-      completedMilestonesForSave,
+        : supplyOrderCurrentMilestone;
+    const scopedSupplyOrder =
+      supplyOrdersForSave[scopedSupplyOrderIndex] ?? (emptySupplyOrder as SupplyOrderDetail);
+    const payload = isScopedSupplyOrderSave
+      ? {
+          supplyOrderIndex: scopedSupplyOrderIndex,
+          supplyOrder: scopedSupplyOrder,
+        }
+      : {
+          ...toFilePayload(applyConditionalRules(formForSave)),
+          ...firstSupplyOrderMirrorPatch(cleanedSupplyOrders),
+          noOfSo: String(requestedSupplyOrderCount),
+          supplyOrders: supplyOrdersForSave,
+          remarks: cleanFileRemarks(fileRemarks) ?? [],
+          markers: cleanFileMarkers(fileMarkers) ?? [],
+          activeYears,
+          bqBasis: biddingApplicable ? formForSave.bqBasis : "",
+          bqFirms:
+            biddingApplicable && formForSave.bqBasis === "Firm"
+              ? (cleanFirmRows(firmDetails.bqFirms) ?? [])
+              : [],
+          invitedFirms: biddingApplicable ? (cleanFirmRows(firmDetails.invitedFirms) ?? []) : [],
+          bidderFirms: biddingApplicable ? (cleanFirmRows(firmDetails.bidderFirms) ?? []) : [],
+          currentMilestone: currentMilestoneForSave || null,
+          completedMilestones: completedMilestonesForSave,
+        };
+    const anomalyPayload = isScopedSupplyOrderSave
+      ? { ...payload, supplyOrders: supplyOrdersForSave }
+      : payload;
+    const validationSupplyOrders = isScopedSupplyOrderSave
+      ? [supplyOrdersForSave[scopedSupplyOrderIndex] ?? emptySupplyOrder]
+      : supplyOrdersForSave;
+    const stageWarnings = getSupplyOrderSaveWarnings(
+      validationSupplyOrders,
+      supplyOrderForm,
+      isScopedSupplyOrderSave ? savedCompletedMilestonesForLocks : completedMilestonesForSave,
     );
-    if (stageWarnings.length) {
-      const confirmed = window.confirm(
-        [
-          "Please review these stage delivery/payment warnings before saving:",
-          "",
-          ...stageWarnings,
-          "",
-          "Do you still want to save?",
-        ].join("\n"),
-      );
-      if (!confirmed) return;
+    if (stageWarnings.length && !options?.skipStageWarning) {
+      pendingStageWarningSaveRef.current = options
+        ? {
+            returnToQuickEntry: options.returnToQuickEntry,
+            supplyOrderIndex: options.supplyOrderIndex,
+          }
+        : {};
+      setSaving(false);
+      setStageWarningPrompt(stageWarnings);
+      return;
     }
     const supplyOrderMilestoneErrors = getSupplyOrderMilestoneErrors(
-      supplyOrdersForSave,
-      formForSave,
+      validationSupplyOrders,
+      supplyOrderForm,
     );
     const supplyOrderTabCompletionErrors = getSupplyOrderTabCompletionErrors(
-      supplyOrdersForSave,
-      formForSave,
+      validationSupplyOrders,
+      supplyOrderForm,
     );
-    const supplyOrderDateChronologyErrors = getSupplyOrderDateChronologyErrors(supplyOrdersForSave);
+    const supplyOrderDateChronologyErrors =
+      getSupplyOrderDateChronologyErrors(validationSupplyOrders);
     const paymentBlockedByBgErrors = getPaymentBlockedByBgErrors(
-      supplyOrdersForSave,
-      formForSave,
-      savedSupplyOrdersForLocks,
+      validationSupplyOrders,
+      supplyOrderForm,
     );
     const milestonesForValidation = fileLevelMilestoneOptions;
     const milestoneErrors = [
@@ -3549,10 +4288,12 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ...supplyOrderDateChronologyErrors,
       ...supplyOrderMilestoneErrors,
       ...paymentBlockedByBgErrors,
-      ...validateMilestoneCompletionConsistency(
-        payload as Partial<FileRecord>,
-        milestonesForValidation,
-      ),
+      ...(isScopedSupplyOrderSave
+        ? []
+        : validateMilestoneCompletionConsistency(
+            payload as Partial<FileRecord>,
+            milestonesForValidation,
+          )),
     ];
     if (milestoneErrors.length) {
       const targetMilestone =
@@ -3565,75 +4306,192 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         hasSupplyOrderMilestoneErrors ? "Supply order and payment" : "Milestones",
       );
       setFocusedMilestone(hasSupplyOrderMilestoneErrors ? "" : targetMilestone);
-      if (options?.returnToQuickEntry) {
-        window.setTimeout(() => {
-          alert(
-            [
-              "Milestone status needs to be updated before this Quick Entry can be saved.",
-              "",
-              ...milestoneErrors,
-              "",
-              hasSupplyOrderMilestoneErrors
-                ? "Please update the local Supply order and payment status, then click Update."
-                : "Please update the Milestones section, then click Update.",
-            ].join("\n"),
-          );
-        }, 100);
-        return;
-      }
-      window.setTimeout(() => {
-        alert(["Please fix milestone status before saving:", ...milestoneErrors].join("\n"));
-      }, 100);
+      setSaving(false);
+      setMilestoneErrorPrompt(milestoneErrors);
       return;
     }
-    if (editingFile) {
-      const updatedFile = await store.updateFile(editingFile.id, payload as Partial<FileRecord>);
-      confirmedBgCleanupOrdersRef.current.clear();
-      setLoadedFile(updatedFile);
-      setForm(applyConditionalRules(createFormFromFile(updatedFile, effectiveFinancialYear)));
-      setFirmDetails(createFirmDetailsFromFile(updatedFile));
-      setSupplyOrders(createSupplyOrdersFromFile(updatedFile));
-      setFileRemarks(createRemarksFromFile(updatedFile));
-      setFileMarkers(createMarkersFromFile(updatedFile));
-      setCurrentMilestone(updatedFile.currentMilestone ?? "");
-      setCompletedMilestones(normalizeCompletedMilestones(updatedFile.completedMilestones));
-      setActiveYears(
-        normalizeSelectableActiveYears(
-          normalizeActiveYears(updatedFile, effectiveFinancialYear),
-          getAddFileYearOptions(
+    try {
+      const anomalyResult = await store.preflightFileAnomalies(
+        anomalyPayload as Partial<FileRecord>,
+        editingFile?.id,
+      );
+      const anomalyWarnings = anomalyResult.rows;
+      if (anomalyWarnings.length) {
+        const warningKey = getAnomalyWarningKey(anomalyWarnings);
+        const ignoredWarning =
+          options?.ignoreAnomalyWarningKey === warningKey || isAnomalyWarningIgnored(warningKey);
+        if (!ignoredWarning) {
+          pendingAnomalySaveRef.current = {
+            options: options
+              ? {
+                  returnToQuickEntry: options.returnToQuickEntry,
+                  skipStageWarning: options.skipStageWarning,
+                  supplyOrderIndex: options.supplyOrderIndex,
+                }
+              : undefined,
+            warningKey,
+          };
+          setSaving(false);
+          setAnomalyWarningPrompt({ key: warningKey, warnings: anomalyWarnings });
+          return;
+        }
+        if (options?.ignoreAnomalyWarningKey === warningKey) {
+          rememberIgnoredAnomalyWarning(warningKey);
+        }
+      }
+    } catch (error) {
+      // Anomaly preflight is advisory. A temporary evaluator failure must not
+      // change the existing save behaviour.
+      console.error("Anomaly preflight failed; continuing with save.", error);
+    }
+    try {
+      if (editingFile) {
+        const updatedFile = isScopedSupplyOrderSave
+          ? await store.updateSupplyOrder(
+              editingFile.id,
+              scopedSupplyOrderIndex,
+              scopedSupplyOrder,
+            )
+          : await store.updateFile(editingFile.id, payload as Partial<FileRecord>);
+        confirmedBgCleanupOrdersRef.current.clear();
+        setLoadedFile(updatedFile);
+        if (isScopedSupplyOrderSave) {
+          const savedOrdersAfterUpdate = createSupplyOrdersFromFile(updatedFile);
+          const savedIndex = scopedSupplyOrderIndex;
+          setSupplyOrders((current) => {
+            const currentCount = clampSupplyOrderCount(formWithLockedYear.noOfSo);
+            const next = resizeSupplyOrders(current, currentCount, formWithLockedYear);
+            const updatedOrder = savedOrdersAfterUpdate[savedIndex];
+            if (updatedOrder) next[savedIndex] = updatedOrder;
+            return next;
+          });
+          setPaidStageUnfreezeKeys(
+            (current) => new Set([...current].filter((key) => !key.startsWith(`${savedIndex}:`))),
+          );
+          setPaidAdvanceUnfreezeKeys((current) => {
+            const next = new Set(current);
+            next.delete(savedIndex);
+            return next;
+          });
+          setSaved(true);
+          setSavedSupplyOrderIndex(savedIndex);
+          showSecurityWarrantyReminder();
+          window.setTimeout(() => {
+            setSaved(false);
+            setSavedSupplyOrderIndex((current) => (current === savedIndex ? undefined : current));
+          }, 1200);
+          return;
+        }
+        setForm(applyConditionalRules(createFormFromFile(updatedFile, effectiveFinancialYear)));
+        setFirmDetails(createFirmDetailsFromFile(updatedFile));
+        setSupplyOrders(createSupplyOrdersFromFile(updatedFile));
+        setFileRemarks(createRemarksFromFile(updatedFile));
+        setFileMarkers(createMarkersFromFile(updatedFile));
+        setCurrentMilestone(updatedFile.currentMilestone ?? "");
+        setCompletedMilestones(normalizeCompletedMilestones(updatedFile.completedMilestones));
+        setActiveYears(
+          normalizeSelectableActiveYears(
+            normalizeActiveYears(updatedFile, effectiveFinancialYear),
+            getAddFileYearOptions(
+              effectiveFinancialYear,
+              settings.financialYears,
+              settings.yearSelectionLocked,
+            ),
             effectiveFinancialYear,
-            settings.financialYears,
             settings.yearSelectionLocked,
           ),
-          effectiveFinancialYear,
-          settings.yearSelectionLocked,
-        ),
-      );
-      setUnlockedSections(new Set());
-      setPaidStageUnfreezeKeys(new Set());
-      setPaidAdvanceUnfreezeKeys(new Set());
-      setSaved(true);
-      if (options?.returnToQuickEntry) {
-        setTimeout(() => {
-          navigate({ to: "/quick-entry" });
-        }, 250);
+        );
+        setUnlockedSections(new Set());
+        setPaidStageUnfreezeKeys(new Set());
+        setPaidAdvanceUnfreezeKeys(new Set());
+        setSaved(true);
+        showSecurityWarrantyReminder();
+        if (options?.returnToQuickEntry) {
+          setTimeout(() => {
+            navigate({ to: "/quick-entry" });
+          }, 250);
+          return;
+        }
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        setTimeout(() => setSaved(false), 1200);
         return;
       }
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      setTimeout(() => setSaved(false), 1200);
-      return;
-    } else {
-      await store.addFile(payload as Omit<FileRecord, "id" | "createdAt">);
+
+      const createdFile = await store.addFile(payload as Omit<FileRecord, "id" | "createdAt">);
       confirmedBgCleanupOrdersRef.current.clear();
+      setSaved(true);
+      showSecurityWarrantyReminder();
+      setTimeout(() => {
+        if (options?.returnToQuickEntry) {
+          navigate({ to: "/quick-entry" });
+          return;
+        }
+        navigate({
+          to: "/search",
+          search: {
+            dashboardFilter: `fileIds:${createdFile.id}`,
+            division: undefined,
+            selectedYear: ALL_FILES_YEAR,
+          },
+        });
+      }, 700);
+    } catch (error) {
+      console.error("Failed to save file", error);
+      setSaved(false);
+      setSavedSupplyOrderIndex(undefined);
+      setSaveError(error instanceof Error ? error.message : "File could not be saved.");
+    } finally {
+      setSaving(false);
     }
-    setSaved(true);
-    setTimeout(() => {
-      if (options?.returnToQuickEntry) {
-        navigate({ to: "/quick-entry" });
-        return;
-      }
-      navigate({ to: "/search", search: { dashboardFilter: undefined, division: undefined } });
-    }, 700);
+  };
+
+  const dismissAnomalyWarning = () => {
+    pendingAnomalySaveRef.current = undefined;
+    setAnomalyWarningPrompt(undefined);
+  };
+
+  const dismissMilestoneError = () => {
+    setMilestoneErrorPrompt(undefined);
+  };
+
+  const showStageCountAdvisory = (message: string) =>
+    new Promise<void>((resolve) => {
+      stageCountAdvisoryResolveRef.current = resolve;
+      setStageCountAdvisoryPrompt(message);
+    });
+
+  const dismissStageCountAdvisory = () => {
+    const resolve = stageCountAdvisoryResolveRef.current;
+    stageCountAdvisoryResolveRef.current = null;
+    setStageCountAdvisoryPrompt(undefined);
+    resolve?.();
+  };
+
+  const cancelStageWarningSave = () => {
+    pendingStageWarningSaveRef.current = undefined;
+    setStageWarningPrompt(undefined);
+  };
+
+  const continueStageWarningSave = () => {
+    const pending = pendingStageWarningSaveRef.current;
+    pendingStageWarningSaveRef.current = undefined;
+    setStageWarningPrompt(undefined);
+    void save({ ...(pending ?? {}), skipStageWarning: true });
+  };
+
+  const ignoreAnomalyWarningAndSave = () => {
+    const prompt = anomalyWarningPrompt;
+    const pending = pendingAnomalySaveRef.current;
+    if (!prompt || !pending || pending.warningKey !== prompt.key) {
+      dismissAnomalyWarning();
+      return;
+    }
+    pendingAnomalySaveRef.current = undefined;
+    setAnomalyWarningPrompt(undefined);
+    void save({
+      ...(pending.options ?? {}),
+      ignoreAnomalyWarningKey: prompt.key,
+    });
   };
 
   const handleQuickEntrySaveKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -3667,9 +4525,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (!editingFile) return;
     const label =
       editingFile.uniqueCode || editingFile.imms || editingFile.demandDescription || "this file";
-    const deletionPassword = await promptDeletionPassword(`delete ${label}`);
+    const deletionPassword = await promptDeletionPassword(`archive ${label}`);
     if (deletionPassword === null) return;
-    store.deleteFile(editingFile.id, deletionPassword);
+    await store.deleteFile(editingFile.id, deletionPassword);
+    clearUnsavedChanges("add-file-editor");
     navigate({ to: "/search", search: { dashboardFilter: undefined, division: undefined } });
   };
 
@@ -3711,8 +4570,92 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
 
   return (
     <div className="add-file-page w-full" onKeyDownCapture={handleQuickEntrySaveKey}>
-      <div className="relative z-10 flex flex-col overflow-visible rounded-xl border border-border/80 bg-card shadow-[var(--shadow-card)]">
-        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-secondary px-4 py-3">
+      {confirmationDialog}
+      <Dialog
+        open={Boolean(supplyOrderRemovalPrompt)}
+        onOpenChange={(open) => {
+          if (!open) setSupplyOrderRemovalPrompt(undefined);
+        }}
+      >
+        <DialogContent className="max-h-[min(90vh,42rem)] w-[min(44rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Select Supply Order(s) to remove</DialogTitle>
+            <DialogDescription>
+              Select exactly {supplyOrderRemovalPrompt?.currentCount ?? 0} -{" "}
+              {supplyOrderRemovalPrompt?.targetCount ?? 0} Supply Order(s). The selected records
+              will be removed after confirmation and password verification.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[min(52vh,26rem)] space-y-2 overflow-y-auto rounded-md border border-warning/30 bg-warning/5 p-3">
+            {supplyOrderRemovalPrompt
+              ? Array.from({ length: supplyOrderRemovalPrompt.currentCount }, (_, index) => {
+                  const order = supplyOrders[index] ?? emptySupplyOrder;
+                  const summary = getSupplyOrderDisplaySummary(
+                    order,
+                    form.fileType,
+                    form.fileTypeGroup,
+                  );
+                  const selected = supplyOrderRemovalPrompt.selectedIndexes.includes(index);
+                  return (
+                    <label
+                      key={"supply-order-remove-" + (order.id ?? "draft") + "-" + index}
+                      className={
+                        "flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2 transition-colors " +
+                        (selected
+                          ? "border-destructive/40 bg-destructive/5"
+                          : "border-border bg-background hover:bg-accent/50")
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleSupplyOrderRemoval(index)}
+                        data-testid={"add-supply-order-remove-" + index}
+                        className="mt-1 size-4 accent-destructive"
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold">
+                          {getSupplyOrderDisplayTitle(order, index)}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {summary || "No details entered"}
+                        </span>
+                      </span>
+                    </label>
+                  );
+                })
+              : null}
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Selected: {supplyOrderRemovalPrompt?.selectedIndexes.length ?? 0} /{" "}
+            {(supplyOrderRemovalPrompt?.currentCount ?? 0) -
+              (supplyOrderRemovalPrompt?.targetCount ?? 0)}
+          </div>
+          <DialogFooter className="gap-2 sm:space-x-0">
+            <button
+              type="button"
+              onClick={() => setSupplyOrderRemovalPrompt(undefined)}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmSupplyOrderRemovalSelection}
+              disabled={
+                !supplyOrderRemovalPrompt ||
+                supplyOrderRemovalPrompt.selectedIndexes.length !==
+                  supplyOrderRemovalPrompt.currentCount - supplyOrderRemovalPrompt.targetCount
+              }
+              className="inline-flex h-9 items-center justify-center rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Continue
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <div className="relative z-10 flex flex-col overflow-visible rounded-xl border border-border/80 border-l-4 border-l-primary/45 bg-card shadow-[var(--shadow-card)]">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border bg-secondary px-4 py-3 text-foreground">
           <div>
             <div className="text-base font-semibold">{addEditRibbonLines.demandDescription}</div>
             <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
@@ -3771,7 +4714,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           {activeBoardSection === "Milestones" && (
             <MilestonesBlock
               milestones={milestoneOptions}
-              applicableMilestones={applicableMilestones}
+              applicableMilestones={
+                useSupplyOrderMilestones ? fileLevelApplicableMilestones : applicableMilestones
+              }
               currentMilestone={currentMilestone}
               completedMilestones={completedMilestones}
               autoCompletedMilestones={getAutoCompletedMilestones(
@@ -3782,21 +4727,38 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               lockedCurrentMilestone={editingFile?.currentMilestone ?? ""}
               lockedCompletedMilestones={savedCompletedMilestonesForLocks}
               supplyOrderMilestoneProgress={supplyOrderMilestoneProgress}
+              showSupplyOrderMilestones={useSupplyOrderMilestones}
+              supplyOrders={supplyOrderMilestoneDisplayRows}
+              lockedSupplyOrders={savedSupplyOrdersForLocks}
+              supplyOrderMilestoneProgressByOrder={supplyOrderMilestoneProgressByOrder}
+              supplyOrderMilestoneForm={formWithLockedYear}
               milestoneDisplayLabels={mainMilestoneDisplayLabels}
               inactiveMilestones={inactiveMainMilestones}
               focusedMilestone={focusedMilestone}
               disabled={readOnlyMode || uniqueCodeGateLocked}
               lockFilledFields={milestonesLocked}
               fileClosureDate={formWithLockedYear.fileClosureDate}
-              lockControl={renderSectionUnlockButton("Milestones")}
-              renderUpdateButton={() =>
-                renderSectionUpdateButton({
-                  testId: null,
-                  dirty: isSectionDirty("Milestones"),
-                })
-              }
+              lockControl={renderSectionUnlockButton(
+                "Milestones",
+                renderActiveSectionUpdateButton(),
+              )}
               onCurrentChange={setCurrentMilestone}
               onCompletedChange={setCompletedMilestones}
+              onSupplyOrderCurrentChange={(index, milestone) => {
+                const hasOrderCurrent = supplyOrders.some((order) =>
+                  hasFilledValue(order.currentMilestone),
+                );
+                if (
+                  !hasOrderCurrent &&
+                  index === 0 &&
+                  normalizeMilestoneName(currentMilestone) === normalizeMilestoneName(milestone)
+                ) {
+                  setCurrentMilestone("");
+                  return;
+                }
+                updateSupplyOrderCurrentMilestone(index, milestone);
+              }}
+              onSupplyOrderCompletedChange={updateSupplyOrderCompletedMilestones}
               onFileClosureDateChange={(value) => update("fileClosureDate", value)}
             />
           )}
@@ -3807,10 +4769,14 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               id={sectionId(activeSection.title)}
               className={sectionBlockCls(activeSectionIndex)}
             >
-              <h3 className="text-sm font-semibold border-b border-border pb-2 mb-4 flex items-center gap-2">
-                <span className={sectionStripeCls(activeSectionIndex)} />
+              <h3 className="-mx-2 -mt-2 mb-4 flex items-center gap-2 rounded-md border-b border-border bg-secondary px-3 py-2 text-base font-semibold">
                 <span className="min-w-0 flex-1">{activeSection.title}</span>
-                {renderSectionUnlockButton(activeSection.title)}
+                {renderSectionUnlockButton(
+                  activeSection.title,
+                  activeSection.title === "Supply order and payment"
+                    ? undefined
+                    : renderActiveSectionUpdateButton(),
+                )}
               </h3>
               {activeSection.title === "Firm details" ? (
                 <FirmDetailsBlock
@@ -3827,7 +4793,6 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onChange={updateFirmDetail}
                   onPatch={patchFirmDetail}
                   onDelete={deleteFirmDetail}
-                  onDeleteSelected={deleteSelectedFirmDetails}
                 />
               ) : activeSection.title === "File Markers" ? (
                 <FileMarkersBlock
@@ -3839,6 +4804,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onAdd={addMarker}
                   onChange={updateMarker}
                   onDelete={deleteMarker}
+                  savedMarkerIds={new Set((editingFile?.markers ?? []).map((marker) => marker.id))}
                 />
               ) : activeSection.title === "Supply order and payment" ? (
                 <SupplyOrdersBlock
@@ -3863,7 +4829,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                     quickFocus && activeSection.title === "Supply order and payment",
                   )}
                   focusTarget={focusTarget}
-                  renderUpdateButton={renderLocalUpdateButton}
+                  renderSupplyOrderCountUpdateButton={renderSupplyOrderCountUpdateButton}
+                  renderSupplyOrderUpdateButton={renderSupplyOrderUpdateButton}
+                  confirmDeletion={confirmDeletion}
                   onCountChange={
                     supplyOrdersLocked && hasFileValueForLock(savedFormForLocks, "noOfSo")
                       ? () => undefined
@@ -3871,6 +4839,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   }
                   onOrderChange={updateSupplyOrder}
                   onOrderBillReturnsChange={updateSupplyOrderBillReturns}
+                  onDeleteSupplementaryBill={deleteSupplementaryBill}
+                  onDeleteBillReturnCycle={deleteBillReturnCycle}
                   onOrderPatch={patchSupplyOrder}
                   onOrderCurrentMilestoneChange={updateSupplyOrderCurrentMilestone}
                   onOrderCompletedMilestonesChange={updateSupplyOrderCompletedMilestones}
@@ -3894,40 +4864,55 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                       onChange={setActiveYears}
                     />
                   ) : null}
-                  {renderSectionFields(activeSection)}
+                  {activeSection.title === "Bidding details" ? (
+                    <div className="space-y-4">
+                      <div
+                        className="flex flex-wrap items-center gap-2 rounded-xl border border-border/80 bg-secondary/50 p-2"
+                        role="tablist"
+                        aria-label="Bidding cycle"
+                      >
+                        {(
+                          [
+                            ["bidding", "Bidding"],
+                            ["refloat", "Refloat bidding"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <button
+                            key={key}
+                            type="button"
+                            role="tab"
+                            aria-selected={activeBiddingTab === key}
+                            data-testid={`add-bidding-tab-${key}`}
+                            onClick={() => setActiveBiddingTab(key)}
+                            className={
+                              "inline-flex h-9 items-center rounded-lg border px-3 text-sm font-semibold transition-colors " +
+                              (activeBiddingTab === key
+                                ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                                : "border-border bg-card text-foreground hover:bg-accent")
+                            }
+                          >
+                            {label}
+                          </button>
+                        ))}
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          Select a bidding cycle to view its fields.
+                        </span>
+                      </div>
+                      {renderSectionFields(
+                        activeSection,
+                        activeSection.fields.filter((field) =>
+                          (activeBiddingTab === "bidding"
+                            ? biddingTabFieldKeys
+                            : refloatBiddingTabFieldKeys
+                          ).has(field.key),
+                        ),
+                      )}
+                    </div>
+                  ) : (
+                    renderSectionFields(activeSection)
+                  )}
                 </>
               )}
-              {activeSection.title !== "File Markers" ? (
-                <SectionRemarks
-                  sectionTitle={activeSection.title}
-                  remarks={fileRemarks.filter((remark) => remark.section === activeSection.title)}
-                  onAdd={() => addRemark(activeSection.title)}
-                  onChange={updateRemark}
-                  onDateChange={updateRemarkDate}
-                  onDelete={deleteRemark}
-                  disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
-                  saveControl={
-                    !readOnlyMode && !activeSectionCfaApprovalLocked ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          save({
-                            returnToQuickEntry: Boolean(quickFocus || returnToQuickEntry),
-                          })
-                        }
-                        disabled={
-                          editingFile
-                            ? uniqueCodeGateLocked || !isSectionRemarksDirty(activeSection.title)
-                            : !fileRemarks.some((remark) => remark.section === activeSection.title)
-                        }
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        <Save className="size-3.5" /> {saved ? "Saved" : "Save remarks"}
-                      </button>
-                    ) : undefined
-                  }
-                />
-              ) : null}
               {!isEditing && !readOnlyMode ? (
                 <div className="mt-4 flex justify-end border-t border-border/60 pt-4">
                   <button
@@ -3938,49 +4923,82 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                       })
                     }
                     data-testid="add-save-file-details"
+                    disabled={saving}
                     className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    <Save className="size-4" /> {saved ? "Saved" : "Save"}
+                    <Save className="size-4" /> {saving ? "Saving…" : saved ? "Saved" : "Save"}
                   </button>
                 </div>
               ) : null}
-              {editingFile && activeSection.title !== "File Markers" ? (
-                <SectionMessages
-                  fileId={editingFile.id}
-                  sectionTitle={activeSection.title}
-                  messages={activeSectionMessages}
-                  activeUserId={activeUser?.id}
-                  activeUserRole={activeUser?.role}
-                  activeUser={activeUser}
-                  fileDivisionId={editingFile.divisionId}
-                  messagesEnabled={selectedDivision?.messagesEnabled !== false}
-                  renderUpdateButton={
-                    activeSection.title === "Supply order and payment"
-                      ? renderLocalUpdateButton
-                      : undefined
-                  }
-                />
-              ) : null}
             </section>
           )}
-          {activeSection &&
-          activeSection.title !== "Supply order and payment" &&
-          renderSectionUpdateButton() ? (
-            <div className="md:col-span-2 flex justify-end border-t border-border/60 pt-4">
-              {renderSectionUpdateButton()}
-            </div>
+          {activeSection && activeSection.title !== "File Markers" ? (
+            <SectionRemarks
+              sectionTitle={activeSection.title}
+              remarks={fileRemarks.filter((remark) => remark.section === activeSection.title)}
+              onAdd={() => addRemark(activeSection.title)}
+              onChange={updateRemark}
+              onDateChange={updateRemarkDate}
+              onDelete={deleteRemark}
+              savedRemarkIds={new Set(
+                (editingFile?.remarks ?? [])
+                  .filter((remark) => remark.section === activeSection.title)
+                  .map((remark) => remark.id),
+              )}
+              disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
+              saveControl={
+                activeSection.title !== "Supply order and payment" &&
+                !readOnlyMode &&
+                !activeSectionCfaApprovalLocked ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      save({
+                        returnToQuickEntry: Boolean(quickFocus || returnToQuickEntry),
+                      })
+                    }
+                    disabled={
+                      saving ||
+                      (editingFile
+                        ? uniqueCodeGateLocked || !isSectionRemarksDirty(activeSection.title)
+                        : !fileRemarks.some((remark) => remark.section === activeSection.title))
+                    }
+                    className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <Save className="size-3.5" />
+                    {saving ? "Saving…" : saved ? "Saved" : "Save remarks"}
+                  </button>
+                ) : undefined
+              }
+            />
+          ) : null}
+          {editingFile && activeSection && activeSection.title !== "File Markers" ? (
+            <SectionMessages
+              fileId={editingFile.id}
+              sectionTitle={activeSection.title}
+              messages={activeSectionMessages}
+              activeUserId={activeUser?.id}
+              activeUserRole={activeUser?.role}
+              activeUser={activeUser}
+              fileDivisionId={editingFile.divisionId}
+              messagesEnabled={selectedDivision?.messagesEnabled !== false}
+            />
           ) : null}
         </div>
+        {isEditing && !readOnlyMode && activeBoardSection !== "Supply order and payment" ? (
+          <div className="flex justify-end px-5 pb-4">{renderActiveSectionUpdateButton()}</div>
+        ) : null}
         <div className="px-5 py-4 border-t border-border bg-secondary/40 flex flex-wrap items-center justify-between gap-2">
           <div>
             {isEditing && !readOnlyMode && activeSection?.title === "File details" && (
-              <button
-                type="button"
-                onClick={deleteFile}
-                className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md border border-destructive/30 bg-background text-sm text-destructive hover:bg-destructive/10"
-              >
-                <Trash2 className="size-4" /> Delete file
-              </button>
+              <DeleteConfirmation mode="archive" onConfirm={deleteFile}>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md border border-border bg-background text-sm hover:bg-accent"
+                >
+                  <Trash2 className="size-4" /> Archive file
+                </button>
+              </DeleteConfirmation>
             )}
           </div>
           <div className="flex items-center justify-end gap-2">
@@ -4010,14 +5028,177 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   })
                 }
                 data-testid="add-save"
+                disabled={saving}
                 className="inline-flex items-center gap-1.5 h-9 px-4 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                <Save className="size-4" /> {saved ? "Saved" : isEditing ? "Update" : "Save"}
+                <Save className="size-4" />
+                {saving ? "Saving…" : saved ? "Saved" : isEditing ? "Update" : "Save"}
               </button>
             ) : null}
           </div>
         </div>
       </div>
+      <Dialog
+        open={Boolean(stageCountAdvisoryPrompt)}
+        onOpenChange={(open) => {
+          if (!open) dismissStageCountAdvisory();
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          className="w-[min(34rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] [&>button.absolute]:hidden"
+        >
+          <DialogHeader>
+            <DialogTitle>Review new stage details</DialogTitle>
+            <DialogDescription className="whitespace-pre-wrap text-foreground">
+              {stageCountAdvisoryPrompt}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={dismissStageCountAdvisory}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              Okay
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(stageWarningPrompt)}
+        onOpenChange={(open) => {
+          if (!open) cancelStageWarningSave();
+        }}
+      >
+        <DialogContent className="max-h-[min(90vh,42rem)] w-[min(40rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Supply Order save warning</DialogTitle>
+            <DialogDescription>
+              Review the following warning{stageWarningPrompt?.length === 1 ? "" : "s"} before
+              saving. Cancel to revise, or choose Save anyway to continue.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[min(48vh,20rem)] overflow-y-auto rounded-md border border-warning/40 bg-warning/10 p-3">
+            <ul className="list-disc space-y-2 pl-5 text-sm text-foreground">
+              {stageWarningPrompt?.map((warning, index) => (
+                <li key={`${warning}-${index}`}>{warning}</li>
+              ))}
+            </ul>
+          </div>
+          <DialogFooter className="gap-2 sm:space-x-0">
+            <button
+              type="button"
+              onClick={cancelStageWarningSave}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={continueStageWarningSave}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              Save anyway
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(milestoneErrorPrompt)}
+        onOpenChange={(open) => {
+          if (!open) dismissMilestoneError();
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          className="max-h-[min(90vh,42rem)] w-[min(40rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto [&>button.absolute]:hidden"
+        >
+          <DialogHeader>
+            <DialogTitle>Milestone error</DialogTitle>
+            <DialogDescription>
+              Correct the following milestone issue{milestoneErrorPrompt?.length === 1 ? "" : "s"}{" "}
+              before saving.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[min(48vh,20rem)] overflow-y-auto rounded-md border border-destructive/40 bg-destructive/10 p-3">
+            <ul className="list-disc space-y-2 pl-5 text-sm text-foreground">
+              {milestoneErrorPrompt?.map((error, index) => (
+                <li key={`${error}-${index}`}>{error}</li>
+              ))}
+            </ul>
+          </div>
+          <DialogFooter className="gap-2 sm:space-x-0">
+            <button
+              type="button"
+              onClick={dismissMilestoneError}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-medium hover:bg-accent"
+            >
+              OK
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={Boolean(anomalyWarningPrompt)}
+        onOpenChange={(open) => {
+          if (!open) dismissAnomalyWarning();
+        }}
+      >
+        <DialogContent
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          className="max-h-[min(90vh,42rem)] w-[min(40rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-y-auto [&>button.absolute]:hidden"
+        >
+          <DialogHeader>
+            <DialogTitle>Anomaly warning</DialogTitle>
+            <DialogDescription>
+              Review the following issue{anomalyWarningPrompt?.warnings.length === 1 ? "" : "s"}.
+              Cancel to revise the entry, or choose Ignore and save to save it as entered.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="max-h-[min(48vh,20rem)] overflow-y-auto rounded-md border border-warning/40 bg-warning/10 p-3">
+            <ul className="list-disc space-y-2 pl-5 text-sm text-foreground">
+              {anomalyWarningPrompt?.warnings.map((warning, index) => (
+                <li key={`${warning.signature}-${index}`}>
+                  <span className="font-medium">{warning.block}:</span> {warning.rule}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Choosing <span className="font-medium">Ignore and save</span> keeps this issue in the
+            Bell warnings and prevents the same unchanged warning from interrupting this entry
+            again.
+          </p>
+          <DialogFooter className="gap-2 sm:space-x-0">
+            <button
+              type="button"
+              onClick={dismissAnomalyWarning}
+              className="inline-flex h-9 items-center justify-center rounded-md border border-border bg-card px-4 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={ignoreAnomalyWarningAndSave}
+              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+            >
+              Ignore and save
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {saveError ? (
+        <div
+          role="alert"
+          className="mt-3 rounded-md border border-destructive/30 bg-destructive/10 px-5 py-3 text-sm text-destructive"
+        >
+          Save failed: {saveError}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4039,9 +5220,8 @@ function SectionBoard({
   ];
 
   return (
-    <div className="border-b border-border bg-secondary/20 px-4 py-2">
+    <div className="border-b border-border bg-secondary px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="mr-1 text-xs font-medium text-muted-foreground">Show section</span>
         {links.map((label) => (
           <button
             type="button"
@@ -4049,10 +5229,10 @@ function SectionBoard({
             onClick={() => onOpen(label)}
             data-testid={`add-section-${testIdSlug(label)}`}
             className={
-              "inline-flex h-7 items-center rounded-md border px-2.5 text-xs font-medium hover:bg-accent " +
+              "inline-flex h-8 items-center rounded-lg border px-3 text-sm font-semibold transition-colors " +
               (active === label
-                ? "border-primary/30 bg-primary/10 text-primary"
-                : "border-border bg-card text-foreground")
+                ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                : "border-border bg-card text-foreground hover:bg-accent")
             }
           >
             {label}
@@ -4066,6 +5246,7 @@ function SectionBoard({
 function SectionRemarks({
   sectionTitle,
   remarks,
+  savedRemarkIds,
   onAdd,
   onChange,
   onDateChange,
@@ -4075,15 +5256,16 @@ function SectionRemarks({
 }: {
   sectionTitle: string;
   remarks: FileRemark[];
+  savedRemarkIds: Set<string | undefined>;
   onAdd: () => void;
   onChange: (remarkId: string, text: string) => void;
   onDateChange: (remarkId: string, date: string) => void;
-  onDelete: (remarkId: string) => void;
+  onDelete: (remarkId: string) => void | Promise<void>;
   disabled?: boolean;
   saveControl?: ReactNode;
 }) {
   return (
-    <div className="mt-5 border-t border-border pt-4">
+    <div className="md:col-span-2 rounded-xl border border-border/80 bg-card p-4 shadow-[var(--shadow-card)]">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <div className="text-sm font-semibold text-foreground">Remarks</div>
@@ -4125,15 +5307,19 @@ function SectionRemarks({
                   />
                 </label>
                 {!disabled ? (
-                  <button
-                    type="button"
-                    onClick={() => onDelete(remark.id)}
-                    aria-label={`Delete remark from ${sectionTitle}`}
-                    title="Delete remark"
-                    className="inline-flex size-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10"
+                  <DeleteConfirmation
+                    mode={savedRemarkIds.has(remark.id) ? "delete" : "draft"}
+                    onConfirm={() => onDelete(remark.id)}
                   >
-                    <Trash2 className="size-3.5" />
-                  </button>
+                    <button
+                      type="button"
+                      aria-label={`Delete remark from ${sectionTitle}`}
+                      title="Delete remark"
+                      className="inline-flex size-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </DeleteConfirmation>
                 ) : null}
               </div>
               <textarea
@@ -4223,6 +5409,11 @@ function SectionMessages({
     return !message.recipientUserId || message.recipientUserId === activeUserId;
   };
 
+  useUnsavedChanges(
+    `add-file-messages:${fileId}:${sectionTitle}`,
+    Boolean(draft || recipientUserId || Object.values(replyDrafts).some(Boolean)),
+  );
+
   const canDeleteMessage = (message: FileMessage) =>
     !messagingBlocked && !!activeUserId && message.createdByUserId === activeUserId;
 
@@ -4279,11 +5470,12 @@ function SectionMessages({
       setAction("Message deleted.");
     } catch (error) {
       setAction(error instanceof Error ? error.message : "Message could not be deleted.");
+      throw error;
     }
   };
 
   return (
-    <div className="mt-5 rounded-md border border-border bg-secondary/20 p-3">
+    <div className="md:col-span-2 rounded-xl border border-border/80 bg-card p-4 shadow-[var(--shadow-card)]">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <MessageSquare className="size-4 text-muted-foreground" />
@@ -4440,14 +5632,15 @@ function SectionMessages({
 
                 {canDeleteMessage(message) ? (
                   <div className="mt-2 flex justify-end">
+                  <DeleteConfirmation onConfirm={() => deleteMessage(message.id)}>
                     <button
                       type="button"
-                      onClick={() => void deleteMessage(message.id)}
                       title="Delete your message"
                       className="inline-flex h-8 items-center rounded-md border border-destructive/30 bg-background px-3 text-xs font-medium text-destructive hover:bg-destructive/10"
                     >
                       Delete
                     </button>
+                  </DeleteConfirmation>
                   </div>
                 ) : null}
               </div>
@@ -4524,6 +5717,7 @@ function ActiveYearsField({
 
 function FileMarkersBlock({
   markers,
+  savedMarkerIds,
   markerOptions,
   disabled,
   lockFilledFields,
@@ -4533,13 +5727,14 @@ function FileMarkersBlock({
   onDelete,
 }: {
   markers: FileMarker[];
+  savedMarkerIds: Set<string | undefined>;
   markerOptions: SpecialFileMarker[];
   disabled: boolean;
   lockFilledFields: boolean;
   renderUpdateButton?: (dirty?: boolean) => ReactNode;
   onAdd: (code: string) => void;
   onChange: (markerId: string, text: string) => void;
-  onDelete: (markerId: string) => void;
+  onDelete: (markerId: string) => void | Promise<void>;
 }) {
   const locked = disabled || lockFilledFields;
   const [selectedCode, setSelectedCode] = useState("");
@@ -4616,19 +5811,23 @@ function FileMarkersBlock({
             <div key={marker.id} className="rounded-md border border-border bg-secondary/20 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <div className="text-xs font-medium text-muted-foreground">Marker {index + 1}</div>
-                <button
-                  type="button"
-                  onClick={() => onDelete(marker.id)}
-                  disabled={locked}
-                  aria-label={`Delete marker ${index + 1}`}
-                  title="Delete marker"
-                  className={
-                    "inline-flex size-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10" +
-                    disabledCls(locked)
-                  }
+                <DeleteConfirmation
+                  mode={savedMarkerIds.has(marker.id) ? "delete" : "draft"}
+                  onConfirm={() => onDelete(marker.id)}
                 >
-                  <Trash2 className="size-3.5" />
-                </button>
+                  <button
+                    type="button"
+                    disabled={locked}
+                    aria-label={`Delete marker ${index + 1}`}
+                    title="Delete marker"
+                    className={
+                      "inline-flex size-8 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10" +
+                      disabledCls(locked)
+                    }
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </DeleteConfirmation>
               </div>
               <select
                 value={marker.text}
@@ -4686,7 +5885,6 @@ function FirmDetailsBlock({
   onChange,
   onPatch,
   onDelete,
-  onDeleteSelected,
 }: {
   details: FirmDetailsState;
   lockedDetails: FirmDetailsState;
@@ -4705,12 +5903,11 @@ function FirmDetailsBlock({
     value: string,
   ) => void;
   onPatch: (group: keyof FirmDetailsState, index: number, patch: Partial<FirmDetail>) => void;
-  onDelete: (group: keyof FirmDetailsState, index: number) => void;
-  onDeleteSelected: (group: keyof FirmDetailsState, indexes: number[]) => void;
+  onDelete: (group: keyof FirmDetailsState, index: number) => void | Promise<void>;
 }) {
   const [activeTab, setActiveTab] = useState<keyof FirmDetailsState>("bqFirms");
-  const [selectedRows, setSelectedRows] = useState<Set<number>>(() => new Set());
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
+  const [knownMasterFirms, setKnownMasterFirms] = useState<MasterFirm[]>([]);
   const [firmSuggestionQuery, setFirmSuggestionQuery] = useState("");
   const [firmSuggestionMatches, setFirmSuggestionMatches] = useState<MasterFirm[]>([]);
   const [firmSaveMessage, setFirmSaveMessage] = useState<string | undefined>();
@@ -4730,7 +5927,6 @@ function FirmDetailsBlock({
   };
   const bqBasisOptions = ["Firm", "GeM", "User estimate", "LPP"];
   const showFirmRows = activeTab !== "bqFirms" || bqBasis === "Firm";
-  const selectedIndexes = [...selectedRows].filter((index) => index < rows.length);
   const firmNameOptionMap = useMemo(() => {
     const map = new Map<string, MasterFirm>();
     for (const firm of firmSuggestionMatches) {
@@ -4755,7 +5951,10 @@ function FirmDetailsBlock({
 
   const loadMasterFirms = () => {
     fetchMasterFirms({ pageSize: 500 })
-      .then((result) => setMasterFirms(result.firms))
+      .then((result) => {
+        setMasterFirms(result.firms);
+        setKnownMasterFirms(result.firms);
+      })
       .catch((error) => {
         console.error(error);
         setFirmSaveMessage(
@@ -4763,10 +5962,6 @@ function FirmDetailsBlock({
         );
       });
   };
-
-  useEffect(() => {
-    setSelectedRows(new Set());
-  }, [activeTab, rows.length]);
 
   useEffect(() => {
     loadMasterFirms();
@@ -4782,7 +5977,14 @@ function FirmDetailsBlock({
     const timeoutId = window.setTimeout(() => {
       fetchMasterFirms({ q: query, prefix: true, pageSize: 100 })
         .then((result) => {
-          if (!cancelled) setFirmSuggestionMatches(result.firms);
+          if (!cancelled) {
+            setFirmSuggestionMatches(result.firms);
+            setKnownMasterFirms((current) => {
+              const byId = new Map(current.map((firm) => [firm.id, firm]));
+              for (const firm of result.firms) byId.set(firm.id, firm);
+              return Array.from(byId.values());
+            });
+          }
         })
         .catch((error) => {
           if (!cancelled) {
@@ -4849,27 +6051,8 @@ function FirmDetailsBlock({
     }, 100);
   }, [activeTab, quickFocus, rows.length]);
 
-  const toggleSelectedRow = (index: number, checked: boolean) => {
-    setSelectedRows((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(index);
-      } else {
-        next.delete(index);
-      }
-      return next;
-    });
-  };
-
   const deleteFirm = (index: number) => {
-    onDelete(activeTab, index);
-    setSelectedRows(new Set());
-  };
-
-  const deleteSelectedFirms = () => {
-    if (!selectedIndexes.length) return;
-    onDeleteSelected(activeTab, selectedIndexes);
-    setSelectedRows(new Set());
+    return onDelete(activeTab, index);
   };
 
   const applyMasterFirm = (group: keyof FirmDetailsState, index: number, firm: MasterFirm) => {
@@ -4892,7 +6075,14 @@ function FirmDetailsBlock({
       address: row.address?.trim() || undefined,
       contactNo: row.contactNo?.trim() || undefined,
     };
-    if (!payload.firmName && !payload.emailId && !payload.firmUniqueNo) return;
+    if (!payload.firmName) {
+      setFirmSaveMessage("Enter a firm name before adding it to the firm database.");
+      return;
+    }
+    if (findExistingMasterFirm(knownMasterFirms, row)) {
+      setFirmSaveMessage("This firm is already in the database. Select it from the dropdown.");
+      return;
+    }
     if (!isValidEmailFormat(payload.emailId)) {
       setFirmSaveMessage("Enter a valid email id.");
       return;
@@ -4905,6 +6095,10 @@ function FirmDetailsBlock({
         result.firm,
         ...current.filter((firm) => firm.id !== result.firm.id),
       ]);
+      setKnownMasterFirms((current) => [
+        result.firm,
+        ...current.filter((firm) => firm.id !== result.firm.id),
+      ]);
       setFirmSaveMessage("Firm added to database.");
     } catch (error) {
       setFirmSaveMessage(error instanceof Error ? error.message : "Failed to add firm.");
@@ -4912,110 +6106,86 @@ function FirmDetailsBlock({
   };
 
   return (
-    <div className="space-y-4">
-      <div className="inline-flex rounded-lg border border-border bg-background p-1">
-        {tabs.map((tab) => (
-          <button
-            key={tab.key}
-            type="button"
-            onClick={() => setActiveTab(tab.key)}
-            className={
-              "h-8 rounded-md px-3 text-sm font-medium transition-colors " +
-              (activeTab === tab.key
-                ? "bg-secondary text-foreground"
-                : "text-muted-foreground hover:bg-accent hover:text-foreground")
-            }
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      <div className="grid grid-cols-3 gap-3">
-        <label className="block">
-          <div className="mb-1.5 text-xs font-medium">BQ firms</div>
-          <input
-            value={bqBasis === "Firm" ? firmCounts.bqFirms : 0}
-            readOnly
-            disabled={disabled}
-            className={inputCls + disabledCls(disabled)}
-          />
-        </label>
-        <label className="block">
-          <div className="mb-1.5 text-xs font-medium">Invited firms</div>
-          <input
-            value={firmCounts.invitedFirms}
-            readOnly
-            disabled={disabled}
-            className={inputCls + disabledCls(disabled)}
-          />
-        </label>
-        <label className="block">
-          <div className="mb-1.5 text-xs font-medium">Bidders</div>
-          <input
-            value={firmCounts.bidderFirms}
-            readOnly
-            disabled={disabled}
-            className={inputCls + disabledCls(disabled)}
-          />
-        </label>
-      </div>
-
-      {activeTab === "bqFirms" ? (
-        <label className="block max-w-xs">
-          <div className="mb-1.5 text-xs font-medium">BQ</div>
-          <select
-            value={bqBasis}
-            onChange={(event) => onBqBasisChange(event.target.value)}
-            disabled={disabled}
-            className={inputCls + disabledCls(disabled)}
-          >
-            <option value="">BQ</option>
-            {bqBasisOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="text-xs text-muted-foreground">{selectedIndexes.length} selected</div>
-        <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 pb-3">
+        <div className="inline-flex flex-wrap rounded-xl border border-border/80 bg-secondary/35 p-1">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => setActiveTab(tab.key)}
+              className={
+                "h-9 rounded-lg px-4 text-sm font-semibold transition-colors " +
+                (activeTab === tab.key
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground hover:bg-background hover:text-foreground")
+              }
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-card/70 p-1.5">
           <button
             type="button"
             onClick={() => exportFirmDetails(details, "pdf")}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 text-sm font-medium transition-colors hover:bg-accent"
             title="Export firm details as PDF"
             aria-label="Export firm details PDF"
           >
-            <Printer className="size-3.5" /> PDF
+            <Printer className="size-4" /> PDF
           </button>
           <button
             type="button"
             onClick={() => exportFirmDetails(details, "excel")}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-border/80 bg-background px-3 text-sm font-medium transition-colors hover:bg-accent"
             title="Export firm details as Excel"
             aria-label="Export firm details Excel"
           >
-            <FileSpreadsheet className="size-3.5" /> Excel
-          </button>
-          <button
-            type="button"
-            onClick={deleteSelectedFirms}
-            disabled={disabled || selectedIndexes.length === 0}
-            className={
-              "inline-flex h-8 items-center gap-1.5 rounded-md border border-destructive/30 bg-background px-2.5 text-xs font-medium text-destructive hover:bg-destructive/10" +
-              disabledCls(disabled || selectedIndexes.length === 0)
-            }
-          >
-            <Trash2 className="size-3.5" /> Delete selected
+            <FileSpreadsheet className="size-4" /> Excel
           </button>
         </div>
       </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        {[
+          { label: "BQ firms", value: bqBasis === "Firm" ? firmCounts.bqFirms : 0 },
+          { label: "Invited firms", value: firmCounts.invitedFirms },
+          { label: "Bidders", value: firmCounts.bidderFirms },
+        ].map((item) => (
+          <div
+            key={item.label}
+            className="flex min-h-20 items-center justify-between rounded-xl border border-border/75 bg-gradient-to-br from-primary/[0.07] to-card px-4 py-3 shadow-sm"
+          >
+            <span className="text-sm font-medium text-muted-foreground">{item.label}</span>
+            <span className="text-2xl font-semibold tabular-nums text-foreground">{item.value}</span>
+          </div>
+        ))}
+      </div>
+
+      {activeTab === "bqFirms" ? (
+        <div className="max-w-md rounded-xl border border-border/75 bg-secondary/20 p-4">
+          <label className="block">
+            <div className="mb-1.5 text-sm font-semibold">BQ basis</div>
+            <select
+              value={bqBasis}
+              onChange={(event) => onBqBasisChange(event.target.value)}
+              disabled={disabled}
+              className={inputCls + disabledCls(disabled)}
+            >
+              <option value="">Select basis</option>
+              {bqBasisOptions.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      ) : null}
+
       {firmSaveMessage ? (
-        <div className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+        <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3 text-sm text-foreground">
           {firmSaveMessage}
         </div>
       ) : null}
@@ -5043,28 +6213,20 @@ function FirmDetailsBlock({
             const contactNoDisabled =
               disabled || (lockFilledFields && hasFilledValue(lockedRow?.contactNo));
             const rowActionDisabled = disabled || (lockFilledFields && rowHasValue);
+            const existingMasterFirm = findExistingMasterFirm(knownMasterFirms, row);
             const addFirmDisabled =
               disabled ||
-              (!hasFilledValue(row.firmName) &&
-                !hasFilledValue(row.emailId) &&
-                !hasFilledValue(row.firmUniqueNo));
+              !hasFilledValue(row.firmName) ||
+              Boolean(existingMasterFirm);
             return (
               <div
                 key={index}
-                className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+                className="grid grid-cols-1 gap-x-4 gap-y-3 rounded-xl border border-border/80 bg-card p-4 shadow-sm transition-shadow hover:shadow-md sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-[repeat(6,minmax(0,1fr))_auto]"
               >
-                <label className="flex items-center gap-2 md:pt-7">
-                  <input
-                    type="checkbox"
-                    checked={selectedRows.has(index)}
-                    onChange={(event) => toggleSelectedRow(index, event.target.checked)}
-                    disabled={rowActionDisabled}
-                    className="size-4 rounded border-border accent-primary"
-                  />
-                  <span className="text-xs text-muted-foreground md:sr-only">Select firm</span>
-                </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-medium">Firm name</div>
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                    Firm name
+                  </div>
                   <SearchableDropdown
                     inputRef={(element) => {
                       firmInputRefs.current[`${index}:firmName`] = element;
@@ -5088,7 +6250,9 @@ function FirmDetailsBlock({
                   />
                 </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-medium">{firmUniqueNoLabel}</div>
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                    {firmUniqueNoLabel}
+                  </div>
                   <SearchableDropdown
                     inputRef={(element) => {
                       firmInputRefs.current[`${index}:firmUniqueNo`] = element;
@@ -5112,7 +6276,7 @@ function FirmDetailsBlock({
                   />
                 </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-medium">Email id</div>
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">Email id</div>
                   <input
                     ref={(element) => {
                       firmInputRefs.current[`${index}:emailId`] = element;
@@ -5131,7 +6295,7 @@ function FirmDetailsBlock({
                   />
                 </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-medium">Address</div>
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">Address</div>
                   <input
                     ref={(element) => {
                       firmInputRefs.current[`${index}:address`] = element;
@@ -5143,7 +6307,7 @@ function FirmDetailsBlock({
                   />
                 </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-medium">City</div>
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">City</div>
                   <input
                     ref={(element) => {
                       firmInputRefs.current[`${index}:city`] = element;
@@ -5155,7 +6319,7 @@ function FirmDetailsBlock({
                   />
                 </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-medium">Contact No.</div>
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">Contact No.</div>
                   <input
                     ref={(element) => {
                       firmInputRefs.current[`${index}:contactNo`] = element;
@@ -5171,34 +6335,45 @@ function FirmDetailsBlock({
                     className={inputCls + disabledCls(contactNoDisabled)}
                   />
                 </label>
-                <div className="flex items-end gap-2">
+                <div className="flex items-end gap-2 sm:col-span-2 lg:col-span-3 2xl:col-span-1">
                   <button
                     type="button"
                     onClick={() => void addRowToFirmDatabase(index, row)}
                     disabled={addFirmDisabled}
+                    title={
+                      existingMasterFirm
+                        ? "This firm is already in the database. Select it from the dropdown."
+                        : undefined
+                    }
                     className={
-                      "inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent" +
+                      "inline-flex h-10 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm font-medium transition-colors hover:bg-accent" +
                       disabledCls(addFirmDisabled)
                     }
                   >
                     <Plus className="size-3.5" /> Add
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => deleteFirm(index)}
-                    disabled={rowActionDisabled}
-                    aria-label="Delete firm"
-                    title="Delete firm"
-                    className={
-                      "inline-flex size-9 items-center justify-center rounded-md border border-destructive/30 bg-background text-destructive hover:bg-destructive/10" +
-                      disabledCls(rowActionDisabled)
-                    }
+                  <DeleteConfirmation
+                    mode={lockedDetails[activeTab].some((saved) => saved.id && saved.id === row.id)
+                      ? "delete"
+                      : "draft"}
+                    onConfirm={() => deleteFirm(index)}
                   >
-                    <Trash2 className="size-4" />
-                  </button>
+                    <button
+                      type="button"
+                      disabled={rowActionDisabled}
+                      aria-label="Delete firm"
+                      title="Delete firm"
+                      className={
+                        "inline-flex size-10 items-center justify-center rounded-lg border border-destructive/30 bg-background text-destructive transition-colors hover:bg-destructive/10" +
+                        disabledCls(rowActionDisabled)
+                      }
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </DeleteConfirmation>
                 </div>
                 {renderUpdateButton ? (
-                  <div className="flex justify-end border-t border-border/60 pt-3 md:col-span-5">
+                  <div className="col-span-full flex justify-end border-t border-border/60 pt-3">
                     {renderUpdateButton()}
                   </div>
                 ) : null}
@@ -5217,7 +6392,7 @@ function FirmDetailsBlock({
           onClick={() => onAdd(activeTab)}
           disabled={disabled}
           className={
-            "h-9 rounded-md border border-border bg-card px-4 text-sm font-medium hover:bg-accent" +
+            "h-10 rounded-lg border border-primary/35 bg-primary/5 px-4 text-sm font-semibold text-primary transition-colors hover:bg-primary/10" +
             disabledCls(disabled)
           }
         >
@@ -5228,45 +6403,16 @@ function FirmDetailsBlock({
   );
 }
 
-function AddBreadcrumb({
-  items,
-}: {
-  items: Array<{ label: string; onClick?: () => void } | undefined>;
-}) {
-  const visibleItems = items.filter((item): item is { label: string; onClick?: () => void } =>
-    Boolean(item),
-  );
-  if (visibleItems.length < 2) return null;
-  return (
-    <div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-      {visibleItems.map((item, index) => (
-        <Fragment key={`${item.label}-${index}`}>
-          {index > 0 ? <span>/</span> : null}
-          {item.onClick ? (
-            <button
-              type="button"
-              onClick={item.onClick}
-              className="font-medium text-foreground hover:text-primary hover:underline"
-            >
-              {item.label}
-            </button>
-          ) : (
-            <span>{item.label}</span>
-          )}
-        </Fragment>
-      ))}
-    </div>
-  );
-}
-
 function InlineUpdateButton({
   saved,
+  saving,
   disabled,
   onSave,
   testId,
   className = "",
 }: {
   saved: boolean;
+  saving?: boolean;
   disabled: boolean;
   onSave: () => void;
   testId?: string;
@@ -5276,14 +6422,15 @@ function InlineUpdateButton({
     <button
       type="button"
       onClick={onSave}
-      disabled={disabled}
+      disabled={disabled || saving}
       data-testid={testId}
       className={
         "inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60 " +
         className
       }
     >
-      <Save className="size-3.5" /> {disabled ? "Inactive" : saved ? "Saved" : "Update"}
+      <Save className="size-3.5" />
+      {saving ? "Saving…" : disabled ? "Inactive" : saved ? "Saved" : "Update"}
     </button>
   );
 }
@@ -5308,10 +6455,14 @@ function SupplyOrdersBlock({
   paidAdvanceUnfreezeKeys,
   quickFocus,
   focusTarget,
-  renderUpdateButton,
+  renderSupplyOrderCountUpdateButton,
+  renderSupplyOrderUpdateButton,
+  confirmDeletion,
   onCountChange,
   onOrderChange,
   onOrderBillReturnsChange,
+  onDeleteSupplementaryBill,
+  onDeleteBillReturnCycle,
   onOrderPatch,
   onOrderCurrentMilestoneChange,
   onOrderCompletedMilestonesChange,
@@ -5343,10 +6494,22 @@ function SupplyOrdersBlock({
   paidAdvanceUnfreezeKeys: Set<number>;
   quickFocus?: boolean;
   focusTarget?: string;
-  renderUpdateButton?: (dirty?: boolean) => ReactNode;
+  renderSupplyOrderCountUpdateButton?: (dirty?: boolean) => ReactNode;
+  renderSupplyOrderUpdateButton?: (orderIndex: number, dirty?: boolean) => ReactNode;
+  confirmDeletion: (
+    details?: ReactNode,
+    actionLabel?: string,
+    options?: {
+      applyImmediately?: boolean;
+      title?: ReactNode;
+      description?: ReactNode;
+    },
+  ) => Promise<boolean>;
   onCountChange: (value: string) => void;
   onOrderChange: (index: number, key: SupplyOrderKey, value: string) => void;
   onOrderBillReturnsChange: (index: number, billReturnCycles: BillReturnCycle[]) => void;
+  onDeleteSupplementaryBill: (orderIndex: number, billId: string) => Promise<void>;
+  onDeleteBillReturnCycle: (orderIndex: number, cycleId: string) => Promise<void>;
   onOrderPatch: (index: number, patch: Partial<SupplyOrderDetail>) => void;
   onOrderCurrentMilestoneChange: (index: number, milestone: string) => void;
   onOrderCompletedMilestonesChange: (index: number, milestones: string[]) => void;
@@ -5390,6 +6553,7 @@ function SupplyOrdersBlock({
   const [firmSuggestionQuery, setFirmSuggestionQuery] = useState("");
   const [firmSuggestionMatches, setFirmSuggestionMatches] = useState<MasterFirm[]>([]);
   const [openCardKeys, setOpenCardKeys] = useState<Set<string>>(new Set());
+  const [supplyOrderPanelsExpanded, setSupplyOrderPanelsExpanded] = useState(false);
   const deliveryInspectionInactive = isDeliveryInspectionInactive(form);
   const effectiveIrDisabled = irDisabled || deliveryInspectionInactive;
   const focusConfigs = useMemo(() => parseSupplyOrderFocusTargets(focusTarget), [focusTarget]);
@@ -5448,78 +6612,17 @@ function SupplyOrdersBlock({
         !(activeSubview === "delivery" && field.key === "actualJobCompletionDate"),
   );
   const noOfSoDirty = form.noOfSo !== lockedForm.noOfSo || orders.length !== lockedOrders.length;
-  const getOrderSubviewDirty = (
-    order: SupplyOrderDetail,
-    lockedOrder: SupplyOrderDetail | undefined,
-    fieldsToRender: ExtraField<SupplyOrderKey>[],
-  ) => {
-    if (activeSubview === "firmRating") {
-      return !isDirtyValueEqual(
-        normalizeDirtyObject(order.firmRatingValues ?? {}),
-        normalizeDirtyObject(lockedOrder?.firmRatingValues ?? {}),
-      );
-    }
-    if (activeSubview === "supplementaryBills") {
-      return !isDirtyValueEqual(
-        cleanSupplementaryBills(order.supplementaryBills),
-        cleanSupplementaryBills(lockedOrder?.supplementaryBills),
-      );
-    }
-    const keys = expandSupplyOrderDirtyKeys(
-      fieldsToRender.map((field) => field.key as SupplyOrderKey),
-    );
-    const currentValues = normalizeDirtyObject(
-      Object.fromEntries(keys.map((key) => [key, order[key] ?? ""])),
-    );
-    const lockedValues = normalizeDirtyObject(
-      Object.fromEntries(keys.map((key) => [key, lockedOrder?.[key] ?? ""])),
-    );
-    const milestonesChanged =
-      activeSubviewMilestones.length > 0 &&
-      (!isDirtyValueEqual(
-        normalizeDirtyValue("currentMilestone", order.currentMilestone),
-        normalizeDirtyValue("currentMilestone", lockedOrder?.currentMilestone),
-      ) ||
-        !isDirtyValueEqual(
-          normalizeDirtyValue("completedMilestones", order.completedMilestones),
-          normalizeDirtyValue("completedMilestones", lockedOrder?.completedMilestones),
-        ));
-    const paymentTimingChanged =
-      activeSubview === "payment" &&
-      order.includeInPaymentTiming !== lockedOrder?.includeInPaymentTiming;
-    return (
-      !isDirtyValueEqual(currentValues, lockedValues) || milestonesChanged || paymentTimingChanged
+  const getOrderDirty = (order: SupplyOrderDetail, lockedOrder: SupplyOrderDetail | undefined) => {
+    return !isDirtyValueEqual(
+      normalizeDirtyObject(cleanSupplyOrderRows([order], form)[0] as Record<string, unknown>),
+      normalizeDirtyObject(
+        cleanSupplyOrderRows([lockedOrder ?? emptySupplyOrder], lockedForm)[0] as Record<
+          string,
+          unknown
+        >,
+      ),
     );
   };
-  const getAdvancePaymentDirty = (
-    order: SupplyOrderDetail,
-    lockedOrder: SupplyOrderDetail | undefined,
-  ) =>
-    !isDirtyValueEqual(
-      normalizeDirtyObject(
-        applyAdvancePaymentRules(
-          order.advancePaymentDetail ?? {},
-          isYes(order.advancePayment ?? ""),
-        ),
-      ),
-      normalizeDirtyObject(
-        applyAdvancePaymentRules(
-          lockedOrder?.advancePaymentDetail ?? {},
-          isYes(lockedOrder?.advancePayment ?? ""),
-        ),
-      ),
-    );
-  const getStageDeliveryDirty = (
-    stage: StageDeliveryDetail,
-    lockedOrder: SupplyOrderDetail | undefined,
-    stageIndex: number,
-  ) =>
-    !isDirtyValueEqual(
-      normalizeDirtyObject(stage as Record<string, unknown>),
-      normalizeDirtyObject(
-        (lockedOrder?.stageDeliveries?.[stageIndex] ?? {}) as Record<string, unknown>,
-      ),
-    );
 
   useEffect(() => {
     if (effectiveFocusSubview) setActiveSubview(effectiveFocusSubview);
@@ -5596,6 +6699,23 @@ function SupplyOrdersBlock({
     });
   };
 
+  const setSupplyOrderCardOpen = (key: string, open: boolean) => {
+    setOpenCardKeys((current) => {
+      const next = new Set(current);
+      if (!open) {
+        next.delete(key);
+        return next;
+      }
+      if (!supplyOrderPanelsExpanded) {
+        for (const cardKey of next) {
+          if (cardKey.startsWith("order:")) next.delete(cardKey);
+        }
+      }
+      next.add(key);
+      return next;
+    });
+  };
+
   const setPaymentCardOpen = (orderIndex: number, key: string, open: boolean) => {
     setOpenCardKeys((current) => {
       const next = new Set(current);
@@ -5661,8 +6781,12 @@ function SupplyOrdersBlock({
       ),
     });
   };
-  const removeSupplementaryBillDraft = (orderIndex: number, draftId: string) => {
+  const removeSupplementaryBillDraft = async (orderIndex: number, draftId: string) => {
     if (disabled) return;
+    const isSaved = (lockedOrders[orderIndex]?.supplementaryBills ?? []).some(
+      (bill) => bill.id === draftId,
+    );
+    if (isSaved) await onDeleteSupplementaryBill(orderIndex, draftId);
     const currentBills = normalizeSupplementaryBillDrafts(orders[orderIndex]?.supplementaryBills);
     onOrderPatch(orderIndex, {
       supplementaryBills: currentBills.filter((bill) => bill.id !== draftId),
@@ -5792,27 +6916,7 @@ function SupplyOrdersBlock({
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <AddBreadcrumb
-            items={[
-              {
-                label: "Supply order and payment",
-                onClick:
-                  activeSubview !== "supplyOrder"
-                    ? () => setActiveSubview("supplyOrder")
-                    : undefined,
-              },
-              activeSubview !== "supplyOrder"
-                ? {
-                    label:
-                      activeSubview === "delivery" && deliveryInspectionInactive
-                        ? "Job Completion"
-                        : (supplyOrderSubviewTabs.find((tab) => tab.key === activeSubview)?.label ??
-                          "Supply order"),
-                  }
-                : undefined,
-            ]}
-          />
-          <div className="flex flex-wrap gap-2 rounded-md border border-border bg-secondary/20 p-1.5">
+          <div className="flex flex-wrap gap-1.5 rounded-xl border border-border/80 bg-secondary/50 p-1.5">
             {supplyOrderSubviewTabs.map((tab) => (
               <button
                 key={tab.key}
@@ -5822,10 +6926,10 @@ function SupplyOrdersBlock({
                 }}
                 data-testid={`add-so-tab-${tab.key}`}
                 className={
-                  "h-8 rounded px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50 " +
+                  "h-9 rounded-lg border px-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50 " +
                   (activeSubview === tab.key
-                    ? "bg-card text-foreground shadow-sm"
-                    : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                    ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                    : "border-transparent text-muted-foreground hover:bg-card hover:text-foreground")
                 }
               >
                 {tab.key === "delivery" && deliveryInspectionInactive
@@ -5835,24 +6939,45 @@ function SupplyOrdersBlock({
             ))}
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => setSupplyOrderPanelsExpanded((current) => !current)}
+          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"
+          title={
+            supplyOrderPanelsExpanded
+              ? "All Supply Order panels are expanded"
+              : "Only the selected Supply Order panel stays open"
+          }
+          aria-pressed={supplyOrderPanelsExpanded}
+          data-testid="add-supply-order-view-mode"
+        >
+          {supplyOrderPanelsExpanded ? (
+            <ChevronDown className="size-3.5" />
+          ) : (
+            <ChevronRight className="size-3.5" />
+          )}
+          {supplyOrderPanelsExpanded ? "Expanded" : "Wrapped"}
+        </button>
       </div>
 
       {activeSubview === "supplyOrder" ? (
-        <div className="space-y-3">
-          <DynamicField
-            field={{ key: "noOfSo", label: "No. of S.O.", type: "number", min: 1 }}
-            value={form.noOfSo}
-            disabled={disabled || (lockFilledFields && hasFilledValue(lockedForm.noOfSo))}
-            onChange={onCountChange}
-            inputRef={(element) => {
-              orderFieldRefs.current.noOfSo = element;
-            }}
-          />
-          {renderUpdateButton ? (
-            <div className="flex justify-end border-t border-border/60 pt-3">
-              {renderUpdateButton(noOfSoDirty)}
-            </div>
-          ) : null}
+        <div className="rounded-lg border border-sky-200/80 border-l-4 border-l-sky-400/70 bg-sky-50/30 px-4 py-3 shadow-sm">
+          <div className="grid grid-cols-1 items-end gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+            <DynamicField
+              field={{ key: "noOfSo", label: "No. of S.O.", type: "number", min: 1 }}
+              value={form.noOfSo}
+              disabled={disabled || (lockFilledFields && hasFilledValue(lockedForm.noOfSo))}
+              onChange={onCountChange}
+              inputRef={(element) => {
+                orderFieldRefs.current.noOfSo = element;
+              }}
+            />
+            {renderSupplyOrderCountUpdateButton ? (
+              <div className="flex justify-end">
+                {renderSupplyOrderCountUpdateButton(noOfSoDirty)}
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
 
@@ -5865,38 +6990,10 @@ function SupplyOrdersBlock({
         </div>
       ) : null}
 
-      {isDownstreamSubview(activeSubview) &&
-      orders.some((order) => !isSupplyOrderAndDpComplete(order, form)) ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
-          <div>
-            <div className="font-medium">
-              Complete Supply Order and D.P. details before editing this tab.
-            </div>
-            <div className="text-xs">
-              Incomplete orders stay locked until their D.P. and Security/Warranty fields are
-              unlocked.
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={unlockDownstreamOverride}
-            disabled={disabled || downstreamOverrideUnlocked}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 text-xs font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {downstreamOverrideUnlocked ? (
-              <>
-                <Unlock className="size-3.5" /> Downstream unlocked
-              </>
-            ) : (
-              <>
-                <Lock className="size-3.5" /> Unlock with password
-              </>
-            )}
-          </button>
-        </div>
+      {activeSubview === "bg" ? (
+        <SecurityWarrantyBgRulesHelper />
       ) : null}
-
-      {activeSubview === "supplyOrder" ? <StageDeliveryAutofillHelper /> : null}
+      {activeSubview === "dp" ? <StageDeliveryAutofillHelper /> : null}
 
       {activeSubviewFields.length ||
       activeSubviewMilestones.length ||
@@ -5933,8 +7030,7 @@ function SupplyOrdersBlock({
             const fieldsToRender = activeSubviewFields.filter((field) =>
               shouldShowSupplyOrderField(field.key as SupplyOrderKey, order),
             );
-            const orderSubviewDirty = getOrderSubviewDirty(order, lockedOrder, fieldsToRender);
-            const advancePaymentDirty = getAdvancePaymentDirty(order, lockedOrder);
+            const orderDirty = getOrderDirty(order, lockedOrder);
             const baseCompletion = getSupplyOrderSubviewCompletion({
               activeSubview,
               order,
@@ -5971,7 +7067,10 @@ function SupplyOrdersBlock({
                 key.startsWith(`supplementary:${index}:`),
             );
             const orderOpen =
-              openCardKeys.has(orderFocusKey) || directOrderFocusMatch || childFocusMatch;
+              supplyOrderPanelsExpanded ||
+              openCardKeys.has(orderFocusKey) ||
+              directOrderFocusMatch ||
+              childFocusMatch;
             const focusClass = directOrderFocusMatch
               ? " border-primary bg-primary/5 ring-2 ring-primary/40"
               : childFocusMatch
@@ -6023,7 +7122,9 @@ function SupplyOrdersBlock({
                   focusBlockRefs.current[orderFocusKey] = element;
                 }}
                 open={orderOpen}
-                onToggle={(event) => setCardOpen(orderFocusKey, event.currentTarget.open)}
+                onToggle={(event) =>
+                  setSupplyOrderCardOpen(orderFocusKey, event.currentTarget.open)
+                }
                 className={
                   "group overflow-hidden rounded-md border bg-card shadow-sm " +
                   getCompletionBorderClass(completion.status) +
@@ -6062,6 +7163,36 @@ function SupplyOrdersBlock({
                   </span>
                 </summary>
                 <div className="border-t border-border bg-secondary/15 p-4">
+                  {isDownstreamSubview(activeSubview) && downstreamLocked ? (
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+                      <div>
+                        <div className="font-medium">
+                          {orderTitle}: Complete Supply Order and D.P. details before editing this
+                          tab.
+                        </div>
+                        <div className="text-xs">
+                          This order stays locked until its D.P. and Security/Warranty fields are
+                          unlocked.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={unlockDownstreamOverride}
+                        disabled={disabled || downstreamOverrideUnlocked}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 text-xs font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {downstreamOverrideUnlocked ? (
+                          <>
+                            <Unlock className="size-3.5" /> Downstream unlocked
+                          </>
+                        ) : (
+                          <>
+                            <Lock className="size-3.5" /> Unlock with password
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  ) : null}
                   {activeSubview === "firmRating" ? (
                     <FirmRatingFieldsBlock
                       fields={ratingFields}
@@ -6092,15 +7223,19 @@ function SupplyOrdersBlock({
                       onToggle={(event) =>
                         setPaymentCardOpen(index, advancePaymentKey, event.currentTarget.open)
                       }
+                      data-testid={`add-supply-order-${index}-advance-payment`}
                       className={
-                        "group/payment overflow-hidden rounded-md border border-border bg-background/70" +
+                        "group/payment overflow-hidden rounded-lg border-2 border-sky-300/80 bg-sky-50/40 shadow-sm" +
                         (focusBlockKeySet.has(advancePaymentKey)
                           ? " border-primary bg-primary/5 ring-2 ring-primary/40"
                           : "")
                       }
                     >
-                      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 text-sm font-semibold marker:hidden">
+                      <summary className="flex cursor-pointer list-none items-center gap-3 bg-sky-50/80 px-4 py-3 text-sm font-semibold marker:hidden">
                         <span className="min-w-0 flex-1">Advance Payment</span>
+                        <span className="hidden rounded-md border border-sky-200 bg-background px-2 py-1 text-xs font-medium text-sky-800 sm:inline">
+                          Separate from delivery stages
+                        </span>
                         <span className="text-xs font-medium text-muted-foreground group-open/payment:hidden">
                           Open
                         </span>
@@ -6108,7 +7243,7 @@ function SupplyOrdersBlock({
                           Close
                         </span>
                       </summary>
-                      <div className="border-t border-border p-4">
+                      <div className="border-t border-sky-200 bg-background p-4">
                         <PaymentTimingControl
                           caseLabel={`S.O. ${index + 1} advance payment`}
                           included={advancePaymentDetail.includeInPaymentTiming !== false}
@@ -6206,6 +7341,9 @@ function SupplyOrdersBlock({
                                   key={key}
                                   cycles={advancePaymentDetail.billReturnCycles}
                                   lockedCycles={lockedOrder?.advancePaymentDetail?.billReturnCycles}
+                                  onDeleteSavedCycle={(cycleId) =>
+                                    onDeleteBillReturnCycle(index, cycleId)
+                                  }
                                   disabled={
                                     advanceControlDisabled ||
                                     (advanceLockFilledFields &&
@@ -6242,11 +7380,6 @@ function SupplyOrdersBlock({
                             );
                           })}
                         </div>
-                        {renderUpdateButton ? (
-                          <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
-                            {renderUpdateButton(advancePaymentDirty)}
-                          </div>
-                        ) : null}
                       </div>
                     </details>
                   ) : null}
@@ -6257,21 +7390,20 @@ function SupplyOrdersBlock({
                       hasParentDeliveryData(savedParentDeliveryRows[index]) ? (
                         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
                           <span>
-                            Hidden parent delivery data is still saved for this staged S.O. Clear it
-                            here, then save the file.
+                            Parent-level delivery data is still saved for this staged S.O., but it
+                            does not belong to the staged schedule. Clear it here, then save.
                           </span>
                           <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
                               className="inline-flex h-8 items-center gap-1.5 rounded border border-border bg-background px-3 text-xs font-medium disabled:opacity-50"
                               disabled={disabled}
-                              onClick={() => {
+                              onClick={async () => {
                                 if (
-                                  !window.confirm(
-                                    "Clear the hidden parent delivery fields for this S.O.? Stage records will be kept.",
-                                  )
-                                )
-                                  return;
+                                  !(await confirmDeletion(
+                                    "This will clear the saved parent-level delivery data for this S.O. Stage records will be kept.",
+                                  ))
+                                ) return;
                                 onOrderPatch(index, clearParentDeliveryData(order));
                               }}
                             >
@@ -6290,11 +7422,11 @@ function SupplyOrdersBlock({
                             type="button"
                             className="h-8 rounded border border-border bg-background px-3 text-xs font-medium disabled:opacity-50"
                             disabled={disabled}
-                            onClick={() => {
+                            onClick={async () => {
                               if (
-                                !window.confirm(
-                                  "Clear the hidden parent bill/payment fields for this S.O.? Stage records will be kept.",
-                                )
+                                !(await confirmDeletion(
+                                  "This will clear the parent-level bill/payment fields for this S.O. Stage records will be kept.",
+                                ))
                               )
                                 return;
                               onOrderPatch(index, clearParentStagePaymentData(order));
@@ -6332,11 +7464,6 @@ function SupplyOrdersBlock({
                           stageDeliveries,
                         );
                         const stageFocusKey = `stage:${index}:${stageIndex}`;
-                        const stageDeliveryDirty = getStageDeliveryDirty(
-                          stage,
-                          lockedOrder,
-                          stageIndex,
-                        );
                         const stageFocusMatch =
                           focusBlockKeySet.has(stageFocusKey) ||
                           focusConfigs.some((config) =>
@@ -6581,6 +7708,9 @@ function SupplyOrdersBlock({
                                       lockedCycles={
                                         lockedOrder?.stageDeliveries?.[stageIndex]?.billReturnCycles
                                       }
+                                      onDeleteSavedCycle={(cycleId) =>
+                                        onDeleteBillReturnCycle(index, cycleId)
+                                      }
                                       disabled={
                                         stageControlDisabled ||
                                         (lockFilledFields &&
@@ -6687,11 +7817,6 @@ function SupplyOrdersBlock({
                                   />
                                 );
                               })}
-                              {renderUpdateButton ? (
-                                <div className="flex justify-end border-t border-border/60 pt-3">
-                                  {renderUpdateButton(stageDeliveryDirty)}
-                                </div>
-                              ) : null}
                             </div>
                           </details>
                         );
@@ -6713,7 +7838,7 @@ function SupplyOrdersBlock({
                     >
                       {activeSubview === "payment" ? (
                         <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 text-sm font-semibold marker:hidden">
-                          <span className="min-w-0 flex-1">Normal Payment</span>
+                          <span className="min-w-0 flex-1">Regular Payment</span>
                           <span className="text-xs font-medium text-muted-foreground group-open/payment:hidden">
                             Open
                           </span>
@@ -6777,7 +7902,7 @@ function SupplyOrdersBlock({
                                   options: mergeOptions(firmTypeOptions, order.firmType),
                                 }
                               : key === "firmUniqueNo"
-                                ? { ...field, label: firmUniqueNoLabel }
+                                ? { ...field, label: `${firmUniqueNoLabel} (optional)` }
                                 : field;
 
                           if (field.key === "soValueCapital") {
@@ -6837,7 +7962,7 @@ function SupplyOrdersBlock({
                                   placeholder={
                                     key === "firm"
                                       ? "Select Firm Name"
-                                      : `Select ${firmUniqueNoLabel}`
+                                      : "Select if available (optional)"
                                   }
                                   disabled={fieldDisabled}
                                   data-testid={`add-field-supplyOrder-${index}-${key}`}
@@ -6958,6 +8083,9 @@ function SupplyOrdersBlock({
                                 key={field.key}
                                 cycles={order.billReturnCycles}
                                 lockedCycles={lockedOrder?.billReturnCycles}
+                                onDeleteSavedCycle={(cycleId) =>
+                                  onDeleteBillReturnCycle(index, cycleId)
+                                }
                                 disabled={fieldDisabled}
                                 lockFilledFields={lockFilledFields}
                                 testIdPrefix={`add-field-supplyOrder-${index}-billReturnCycles`}
@@ -6987,17 +8115,15 @@ function SupplyOrdersBlock({
                           );
                         })}
                       </div>
-                      {renderUpdateButton ? (
-                        <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
-                          {renderUpdateButton(orderSubviewDirty)}
-                        </div>
-                      ) : null}
                     </details>
                   )}
                   {activeSubview === "supplementaryBills" ? (
                     <SupplementaryBillsDraftBlock
                       orderIndex={index}
                       bills={normalizeSupplementaryBillDrafts(order.supplementaryBills)}
+                      savedBills={normalizeSupplementaryBillDrafts(
+                        lockedOrders[index]?.supplementaryBills,
+                      )}
                       disabled={disabled || downstreamLocked}
                       capitalSelected={form.valueCapitalSelected === "Yes"}
                       revenueSelected={form.valueRevenueSelected === "Yes"}
@@ -7008,7 +8134,13 @@ function SupplyOrdersBlock({
                         updateSupplementaryBillDraft(index, draftId, patch)
                       }
                       onRemove={(draftId) => removeSupplementaryBillDraft(index, draftId)}
+                      onDeleteBillReturnCycle={(cycleId) => onDeleteBillReturnCycle(index, cycleId)}
                     />
+                  ) : null}
+                  {renderSupplyOrderUpdateButton ? (
+                    <div className="mt-4 flex justify-end border-t border-border/60 pt-3">
+                      {renderSupplyOrderUpdateButton(index, orderDirty)}
+                    </div>
                   ) : null}
                 </div>
               </details>
@@ -7022,6 +8154,7 @@ function SupplyOrdersBlock({
 function SupplementaryBillsDraftBlock({
   orderIndex,
   bills,
+  savedBills,
   disabled,
   capitalSelected,
   revenueSelected,
@@ -7030,9 +8163,11 @@ function SupplementaryBillsDraftBlock({
   onAdd,
   onChange,
   onRemove,
+  onDeleteBillReturnCycle,
 }: {
   orderIndex: number;
   bills: SupplementaryBillDraft[];
+  savedBills: SupplementaryBillDraft[];
   disabled: boolean;
   capitalSelected: boolean;
   revenueSelected: boolean;
@@ -7040,7 +8175,8 @@ function SupplementaryBillsDraftBlock({
   focusBlockKeySet: Set<string>;
   onAdd: () => void;
   onChange: (draftId: string, patch: Partial<SupplementaryBillDraft>) => void;
-  onRemove: (draftId: string) => void;
+  onRemove: (draftId: string) => void | Promise<void>;
+  onDeleteBillReturnCycle: (cycleId: string) => Promise<void>;
 }) {
   return (
     <div className="space-y-3">
@@ -7064,6 +8200,7 @@ function SupplementaryBillsDraftBlock({
       {bills.length ? (
         <div className="space-y-3">
           {bills.map((bill, index) => {
+            const savedBill = savedBills.find((saved) => saved.id === bill.id);
             const completion = getSupplementaryBillCompletion(bill, {
               valueCapitalSelected: capitalSelected ? "Yes" : "No",
               valueRevenueSelected: revenueSelected ? "Yes" : "No",
@@ -7095,7 +8232,7 @@ function SupplementaryBillsDraftBlock({
                     </div>
                     <span
                       className={
-                        "rounded-full border px-2 py-0.5 text-[11px] font-medium " +
+                        "rounded-full border px-2 py-0.5 text-[0.6875rem] font-medium " +
                         getCompletionBadgeClass(status)
                       }
                     >
@@ -7104,7 +8241,7 @@ function SupplementaryBillsDraftBlock({
                     <div className="inline-flex items-center gap-1">
                       <label
                         className={
-                          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[11px] font-medium " +
+                          "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[0.6875rem] font-medium " +
                           (isCurrentReturned
                             ? "border-primary/40 bg-primary/10 text-primary"
                             : "border-border bg-secondary/30 text-muted-foreground")
@@ -7149,16 +8286,20 @@ function SupplementaryBillsDraftBlock({
                       </TooltipProvider>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onRemove(bill.id)}
-                    disabled={disabled}
-                    className="inline-flex size-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-60"
-                    aria-label={`Remove supplementary bill ${index + 1}`}
-                    title="Remove"
+                  <DeleteConfirmation
+                    mode={savedBill ? "delete" : "draft"}
+                    onConfirm={() => onRemove(bill.id)}
                   >
-                    <Trash2 className="size-4" />
-                  </button>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      className="inline-flex size-8 items-center justify-center rounded-md border border-input bg-background text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-60"
+                      aria-label={`Remove supplementary bill ${index + 1}`}
+                      title="Remove"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
+                  </DeleteConfirmation>
                 </div>
                 <PaymentTimingControl
                   caseLabel={`S.O. ${orderIndex + 1}, supplementary bill ${index + 1}`}
@@ -7219,6 +8360,8 @@ function SupplementaryBillsDraftBlock({
                   <div className="md:col-span-2">
                     <BillReturnCyclesBlock
                       cycles={bill.billReturnCycles}
+                      lockedCycles={savedBill?.billReturnCycles}
+                      onDeleteSavedCycle={(cycleId) => onDeleteBillReturnCycle(cycleId)}
                       disabled={disabled}
                       lockFilledFields={false}
                       testIdPrefix={`add-field-supplementaryBill-${bill.id}-billReturnCycles`}
@@ -7356,13 +8499,34 @@ function FirmRatingFieldsBlock({
               <div className="mb-1.5 text-xs font-medium">{field.label}</div>
               <input
                 type="number"
-                min="0"
-                step="0.01"
+                min={field.minValue ?? "0"}
+                max={field.maxValue ?? "5"}
+                step="any"
                 value={values[field.id] ?? ""}
-                onChange={(event) => onChange(field.id, event.target.value)}
+                aria-label={`${field.label}, allowed range ${field.minValue ?? "0"} to ${field.maxValue ?? "5"}`}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  if (nextValue === "") {
+                    onChange(field.id, "");
+                    return;
+                  }
+                  const numericValue = Number(nextValue);
+                  const minimum = Number(field.minValue ?? "0");
+                  const maximum = Number(field.maxValue ?? "5");
+                  if (
+                    Number.isFinite(numericValue) &&
+                    numericValue >= minimum &&
+                    numericValue <= maximum
+                  ) {
+                    onChange(field.id, nextValue);
+                  }
+                }}
                 disabled={fieldDisabled}
                 className={inputCls + disabledCls(fieldDisabled)}
               />
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                Allowed: {field.minValue ?? "0"}–{field.maxValue ?? "5"}
+              </span>
             </label>
           );
         })}
@@ -8399,6 +9563,7 @@ function addSupplyOrderFieldCompletion(
 ) {
   const key = field.key as SupplyOrderKey;
   if (
+    key === "firmUniqueNo" ||
     (key === "firmTypeOther" && (order.firmType ?? "").trim().toUpperCase() !== "OTHER") ||
     isOptionalDpCompletionField(key) ||
     (gemDisabled && key === "gemSoNo") ||
@@ -8582,21 +9747,21 @@ function getStageDpRibbonLabel(order: SupplyOrderDetail, fileType: string, fileT
 }
 
 function getCompletionBorderClass(status: SupplyOrderCompletionStatus) {
-  if (status === "complete") return "border-success/70";
-  if (status === "partial") return "border-warning/70";
-  return "border-destructive/70";
+  if (status === "complete") return "border-success/40";
+  if (status === "partial") return "border-warning/40";
+  return "border-destructive/40";
 }
 
 function getCompletionDotClass(status: SupplyOrderCompletionStatus) {
-  if (status === "complete") return "bg-success";
-  if (status === "partial") return "bg-warning";
-  return "bg-destructive";
+  if (status === "complete") return "bg-success/70";
+  if (status === "partial") return "bg-warning/70";
+  return "bg-destructive/70";
 }
 
 function getCompletionBadgeClass(status: SupplyOrderCompletionStatus) {
-  if (status === "complete") return "border-success/40 bg-success/10 text-success";
-  if (status === "partial") return "border-warning/40 bg-warning/10 text-warning";
-  return "border-destructive/40 bg-destructive/10 text-destructive";
+  if (status === "complete") return "border-success/30 bg-success/5 text-success";
+  if (status === "partial") return "border-warning/30 bg-warning/5 text-warning";
+  return "border-destructive/30 bg-destructive/5 text-destructive";
 }
 
 type MilestoneRowState = {
@@ -8628,9 +9793,11 @@ function isJobCompletionDone(row: MilestoneRowState) {
 }
 
 function normalizeBillReturnCycles(cycles: BillReturnCycle[] | undefined) {
-  return (Array.isArray(cycles) ? cycles : []).filter((cycle) =>
-    [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(hasFilledValue),
-  );
+  return (Array.isArray(cycles) ? cycles : [])
+    .filter((cycle) =>
+      [cycle.returnedDate, cycle.reason, cycle.resubmittedDate, cycle.remarks].some(hasFilledValue),
+    )
+    .map((cycle) => ({ ...cycle, id: cycle.id || createDetailRowId() }));
 }
 
 function hasOpenBillReturn(row: Pick<SupplyOrderDetail, "billReturnCycles"> | MilestoneRowState) {
@@ -8792,6 +9959,7 @@ function SupplyOrderMilestonesBlock({
   completionForm,
   ir,
   stageScoped = false,
+  milestoneProgress,
   disabled,
   lockFilledFields,
   onCurrentChange,
@@ -8806,6 +9974,7 @@ function SupplyOrderMilestonesBlock({
   completionForm?: Pick<FormState, "gem" | "valueCapitalSelected" | "valueRevenueSelected">;
   ir?: string;
   stageScoped?: boolean;
+  milestoneProgress?: Record<string, MilestoneProgress>;
   disabled: boolean;
   lockFilledFields: boolean;
   onCurrentChange: (milestone: string) => void;
@@ -8852,9 +10021,10 @@ function SupplyOrderMilestonesBlock({
       <div className="grid grid-cols-[minmax(0,1fr)_3.25rem_3.25rem] border-b border-border bg-secondary/35 px-3 py-2 text-xs font-semibold uppercase text-muted-foreground sm:grid-cols-[minmax(0,1fr)_5rem_5rem]">
         <div>{title}</div>
         <div className="text-center">Current</div>
-        <div className="text-center">Done</div>
+        <div className="text-center">Completed</div>
       </div>
       {milestones.map((milestone) => {
+        const progress = milestoneProgress?.[normalizeMilestoneName(milestone)];
         const derivedDelivery = getDerivedDeliveryMilestoneState(
           order,
           fileType,
@@ -8891,8 +10061,9 @@ function SupplyOrderMilestonesBlock({
           milestone === "PSB" ||
           milestone === "PWB" ||
           milestone === "PSB+PWB";
-        const isCurrent =
-          milestone === "Bill sent for payment" && hasOpenBillReturn(order)
+        const isCurrent = progress
+          ? Boolean(progress.current)
+          : milestone === "Bill sent for payment" && hasOpenBillReturn(order)
             ? false
             : isDeliveryMilestone
               ? derivedDelivery.current
@@ -8903,20 +10074,22 @@ function SupplyOrderMilestonesBlock({
                   : isAutoCurrentMilestone ||
                     normalizeMilestoneName(String(order.currentMilestone ?? "")) ===
                       normalizeMilestoneName(milestone);
-        const isCompleted = isDeliveryMilestone
-          ? derivedDelivery.completed
-          : isJobCompletionMilestone
-            ? getDerivedJobCompletionMilestoneState(order, fileType, ir, fileTypeGroup).completed
-            : isDateDrivenMilestone
-              ? milestone === "Supply Order"
-                ? isSupplyOrderTabComplete(order, completionForm)
-                : milestone === "Bill sent for payment"
-                  ? isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped }) &&
-                    !hasOpenBillReturn(order)
-                  : milestone === "Bill returned for correction"
-                    ? isBillReturnedForCorrectionMilestoneComplete(order)
-                    : isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped })
-              : completedSet.has(milestone);
+        const isCompleted = progress
+          ? Boolean(progress.total && progress.completed === progress.total)
+          : isDeliveryMilestone
+            ? derivedDelivery.completed
+            : isJobCompletionMilestone
+              ? getDerivedJobCompletionMilestoneState(order, fileType, ir, fileTypeGroup).completed
+              : isDateDrivenMilestone
+                ? milestone === "Supply Order"
+                  ? isSupplyOrderTabComplete(order, completionForm)
+                  : milestone === "Bill sent for payment"
+                    ? isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped }) &&
+                      !hasOpenBillReturn(order)
+                    : milestone === "Bill returned for correction"
+                      ? isBillReturnedForCorrectionMilestoneComplete(order)
+                      : isSupplyOrderMilestoneDateComplete(order, milestone, { stageScoped })
+                : completedSet.has(milestone);
         const lockedValueFilled =
           (lockedOrder
             ? milestone === "Supply Order"
@@ -8933,6 +10106,7 @@ function SupplyOrderMilestonesBlock({
           milestone === "Bill sent for payment" ||
           milestone === "Bill returned for correction" ||
           milestone === "Payment" ||
+          (Boolean(progress) && isStageDrivenMilestone(milestone)) ||
           isAutoCurrentMilestone ||
           isDerivedCurrentMilestone ||
           (milestone === "Supply Order" &&
@@ -8953,7 +10127,12 @@ function SupplyOrderMilestonesBlock({
             }
           >
             <div className="min-w-0 break-words sm:truncate">
-              {getSupplyOrderMilestoneDisplayLabel(milestone)}
+              <div>{getSupplyOrderMilestoneDisplayLabel(milestone)}</div>
+              {progress && progress.total > 1 ? (
+                <div className="text-[0.6875rem] font-normal text-muted-foreground">
+                  {progress.completed}/{progress.total} {getMilestoneProgressUnit(milestone)} done
+                </div>
+              ) : null}
             </div>
             <div className="flex justify-center">
               <input
@@ -9031,6 +10210,7 @@ function AdvancePaymentMilestonesBlock({ advance }: { advance: AdvancePaymentDet
 function BillReturnCyclesBlock({
   cycles,
   lockedCycles,
+  onDeleteSavedCycle,
   disabled,
   lockFilledFields,
   testIdPrefix,
@@ -9038,6 +10218,7 @@ function BillReturnCyclesBlock({
 }: {
   cycles: BillReturnCycle[] | undefined;
   lockedCycles?: BillReturnCycle[];
+  onDeleteSavedCycle?: (cycleId: string) => Promise<void>;
   disabled: boolean;
   lockFilledFields: boolean;
   testIdPrefix: string;
@@ -9055,9 +10236,17 @@ function BillReturnCyclesBlock({
     onChange(normalizeBillReturnCycles(next));
   };
   const addCycle = () => {
-    onChange([...rows, { returnedDate: "", reason: "", resubmittedDate: "", remarks: "" }]);
+    onChange([
+      ...rows,
+      { id: createDetailRowId(), returnedDate: "", reason: "", resubmittedDate: "", remarks: "" },
+    ]);
   };
-  const deleteCycle = (index: number) => {
+  const deleteCycle = async (index: number) => {
+    const cycle = rows[index];
+    if (cycle?.id && lockedRows.some((saved) => saved.id === cycle.id)) {
+      if (!onDeleteSavedCycle) throw new Error("Could not delete the saved return entry.");
+      await onDeleteSavedCycle(cycle.id);
+    }
     onChange(rows.filter((_, cycleIndex) => cycleIndex !== index));
   };
 
@@ -9085,15 +10274,21 @@ function BillReturnCyclesBlock({
                 <div className="text-xs font-semibold uppercase text-muted-foreground">
                   Return {index + 1}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => deleteCycle(index)}
-                  disabled={rowDisabled || !rows.length}
-                  className="inline-flex size-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label={`Delete return ${index + 1}`}
+                <DeleteConfirmation
+                  mode={rows[index]?.id && lockedRows.some((saved) => saved.id === rows[index]?.id)
+                    ? "delete"
+                    : "draft"}
+                  onConfirm={() => deleteCycle(index)}
                 >
-                  <Trash2 className="size-4" />
-                </button>
+                  <button
+                    type="button"
+                    disabled={rowDisabled || !rows.length}
+                    className="inline-flex size-8 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label={`Delete return ${index + 1}`}
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </DeleteConfirmation>
               </div>
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                 <label className="block min-w-0">
@@ -9117,6 +10312,7 @@ function BillReturnCyclesBlock({
                     onChange={(event) => updateCycle(index, { reason: event.target.value })}
                     disabled={rowDisabled}
                     data-testid={`${testIdPrefix}-${index}-reason`}
+                    placeholder="Recommended to enter"
                     className={inputCls + disabledCls(rowDisabled)}
                   />
                 </label>
@@ -9171,9 +10367,9 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
   return (
     <section
       id={sectionId("Remarks Summary")}
-      className="md:col-span-2 scroll-mt-24 rounded-md border border-border bg-secondary/25 p-4"
+      className="md:col-span-2 scroll-mt-24 rounded-xl border border-border/80 bg-card p-4 shadow-[var(--shadow-card)]"
     >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+      <div className="-mx-2 -mt-2 mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border-b border-border bg-secondary px-3 py-2">
         <div>
           <h3 className="text-sm font-semibold">Remarks Summary</h3>
           <span className="text-xs text-muted-foreground">
@@ -9268,80 +10464,50 @@ function TimelineBlock({
   supplyOrders: SupplyOrderDetail[];
 }) {
   const [showAllDates, setShowAllDates] = useState(false);
-  const [selectedSupplyOrderIndexes, setSelectedSupplyOrderIndexes] = useState<number[]>([]);
+  const [activeTimelineOrderIndex, setActiveTimelineOrderIndex] = useState<number | null>(null);
   const enabledTimelineFields = getEnabledTimelineFields(form);
-  const useSupplyOrderSelector = shouldShowSupplyOrderTimelineSelector(supplyOrders);
-  const selectableSupplyOrderIndexes = useMemo(
-    () => supplyOrders.map((_, index) => index),
-    [supplyOrders],
-  );
-  const activeSupplyOrderIndexes = useSupplyOrderSelector
-    ? selectedSupplyOrderIndexes.filter((index) => index >= 0 && index < supplyOrders.length)
-    : selectableSupplyOrderIndexes;
   const fileItems = enabledTimelineFields.map((field, index) => ({
     id: `file:${field.key}`,
     label: field.label,
     date: form[field.key],
     order: index,
   }));
-  const timelineGroups = useSupplyOrderSelector
-    ? [
-        { title: "File timeline", items: fileItems },
-        ...activeSupplyOrderIndexes.map((orderIndex) =>
-          getSupplyOrderTimelineGroup(
-            form,
-            supplyOrders[orderIndex],
-            orderIndex,
-            enabledTimelineFields.length + orderIndex * 100,
-          ),
-        ),
-      ]
-    : [
-        {
-          title: "Timeline",
-          items: [
-            ...fileItems,
-            ...getSupplyOrderTimelineItems(form, supplyOrders, enabledTimelineFields.length),
-          ],
-        },
-      ];
+  const timelineGroups = [
+    { title: "File Level Timeline", items: fileItems },
+    ...supplyOrders.map((order, orderIndex) =>
+      getSupplyOrderTimelineGroup(
+        form,
+        order,
+        orderIndex,
+        enabledTimelineFields.length + orderIndex * 100,
+      ),
+    ),
+  ];
   const allItems = timelineGroups.flatMap((group) => group.items);
   const filledItems = getFilledTimelineItems(allItems);
-  const visibleGroups = showAllDates
-    ? timelineGroups
-        .map((group) => ({
-          ...group,
-          items: getFullTimelineItems(group.items),
-        }))
-        .filter((group) => group.items.length > 0)
-    : [{ title: "Timeline by recorded date", items: filledItems }];
-
-  useEffect(() => {
-    setSelectedSupplyOrderIndexes((current) => {
-      const valid = current.filter((index) => index >= 0 && index < supplyOrders.length);
-      if (valid.length) return valid;
-      return selectableSupplyOrderIndexes;
-    });
-  }, [selectableSupplyOrderIndexes, supplyOrders.length]);
-
-  const toggleSupplyOrderTimeline = (index: number, checked: boolean) => {
-    setSelectedSupplyOrderIndexes((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(index);
-      } else {
-        next.delete(index);
-      }
-      return selectableSupplyOrderIndexes.filter((item) => next.has(item));
-    });
-  };
+  const selectedTimelineOrderIndex =
+    activeTimelineOrderIndex !== null && activeTimelineOrderIndex < supplyOrders.length
+      ? activeTimelineOrderIndex
+      : null;
+  const activeTimelineGroup =
+    selectedTimelineOrderIndex === null
+      ? timelineGroups[0]
+      : timelineGroups[selectedTimelineOrderIndex + 1] ?? timelineGroups[0];
+  const visibleGroups = [
+    {
+      ...activeTimelineGroup,
+      items: showAllDates
+        ? getFullTimelineItems(activeTimelineGroup.items)
+        : getFilledTimelineItems(activeTimelineGroup.items),
+    },
+  ];
 
   return (
     <section
       id={sectionId("Timeline")}
-      className="md:col-span-2 scroll-mt-24 rounded-md border border-border bg-secondary/25 p-4"
+      className="md:col-span-2 scroll-mt-24 rounded-xl border border-border/80 bg-card p-4 shadow-[var(--shadow-card)]"
     >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+      <div className="-mx-2 -mt-2 mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border-b border-border bg-secondary px-3 py-2">
         <div>
           <h3 className="text-sm font-semibold">Timeline</h3>
           <span className="text-xs text-muted-foreground">
@@ -9351,7 +10517,7 @@ function TimelineBlock({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "pdf")}
+            onClick={() => exportTimelineReport(form, timelineGroups, showAllDates, "pdf")}
             className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Timeline PDF"
             aria-label="Export Timeline PDF"
@@ -9360,7 +10526,7 @@ function TimelineBlock({
           </button>
           <button
             type="button"
-            onClick={() => exportTimelineReport(form, visibleGroups, showAllDates, "excel")}
+            onClick={() => exportTimelineReport(form, timelineGroups, showAllDates, "excel")}
             className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium text-foreground hover:bg-accent"
             title="Export Timeline Excel"
             aria-label="Export Timeline Excel"
@@ -9392,39 +10558,39 @@ function TimelineBlock({
         </div>
       </div>
 
-      {useSupplyOrderSelector ? (
-        <div className="mb-4 rounded-md border border-border bg-card p-3">
-          <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            Supply order timeline
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {selectableSupplyOrderIndexes.map((orderIndex) => (
-              <label
-                key={orderIndex}
-                className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-background px-2.5 text-xs font-medium"
-              >
-                <input
-                  type="checkbox"
-                  checked={activeSupplyOrderIndexes.includes(orderIndex)}
-                  onChange={(event) => toggleSupplyOrderTimeline(orderIndex, event.target.checked)}
-                />
-                Supply Order {orderIndex + 1}
-              </label>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      <div className="mb-4 flex flex-wrap gap-2" role="tablist" aria-label="Timeline scope">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={selectedTimelineOrderIndex === null}
+          onClick={() => setActiveTimelineOrderIndex(null)}
+          className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedTimelineOrderIndex === null ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
+        >
+          File Level
+        </button>
+        {supplyOrders.map((order, orderIndex) => (
+          <button
+            key={order.id ?? `timeline-order-tab-${orderIndex}`}
+            type="button"
+            role="tab"
+            aria-selected={selectedTimelineOrderIndex === orderIndex}
+            onClick={() => setActiveTimelineOrderIndex(orderIndex)}
+            className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedTimelineOrderIndex === orderIndex ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
+          >
+            Supply Order {orderIndex + 1}
+          </button>
+        ))}
+      </div>
 
-      {filledItems.length === 0 && !showAllDates ? (
-        <p className="text-sm text-muted-foreground">
-          Timeline will appear here as date fields are filled.
-        </p>
-      ) : (
-        <div className="space-y-4">
-          {visibleGroups.map((group) => (
-            <TimelineGroupBlock key={group.title} group={group} />
-          ))}
+      {visibleGroups[0].items.length === 0 && !showAllDates ? (
+        <div>
+          <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+            {visibleGroups[0].title}
+          </div>
+          <p className="text-sm text-muted-foreground">No dates recorded for this level.</p>
         </div>
+      ) : (
+        <TimelineGroupBlock group={visibleGroups[0]} />
       )}
     </section>
   );
@@ -9444,7 +10610,7 @@ function TimelineGroupBlock({ group }: { group: TimelineGroup }) {
           return (
             <li key={item.id} className="relative pb-4 last:pb-0">
               <div className="grid grid-cols-[4.5rem_1.5rem_minmax(0,1fr)] items-start gap-2">
-                <div className="pt-0.5 text-right text-[11px] font-medium text-muted-foreground">
+                <div className="pt-0.5 text-right text-[0.6875rem] font-medium text-muted-foreground">
                   {item.date ? formatDayCount(metrics?.gapDays) : "-"}
                 </div>
                 <div className="relative flex h-5 justify-center">
@@ -9468,7 +10634,7 @@ function TimelineGroupBlock({ group }: { group: TimelineGroup }) {
                     >
                       {item.label}
                     </div>
-                    <div className="shrink-0 text-right text-[11px] font-medium text-muted-foreground">
+                    <div className="shrink-0 text-right text-[0.6875rem] font-medium text-muted-foreground">
                       {item.date ? formatDayCount(metrics?.cumulativeDays) : "-"}
                     </div>
                   </div>
@@ -9494,6 +10660,11 @@ function MilestonesBlock({
   lockedCurrentMilestone,
   lockedCompletedMilestones,
   supplyOrderMilestoneProgress,
+  showSupplyOrderMilestones,
+  supplyOrders,
+  lockedSupplyOrders,
+  supplyOrderMilestoneProgressByOrder,
+  supplyOrderMilestoneForm,
   milestoneDisplayLabels,
   inactiveMilestones,
   focusedMilestone,
@@ -9501,9 +10672,10 @@ function MilestonesBlock({
   lockFilledFields,
   fileClosureDate,
   lockControl,
-  renderUpdateButton,
   onCurrentChange,
   onCompletedChange,
+  onSupplyOrderCurrentChange,
+  onSupplyOrderCompletedChange,
   onFileClosureDateChange,
 }: {
   milestones: string[];
@@ -9514,6 +10686,11 @@ function MilestonesBlock({
   lockedCurrentMilestone: string;
   lockedCompletedMilestones: string[];
   supplyOrderMilestoneProgress: Record<string, MilestoneProgress>;
+  showSupplyOrderMilestones: boolean;
+  supplyOrders: SupplyOrderDetail[];
+  lockedSupplyOrders: SupplyOrderDetail[];
+  supplyOrderMilestoneProgressByOrder: Record<string, MilestoneProgress>[];
+  supplyOrderMilestoneForm: FormState;
   milestoneDisplayLabels?: Record<string, string>;
   inactiveMilestones?: Set<string>;
   focusedMilestone: string;
@@ -9521,57 +10698,98 @@ function MilestonesBlock({
   lockFilledFields: boolean;
   fileClosureDate: string;
   lockControl: ReactNode;
-  renderUpdateButton?: () => ReactNode;
   onCurrentChange: (value: string) => void;
   onCompletedChange: (value: string[]) => void;
+  onSupplyOrderCurrentChange: (index: number, value: string) => void;
+  onSupplyOrderCompletedChange: (index: number, value: string[]) => void;
   onFileClosureDateChange: (value: string) => void;
 }) {
-  const completedSet = new Set([...completedMilestones, ...autoCompletedMilestones]);
-  const autoCompletedSet = new Set(autoCompletedMilestones);
-  const lockedCompletedSet = new Set(lockedCompletedMilestones);
+  const [activeMilestoneOrderIndex, setActiveMilestoneOrderIndex] = useState<number | null>(null);
+  const completedKeys = new Set(
+    [...completedMilestones, ...autoCompletedMilestones].map(normalizeMilestoneName),
+  );
+  const autoCompletedKeys = new Set(autoCompletedMilestones.map(normalizeMilestoneName));
+  const lockedCompletedKeys = new Set(lockedCompletedMilestones.map(normalizeMilestoneName));
+  const applicableKeys = new Set(Array.from(applicableMilestones).map(normalizeMilestoneName));
   const inactiveMilestoneKeys = new Set(
     Array.from(inactiveMilestones ?? []).map(normalizeMilestoneName),
   );
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const applicableMilestoneList = milestones.filter((milestone) =>
-    applicableMilestones.has(milestone),
+    applicableMilestones.has(milestone) &&
+      (!showSupplyOrderMilestones ||
+        !supplyOrderDrivenMilestoneKeys.has(normalizeMilestoneName(milestone))),
   );
   const applicableCount = applicableMilestoneList.length;
   const applicableCompletedCount = applicableMilestoneList.filter((milestone) =>
     (() => {
       const progress = supplyOrderMilestoneProgress[normalizeMilestoneName(milestone)];
       if (progress) return Boolean(progress.total && progress.completed === progress.total);
-      return completedSet.has(milestone);
+      return completedKeys.has(normalizeMilestoneName(milestone));
     })(),
   ).length;
+  const supplyOrderMilestoneGroups = showSupplyOrderMilestones
+    ? supplyOrders.map((order, index) => {
+        const orderMilestones = supplyOrderMilestoneNames.filter(
+          (milestone) =>
+            milestones.some(
+              (configured) =>
+                normalizeMilestoneName(configured) === normalizeMilestoneName(milestone),
+            ) &&
+            getApplicableOrdersForMilestone(
+              [order],
+              milestone,
+              supplyOrderMilestoneForm,
+            ).length > 0,
+        );
+        const identifier = order.soNo?.trim() || order.gemSoNo?.trim();
+        return {
+          index,
+          order,
+          milestones: orderMilestones,
+          title: identifier
+            ? `Supply Order ${index + 1} · ${identifier}`
+            : `Supply Order ${index + 1}`,
+        };
+      })
+    : [];
+  const activeSupplyOrderGroup = supplyOrderMilestoneGroups.find(
+    (group) => group.index === activeMilestoneOrderIndex,
+  );
 
   const toggleCurrent = (milestone: string) => {
     if (disabled) return;
     if (inactiveMilestoneKeys.has(normalizeMilestoneName(milestone))) return;
     const progress = supplyOrderMilestoneProgress[normalizeMilestoneName(milestone)];
     if (progress) return;
-    const isCompleted = completedSet.has(milestone);
-    if (!applicableMilestones.has(milestone) || isCompleted) return;
-    onCurrentChange(currentMilestone === milestone ? "" : milestone);
+    const milestoneKey = normalizeMilestoneName(milestone);
+    const isCompleted = completedKeys.has(milestoneKey);
+    if (!applicableKeys.has(milestoneKey) || isCompleted) return;
+    onCurrentChange(normalizeMilestoneName(currentMilestone) === milestoneKey ? "" : milestone);
   };
 
   const toggleCompleted = (milestone: string) => {
     if (disabled || normalizeMilestoneName(milestone) === "delivery") return;
     if (inactiveMilestoneKeys.has(normalizeMilestoneName(milestone))) return;
-    if (!applicableMilestones.has(milestone)) return;
-    if (supplyOrderMilestoneProgress[normalizeMilestoneName(milestone)]) return;
-    if (autoCompletedSet.has(milestone)) return;
-    const next = new Set(completedSet);
-    if (next.has(milestone)) {
-      next.delete(milestone);
+    const milestoneKey = normalizeMilestoneName(milestone);
+    if (!applicableKeys.has(milestoneKey)) return;
+    if (supplyOrderMilestoneProgress[milestoneKey]) return;
+    if (autoCompletedKeys.has(milestoneKey)) return;
+    const next = new Set(completedKeys);
+    if (next.has(milestoneKey)) {
+      next.delete(milestoneKey);
     } else {
-      next.add(milestone);
-      if (currentMilestone === milestone) {
+      next.add(milestoneKey);
+      if (normalizeMilestoneName(currentMilestone) === milestoneKey) {
         onCurrentChange("");
       }
     }
     onCompletedChange(
-      milestones.filter((item) => applicableMilestones.has(item) && next.has(item)),
+      milestones.filter(
+        (item) =>
+          applicableKeys.has(normalizeMilestoneName(item)) &&
+          next.has(normalizeMilestoneName(item)),
+      ),
     );
   };
 
@@ -9585,139 +10803,198 @@ function MilestonesBlock({
   return (
     <section
       id={sectionId("Milestones")}
-      className="md:col-span-2 scroll-mt-24 rounded-md border border-border bg-secondary/25 p-4"
+      className="md:col-span-2 scroll-mt-24 rounded-xl border border-border/80 bg-card p-4 shadow-[var(--shadow-card)]"
     >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
+      <div className="-mx-2 -mt-2 mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md border-b border-border bg-secondary px-3 py-2">
         <div>
           <h3 className="text-sm font-semibold">Milestones</h3>
           <span className="text-xs text-muted-foreground">
             Select the current stage and mark completed stages manually.
           </span>
         </div>
-        <div className="flex flex-col items-end gap-2">
-          {lockControl}
-          {renderUpdateButton ? renderUpdateButton() : null}
-        </div>
+        <div className="flex flex-col items-end gap-2">{lockControl}</div>
       </div>
 
-      <div className="rounded-md border border-border bg-card p-4">
-        <div className="mb-3 flex items-center justify-between gap-2">
-          <div>
-            <h4 className="text-sm font-semibold">Applicable stages</h4>
-            <p className="text-xs text-muted-foreground">
-              Select one current stage and mark completed stages.
+      <div className="mb-4 flex flex-wrap gap-2" role="tablist" aria-label="Milestone scope">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!activeSupplyOrderGroup}
+          onClick={() => setActiveMilestoneOrderIndex(null)}
+          className={`rounded-md border px-3 py-2 text-sm font-medium ${!activeSupplyOrderGroup ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
+        >
+          File Level
+        </button>
+        {supplyOrderMilestoneGroups.map((group) => (
+          <button
+            key={group.order.id ?? `milestone-order-tab-${group.index}`}
+            type="button"
+            role="tab"
+            aria-selected={activeSupplyOrderGroup?.index === group.index}
+            onClick={() => setActiveMilestoneOrderIndex(group.index)}
+            className={`rounded-md border px-3 py-2 text-sm font-medium ${activeSupplyOrderGroup?.index === group.index ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
+          >
+            Supply Order {group.index + 1}
+          </button>
+        ))}
+      </div>
+
+      {activeSupplyOrderGroup ? (
+        <div className="rounded-md border border-border bg-card p-4">
+          <p className="mb-3 text-xs text-muted-foreground">
+            Showing milestones for {activeSupplyOrderGroup.title}. Date-based statuses update from
+            this order’s fields.
+          </p>
+          {activeSupplyOrderGroup.milestones.length ? (
+            <SupplyOrderMilestonesBlock
+              title={activeSupplyOrderGroup.title}
+              milestones={activeSupplyOrderGroup.milestones}
+              order={activeSupplyOrderGroup.order}
+              lockedOrder={lockedSupplyOrders[activeSupplyOrderGroup.index]}
+              fileType={supplyOrderMilestoneForm.fileType}
+              fileTypeGroup={supplyOrderMilestoneForm.fileTypeGroup}
+              completionForm={supplyOrderMilestoneForm}
+              ir={supplyOrderMilestoneForm.ir}
+              disabled={disabled}
+              lockFilledFields={lockFilledFields}
+              milestoneProgress={supplyOrderMilestoneProgressByOrder[activeSupplyOrderGroup.index]}
+              onCurrentChange={(milestone) =>
+                onSupplyOrderCurrentChange(activeSupplyOrderGroup.index, milestone)
+              }
+              onCompletedChange={(selected) =>
+                onSupplyOrderCompletedChange(activeSupplyOrderGroup.index, selected)
+              }
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              No applicable milestones for this supply order.
             </p>
-          </div>
-          <span className="rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs tabular-nums text-muted-foreground">
-            {applicableCompletedCount}/{applicableCount}
-          </span>
+          )}
         </div>
-        <div className="overflow-hidden rounded-md border border-border bg-background">
-          <div className="grid grid-cols-[minmax(0,1fr)_6rem_6rem] border-b border-border bg-secondary/35 px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">
-            <div>Stage</div>
-            <div className="text-center">Current</div>
-            <div className="text-center">Completed</div>
+      ) : (
+        <div className="rounded-md border border-border bg-card p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div>
+              <h4 className="text-sm font-semibold">
+                {showSupplyOrderMilestones ? "File-level milestones" : "Applicable stages"}
+              </h4>
+              <p className="text-xs text-muted-foreground">
+                {showSupplyOrderMilestones
+                  ? "Stages tracked once for the file as a whole. Select the current stage and mark completed stages."
+                  : "Select one current stage and mark completed stages."}
+              </p>
+            </div>
+            <span className="rounded-md border border-border bg-secondary/40 px-2 py-1 text-xs tabular-nums text-muted-foreground">
+              {applicableCompletedCount}/{applicableCount}
+            </span>
           </div>
-          {applicableMilestoneList.map((milestone) => {
-            const milestoneKey = normalizeMilestoneName(milestone);
-            const displayLabel = milestoneDisplayLabels?.[milestoneKey] ?? milestone;
-            const isInactive = inactiveMilestoneKeys.has(milestoneKey);
-            const orderProgress = supplyOrderMilestoneProgress[milestoneKey];
-            const isOrderDriven = Boolean(orderProgress);
-            const isCompleted = orderProgress
-              ? Boolean(orderProgress.total && orderProgress.completed === orderProgress.total)
-              : milestoneKey === "delivery"
-                ? false
-                : completedSet.has(milestone);
-            const isAutoCompleted = autoCompletedSet.has(milestone);
-            const isCurrent = orderProgress
-              ? Boolean(orderProgress.current)
-              : currentMilestone === milestone;
-            const isFileClosed = normalizeMilestoneName(milestone) === "fileclosed";
-            const currentDisabled =
-              isInactive ||
-              isFileClosed ||
-              disabled ||
-              isOrderDriven ||
-              isCompleted ||
-              (lockFilledFields && hasFilledValue(lockedCurrentMilestone));
-            const completedDisabled =
-              isInactive ||
-              disabled ||
-              milestoneKey === "delivery" ||
-              isOrderDriven ||
-              isAutoCompleted ||
-              (lockFilledFields && lockedCompletedSet.has(milestone));
-            return (
-              <div
-                key={milestone}
-                ref={(element) => {
-                  rowRefs.current[normalizeMilestoneName(milestone)] = element;
-                }}
-                className={`grid min-h-10 grid-cols-[minmax(0,1fr)_6rem_6rem] items-center border-b border-border px-3 py-2 text-sm last:border-b-0 ${
-                  isCurrent ? "bg-primary/10 font-semibold text-primary" : ""
-                } ${isCompleted ? "text-muted-foreground" : ""} ${
-                  isInactive ? "bg-secondary/20 text-muted-foreground" : ""
-                } ${
-                  normalizeMilestoneName(focusedMilestone) === normalizeMilestoneName(milestone)
-                    ? "ring-2 ring-primary/40"
-                    : ""
-                }`}
-              >
-                <div className="min-w-0">
-                  <div className="truncate">{displayLabel}</div>
-                  {orderProgress ? (
-                    <div className="text-[11px] font-normal text-muted-foreground">
-                      {orderProgress.completed}/{orderProgress.total}{" "}
-                      {orderProgress.label ?? `${getMilestoneProgressUnit(displayLabel)} done`}
-                    </div>
-                  ) : null}
-                  {isInactive ? (
-                    <div className="text-[11px] font-normal text-muted-foreground">
-                      Controlled in Supply order and payment
-                    </div>
-                  ) : null}
-                  {isFileClosed ? (
-                    <label className="mt-2 grid max-w-xs gap-1 text-xs font-normal text-muted-foreground">
-                      <span>File Closure Date</span>
-                      <DateInput
-                        value={fileClosureDate}
-                        disabled={disabled || !isCompleted || lockFilledFields}
-                        onChange={onFileClosureDateChange}
-                        className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+          <div className="overflow-hidden rounded-md border border-border bg-background">
+            <div className="grid grid-cols-[minmax(0,1fr)_6rem_6rem] border-b border-border bg-secondary/35 px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">
+              <div>Stage</div>
+              <div className="text-center">Current</div>
+              <div className="text-center">Completed</div>
+            </div>
+            {applicableMilestoneList.map((milestone) => {
+              const milestoneKey = normalizeMilestoneName(milestone);
+              const displayLabel = milestoneDisplayLabels?.[milestoneKey] ?? milestone;
+              const isInactive = inactiveMilestoneKeys.has(milestoneKey);
+              const orderProgress = supplyOrderMilestoneProgress[milestoneKey];
+              const isOrderDriven = Boolean(orderProgress);
+              const isCompleted = orderProgress
+                ? Boolean(orderProgress.total && orderProgress.completed === orderProgress.total)
+                : milestoneKey === "delivery"
+                  ? false
+                  : completedKeys.has(milestoneKey);
+              const isAutoCompleted = autoCompletedKeys.has(milestoneKey);
+              const isCurrent = orderProgress
+                ? Boolean(orderProgress.current)
+                : normalizeMilestoneName(currentMilestone) === milestoneKey;
+              const isFileClosed = normalizeMilestoneName(milestone) === "fileclosed";
+              const currentDisabled =
+                isInactive ||
+                isFileClosed ||
+                disabled ||
+                isOrderDriven ||
+                isCompleted ||
+                (lockFilledFields && hasFilledValue(lockedCurrentMilestone));
+              const completedDisabled =
+                isInactive ||
+                disabled ||
+                milestoneKey === "delivery" ||
+                isOrderDriven ||
+                isAutoCompleted ||
+                (lockFilledFields && lockedCompletedKeys.has(milestoneKey));
+              return (
+                <div
+                  key={milestone}
+                  ref={(element) => {
+                    rowRefs.current[normalizeMilestoneName(milestone)] = element;
+                  }}
+                  className={`grid min-h-10 grid-cols-[minmax(0,1fr)_6rem_6rem] items-center border-b border-border px-3 py-2 text-sm last:border-b-0 ${
+                    isCurrent ? "bg-primary/10 font-semibold text-primary" : ""
+                  } ${isCompleted ? "text-muted-foreground" : ""} ${
+                    isInactive ? "bg-secondary/20 text-muted-foreground" : ""
+                  } ${
+                    normalizeMilestoneName(focusedMilestone) === normalizeMilestoneName(milestone)
+                      ? "ring-2 ring-primary/40"
+                      : ""
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="truncate">{displayLabel}</div>
+                    {orderProgress ? (
+                      <div className="text-[0.6875rem] font-normal text-muted-foreground">
+                        {orderProgress.completed}/{orderProgress.total}{" "}
+                        {orderProgress.label ?? `${getMilestoneProgressUnit(displayLabel)} done`}
+                      </div>
+                    ) : null}
+                    {isInactive ? (
+                      <div className="text-[0.6875rem] font-normal text-muted-foreground">
+                        Controlled in Supply order and payment
+                      </div>
+                    ) : null}
+                    {isFileClosed ? (
+                      <label className="mt-2 grid max-w-xs gap-1 text-xs font-normal text-muted-foreground">
+                        <span>File Closure Date</span>
+                        <DateInput
+                          value={fileClosureDate}
+                          disabled={disabled || !isCompleted || lockFilledFields}
+                          onChange={onFileClosureDateChange}
+                          className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground disabled:cursor-not-allowed disabled:opacity-60"
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                  <div className="flex justify-center">
+                    {isFileClosed ? (
+                      <span className="text-xs text-muted-foreground">-</span>
+                    ) : (
+                      <input
+                        type="checkbox"
+                        checked={isCurrent}
+                        disabled={currentDisabled}
+                        onChange={() => toggleCurrent(milestone)}
+                        className="size-4 accent-primary disabled:cursor-not-allowed"
+                        aria-label={`Mark ${displayLabel} as current`}
                       />
-                    </label>
-                  ) : null}
-                </div>
-                <div className="flex justify-center">
-                  {isFileClosed ? (
-                    <span className="text-xs text-muted-foreground">-</span>
-                  ) : (
+                    )}
+                  </div>
+                  <div className="flex justify-center">
                     <input
                       type="checkbox"
-                      checked={isCurrent}
-                      disabled={currentDisabled}
-                      onChange={() => toggleCurrent(milestone)}
+                      checked={isCompleted}
+                      disabled={completedDisabled}
+                      onChange={() => toggleCompleted(milestone)}
                       className="size-4 accent-primary disabled:cursor-not-allowed"
-                      aria-label={`Mark ${displayLabel} as current`}
+                      aria-label={`Mark ${displayLabel} as completed`}
                     />
-                  )}
+                  </div>
                 </div>
-                <div className="flex justify-center">
-                  <input
-                    type="checkbox"
-                    checked={isCompleted}
-                    disabled={completedDisabled}
-                    onChange={() => toggleCompleted(milestone)}
-                    className="size-4 accent-primary disabled:cursor-not-allowed"
-                    aria-label={`Mark ${displayLabel} as completed`}
-                  />
-                </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -9788,22 +11065,6 @@ function getFullTimelineItems(items: TimelineItem[]) {
     if (b.date) return 1;
     return a.order - b.order;
   });
-}
-
-function getSupplyOrderTimelineItems(
-  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
-  supplyOrders: SupplyOrderDetail[],
-  startOrder: number,
-) {
-  const showOrderNumber = supplyOrders.length > 1;
-  return supplyOrders.flatMap((order, orderIndex) =>
-    getSupplyOrderTimelineItemsForOrder(form, order, orderIndex, startOrder + orderIndex * 100).map(
-      (item) => ({
-        ...item,
-        label: showOrderNumber ? `${item.label} (S.O. ${orderIndex + 1})` : item.label,
-      }),
-    ),
-  );
 }
 
 function getSupplyOrderTimelineGroup(
@@ -9986,18 +11247,6 @@ function getSupplementaryBillTimelineItems(
   });
 }
 
-function shouldShowSupplyOrderTimelineSelector(supplyOrders: SupplyOrderDetail[]) {
-  return (
-    supplyOrders.length > 1 ||
-    supplyOrders.some(
-      (order) =>
-        isYes(order.stageDelivery ?? "") ||
-        isYes(order.stagePayment ?? "") ||
-        isYes(order.advancePayment ?? ""),
-    )
-  );
-}
-
 function getTimelineItemKey(item: TimelineItem) {
   return item.id;
 }
@@ -10030,42 +11279,42 @@ function exportTimelineReport(
     { label: "Description", value: getFormDemandDescription(form) },
     { label: "Indentor", value: form.indentor },
   ];
-  const exportItems = showAllDates
-    ? timelineGroups.flatMap((group) =>
-        getFullTimelineItems(group.items).map((item) => ({ ...item, group: group.title })),
-      )
-    : getFilledTimelineItems(timelineGroups.flatMap((group) => group.items)).map((item) => ({
-        ...item,
-        group: "",
-      }));
-  const filledExportItems = exportItems.filter((item) => item.date);
-  const timelineRows = exportItems.map((item, index) => {
-    const filledIndex = item.date
-      ? filledExportItems.findIndex((filled) => filled.id === item.id)
-      : -1;
-    const firstItem = filledExportItems[0];
-    const previousItem = filledIndex > 0 ? filledExportItems[filledIndex - 1] : undefined;
-    const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
-    const cumulativeDays =
-      firstItem && item.date ? getTimelineDayGap(firstItem.date, item.date) : undefined;
+  const timelineTableForGroup = (group: TimelineGroup) => {
+    const exportItems = showAllDates
+      ? getFullTimelineItems(group.items)
+      : getFilledTimelineItems(group.items);
+    const filledItems = getFilledTimelineItems(group.items);
+    const rows = exportItems.map((item, index) => {
+      const filledIndex = item.date
+        ? filledItems.findIndex((filled) => filled.id === item.id)
+        : -1;
+      const firstItem = filledItems[0];
+      const previousItem = filledIndex > 0 ? filledItems[filledIndex - 1] : undefined;
+      const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
+      const cumulativeDays =
+        firstItem && item.date ? getTimelineDayGap(firstItem.date, item.date) : undefined;
 
-    return showAllDates
-      ? [
-          index + 1,
-          item.group,
-          item.label,
-          item.date ? formatTimelineDate(item.date) : "Not filled",
-          item.date ? formatDayCount(gapDays) : "-",
-          item.date ? formatDayCount(cumulativeDays) : "-",
-        ]
-      : [
-          index + 1,
-          item.label,
-          formatTimelineDate(item.date),
-          formatDayCount(gapDays),
-          formatDayCount(cumulativeDays),
-        ];
-  });
+      return [
+        index + 1,
+        item.label,
+        item.date ? formatTimelineDate(item.date) : "Not filled",
+        item.date ? formatDayCount(gapDays) : "-",
+        item.date ? formatDayCount(cumulativeDays) : "-",
+      ];
+    });
+    return {
+      title: group.title,
+      headers: ["S.No.", "Field", "Date", "Time gap", "Cumulative time"],
+      rows: rows.length ? rows : [["", "No timeline fields are filled.", "", "", ""]],
+    };
+  };
+
+  const detailTable = {
+    title: "File details",
+    headers: ["S.No.", "Field", "Value"],
+    rows: details.map((detail, index) => [index + 1, detail.label, detail.value || "Not set"]),
+  };
+  const timelineTables = timelineGroups.map(timelineTableForGroup);
 
   void downloadBackendExport({
     format,
@@ -10073,20 +11322,16 @@ function exportTimelineReport(
     fileName: `${getExportFileName(form.imms || form.uniqueCode || "timeline")}.${
       format === "excel" ? "xlsx" : "pdf"
     }`,
-    tables: [
-      {
-        title: "File details",
-        headers: ["S.No.", "Field", "Value"],
-        rows: details.map((detail, index) => [index + 1, detail.label, detail.value || "Not set"]),
-      },
-      {
-        title: "Timeline",
-        headers: showAllDates
-          ? ["S.No.", "Group", "Field", "Date", "Time gap", "Cumulative time"]
-          : ["S.No.", "Field", "Date", "Time gap", "Cumulative time"],
-        rows: timelineRows.length ? timelineRows : [["No timeline fields are filled."]],
-      },
-    ],
+    primarySheetName: "File Level",
+    tables: format === "excel"
+      ? [detailTable, timelineTableForGroup(timelineGroups[0])]
+      : [detailTable, ...timelineTables],
+    sheets: format === "excel"
+      ? timelineGroups.slice(1).map((group, index) => ({
+          name: `Supply Order ${index + 1}`,
+          tables: [detailTable, timelineTableForGroup(group)],
+        }))
+      : undefined,
   });
 }
 
@@ -10215,14 +11460,10 @@ const inputCls =
   "w-full max-w-md h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-ring transition";
 
 const textareaCls =
-  "w-full max-w-2xl min-h-20 px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-ring transition resize-y";
+  "w-full max-w-md min-h-20 px-3 py-2 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 focus:border-ring transition resize-y";
 
 function sectionBlockCls(_index: number) {
-  return "md:col-span-2 scroll-mt-24 rounded-md border border-border bg-secondary/25 p-4";
-}
-
-function sectionStripeCls(_index: number) {
-  return "inline-block h-4 w-1 rounded-full bg-primary";
+  return "md:col-span-2 scroll-mt-24 rounded-xl border border-border/80 bg-card p-4 shadow-[var(--shadow-card)]";
 }
 
 function toFilePayload(form: FormState) {
@@ -10236,6 +11477,7 @@ function toFilePayload(form: FormState) {
 function cleanFirmRows(rows: FirmDetail[]) {
   const cleaned = rows
     .map((row) => ({
+      id: row.id,
       firmName: row.firmName?.trim() || undefined,
       city: row.city?.trim() || undefined,
       address: row.address?.trim() || undefined,
@@ -10304,11 +11546,22 @@ function cleanFileMarkers(markers: FileMarker[]) {
 }
 
 function createRemarkId() {
-  return globalThis.crypto?.randomUUID?.() ?? `remark-${Date.now()}-${Math.random()}`;
+  return createDetailRowId();
 }
 
 function createMarkerId() {
-  return globalThis.crypto?.randomUUID?.() ?? `marker-${Date.now()}-${Math.random()}`;
+  return createDetailRowId();
+}
+
+function createDetailRowId() {
+  return (
+    globalThis.crypto?.randomUUID?.() ??
+    "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (character) => {
+      const random = Math.random() * 16;
+      const value = character === "x" ? random : (random % 4) + 8;
+      return Math.floor(value).toString(16);
+    })
+  );
 }
 
 function formatRemarkDate(value: string) {
@@ -10517,7 +11770,18 @@ function isMilestoneApplicableToFile(
   if (key === "bidding" || key === "prebidmeeting" || key === "refloatprebidmeeting") {
     return isBiddingApplicableForFile(form);
   }
+  if (key === "refloatbidding") {
+    return isYes(form.refloat) && isBiddingApplicableForFile(form);
+  }
   if (key === "pretcec" || key === "posttcec" || key === "cnc") return isYes(form.tcec);
+  if (key === "refloatposttcec") {
+    return (
+      isYes(form.refloat) &&
+      isYes(form.tcec) &&
+      isBiddingApplicableForFile(form) &&
+      isYes(form.refloatBiddingStageOver)
+    );
+  }
   if (key === "ad") return isYes(form.ad);
   if (key === "rqa") return isYes(form.rqa);
   if (key === "ifa") return isYes(form.ifa);
@@ -10594,7 +11858,7 @@ function hasMeaningfulSupplyOrderData(order: SupplyOrderDetail) {
 }
 
 function hasMeaningfulSupplyOrderDataValue(key: string, value: unknown): boolean {
-  if (key === "includeInPaymentTiming") return false;
+  if (key === "id" || key === "includeInPaymentTiming") return false;
   if (key === "currentMilestone" || key === "completedMilestones") return false;
   if (Array.isArray(value)) {
     return value.some((item) =>
@@ -10612,7 +11876,12 @@ function hasMeaningfulSupplyOrderDataValue(key: string, value: unknown): boolean
   }
   const text = String(value ?? "").trim();
   if (!text) return false;
-  if (key === "bgCoverageType" && text.toLowerCase() === "none") return false;
+  if (
+    key === "bgCoverageType" &&
+    ["none", "pwb"].includes(text.toLowerCase())
+  ) {
+    return false;
+  }
   return !(
     text.toLowerCase() === "no" &&
     [
@@ -10620,6 +11889,7 @@ function hasMeaningfulSupplyOrderDataValue(key: string, value: unknown): boolean
       "demandCancelled",
       "dpExtension",
       "ld",
+      "noFurtherAction",
       "psbApplicable",
       "soCancelled",
       "stageDelivery",
@@ -11113,6 +12383,9 @@ function cleanSupplyOrderRows(
   return normalized.map((row) => ({
     id: row.id || undefined,
     includeInPaymentTiming: row.includeInPaymentTiming === false ? false : undefined,
+    firmRatingValues: Object.fromEntries(
+      Object.entries(row.firmRatingValues ?? {}).map(([key, value]) => [key, String(value ?? "")]),
+    ),
     currentMilestone: row.currentMilestone || undefined,
     completedMilestones: normalizeCompletedMilestones(row.completedMilestones),
     financialSanctionDate: row.financialSanctionDate || undefined,
@@ -11189,9 +12462,38 @@ function cleanSupplyOrderRows(
   }));
 }
 
-function getStageDeliveryWarnings(
+function getNewlyPlacedSecurityWarrantyOrderNumbers(
   rows: SupplyOrderDetail[],
-  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
+  form: Pick<FormState, "bg">,
+  savedOrders: SupplyOrderDetail[] = [],
+) {
+  return rows.flatMap((order, orderIndex) => {
+    const newlyPlaced =
+      hasFilledValue(order.soDate) && !hasFilledValue(savedOrders[orderIndex]?.soDate);
+    const coverageType = normalizeBgCoverageType(order.bgCoverageType);
+    const psbApplies =
+      isYes(order.psbApplicable) &&
+      (coverageType === "PSB" || coverageType === "PSB and PWB separately");
+    const warrantyApplies =
+      isYes(form.bg) &&
+      (coverageType === "PWB" ||
+        coverageType === "PSB+PWB" ||
+        coverageType === "PSB and PWB separately");
+    return newlyPlaced && (psbApplies || warrantyApplies) ? [orderIndex + 1] : [];
+  });
+}
+
+function getSupplyOrderSaveWarnings(
+  rows: SupplyOrderDetail[],
+  form: Pick<
+    FormState,
+    | "bg"
+    | "ir"
+    | "fileType"
+    | "fileTypeGroup"
+    | "valueCapitalSelected"
+    | "valueRevenueSelected"
+  >,
   completedMilestones: string[],
 ) {
   const warnings: string[] = [];
@@ -11209,7 +12511,6 @@ function getStageDeliveryWarnings(
     const advancePaymentEnabled = isYes(order.advancePayment ?? "");
     const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
     const stages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
-    const extraStages = (order.stageDeliveries ?? []).slice(stageCount);
     const orderPaymentCompleted = normalizeCompletedMilestones(order.completedMilestones).some(
       (milestone) => normalizeMilestoneName(milestone) === "payment",
     );
@@ -11224,11 +12525,6 @@ function getStageDeliveryWarnings(
       warnings.push(`${orderLabel}: Shortclosure is Yes, but Shortclosure date is blank.`);
     }
 
-    if (stageDeliveryEnabled && hasParentDeliveryData(order)) {
-      warnings.push(
-        `${orderLabel}: Stage Delivery is Yes, but parent S.O. delivery dates remain recorded and will be cleared on save.`,
-      );
-    }
     if (stagePaymentEnabled && hasParentStagePaymentData(order)) {
       warnings.push(
         `${orderLabel}: Stage Payment is Yes, but parent S.O. bill/payment details remain recorded and will be cleared on save.`,
@@ -11238,15 +12534,6 @@ function getStageDeliveryWarnings(
     if (orderPaymentCompleted && !hasAnyOrderPaymentDate(order)) {
       warnings.push(
         `${orderLabel}: Payment is marked completed, but no applicable payment date exists.`,
-      );
-    }
-
-    if (!stageDeliveryEnabled && hasStageDeliveryData(order.stageDeliveries ?? [])) {
-      warnings.push(`${orderLabel}: Stage Delivery is No, but hidden stage delivery data exists.`);
-    }
-    if (stageDeliveryEnabled && hasStageDeliveryData(extraStages)) {
-      warnings.push(
-        `${orderLabel}: stage data exists beyond the configured stage count and will be removed on save.`,
       );
     }
 
@@ -11304,11 +12591,7 @@ function getStageDeliveryWarnings(
   return warnings;
 }
 
-function getPaymentBlockedByBgErrors(
-  rows: SupplyOrderDetail[],
-  form: Pick<FormState, "bg">,
-  savedRows: SupplyOrderDetail[],
-) {
+function getPaymentBlockedByBgErrors(rows: SupplyOrderDetail[], form: Pick<FormState, "bg">) {
   const errors: string[] = [];
   rows.forEach((order, orderIndex) => {
     if (isYes(order.soCancelled) || areRequiredBankGuaranteesReceived(order, form)) return;
@@ -11316,18 +12599,6 @@ function getPaymentBlockedByBgErrors(
     if (hasOrderLevelPaymentProgress(order)) {
       errors.push(
         `${orderLabel}: Payment cannot be marked/current/paid until required PSB/PWB is received.`,
-      );
-    }
-    const previousAdvance = savedRows[orderIndex]?.advancePaymentDetail;
-    const advancePaymentJustStarted =
-      (normalizeMilestoneName(order.advancePaymentDetail?.currentMilestone ?? "") ===
-        "advancepayment" &&
-        normalizeMilestoneName(previousAdvance?.currentMilestone ?? "") !== "advancepayment") ||
-      (hasFilledValue(order.advancePaymentDetail?.paymentDate) &&
-        !hasFilledValue(previousAdvance?.paymentDate));
-    if (advancePaymentJustStarted && hasAdvancePaymentProgress(order.advancePaymentDetail)) {
-      errors.push(
-        `${orderLabel}: Advance payment cannot be paid until required PSB/PWB is received.`,
       );
     }
     const stages = resizeStageDeliveries(
@@ -11388,17 +12659,13 @@ function hasStagePaymentProgress(stage: StageDeliveryDetail) {
   );
 }
 
-function hasAdvancePaymentProgress(advance: AdvancePaymentDetail | undefined) {
-  return (
-    hasFilledValue(advance?.paymentDate) ||
-    normalizeMilestoneName(advance?.currentMilestone) === "advancepayment"
-  );
-}
-
 function getSupplyOrderChronologyWarnings(
   order: SupplyOrderDetail,
   orderLabel: string,
-  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
+  form: Pick<
+    FormState,
+    "ir" | "fileType" | "fileTypeGroup" | "valueCapitalSelected" | "valueRevenueSelected"
+  >,
 ) {
   const warnings: string[] = [];
   warnings.push(
@@ -11409,6 +12676,9 @@ function getSupplyOrderChronologyWarnings(
         dpDate: order.dpDate,
         revisedDp: order.revisedDp,
         materialReceiptDate: order.materialReceiptDate,
+        jobCompletionDate: order.jobCompletionDate,
+        irPreparationDate: order.irPreparationDate,
+        irReceiptDate: order.irReceiptDate,
         billPreparationDate: order.billPreparationDate,
         billSentForPaymentDate: order.billSentForPaymentDate,
         paymentDate: order.paymentDate,
@@ -11441,7 +12711,10 @@ function getStageChronologyWarnings(
   stage: StageDeliveryDetail,
   order: SupplyOrderDetail,
   stageLabel: string,
-  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
+  form: Pick<
+    FormState,
+    "ir" | "fileType" | "fileTypeGroup" | "valueCapitalSelected" | "valueRevenueSelected"
+  >,
 ) {
   return getPaymentChronologyWarnings(
     stageLabel,
@@ -11450,6 +12723,9 @@ function getStageChronologyWarnings(
       dpDate: stage.dpDate,
       revisedDp: stage.revisedDp,
       materialReceiptDate: stage.materialReceiptDate,
+      jobCompletionDate: stage.jobCompletionDate,
+      irPreparationDate: stage.irPreparationDate,
+      irReceiptDate: stage.irReceiptDate,
       billPreparationDate: stage.billPreparationDate,
       billSentForPaymentDate: stage.billSentForPaymentDate,
       paymentDate: stage.paymentDate,
@@ -11536,11 +12812,15 @@ function getPaymentChronologyWarnings(
     dpDate?: string;
     revisedDp?: string;
     materialReceiptDate?: string;
+    jobCompletionDate?: string;
+    irPreparationDate?: string;
+    irReceiptDate?: string;
     billPreparationDate?: string;
     billSentForPaymentDate?: string;
     paymentDate?: string;
   },
-  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected">,
+  form: Pick<FormState, "valueCapitalSelected" | "valueRevenueSelected"> &
+    Partial<Pick<FormState, "ir" | "fileType" | "fileTypeGroup">>,
   actualPaymentCapital?: string,
   actualPaymentRevenue?: string,
 ) {
@@ -11554,6 +12834,42 @@ function getPaymentChronologyWarnings(
   }
   if (isDateBefore(dates.materialReceiptDate, dates.soDate)) {
     warnings.push(`${label}: Material receipt date is earlier than S.O. date.`);
+  }
+  const jobCompletionWorkflow = isJobCompletionWorkflow(
+    form.fileType,
+    form.ir,
+    form.fileTypeGroup,
+  );
+  const inspectionWorkflow =
+    isYes(form.ir) &&
+    isDeliveryInspectionApplicableByGroup({
+      fileType: form.fileType,
+      fileTypeGroup: form.fileTypeGroup,
+      ir: form.ir,
+    });
+  if (
+    jobCompletionWorkflow &&
+    isDateBefore(dates.billPreparationDate, dates.jobCompletionDate)
+  ) {
+    warnings.push(`${label}: Bill Preparation date is earlier than Job Completion Received Date.`);
+  }
+  if (
+    inspectionWorkflow &&
+    isDateBefore(dates.irPreparationDate, dates.materialReceiptDate)
+  ) {
+    warnings.push(`${label}: IR Preparation date is earlier than Material Receipt date.`);
+  }
+  if (
+    inspectionWorkflow &&
+    isDateBefore(dates.irReceiptDate, dates.irPreparationDate)
+  ) {
+    warnings.push(`${label}: IR Receipt date is earlier than IR Preparation date.`);
+  }
+  if (
+    inspectionWorkflow &&
+    isDateBefore(dates.billPreparationDate, dates.irReceiptDate)
+  ) {
+    warnings.push(`${label}: Bill Preparation date is earlier than IR Receipt date.`);
   }
   if (isDateBefore(dates.billSentForPaymentDate, dates.billPreparationDate)) {
     warnings.push(`${label}: Bill sent for payment date is earlier than bill preparation date.`);
@@ -11692,26 +13008,35 @@ function isParentDeliveryMilestone(milestone: string) {
 }
 
 function hasParentDeliveryData(order: Partial<SupplyOrderDetail> | undefined) {
-  if (!order) return false;
-  return (
-    [
-      order.dpDate,
-      order.ldType,
-      order.ldPercentage,
-      order.dpExtensionCount,
-      order.revisedDp,
-      order.deliveryPeriodStartDate,
-      order.materialReceiptDate,
-      order.actualJobCompletionDate,
-      order.jobCompletionDate,
-      order.irPreparationDate,
-      order.irReceiptDate,
-    ].some(hasFilledValue) ||
-    isYes(order.dpExtension ?? "") ||
-    isYes(order.ld ?? "") ||
-    (order.currentMilestone ? isParentDeliveryMilestone(order.currentMilestone) : false) ||
-    (order.completedMilestones ?? []).some(isParentDeliveryMilestone)
-  );
+  return getParentDeliveryDataLabels(order).length > 0;
+}
+
+function getParentDeliveryDataLabels(order: Partial<SupplyOrderDetail> | undefined) {
+  if (!order) return [];
+  const labels: string[] = [];
+  const addIfFilled = (label: string, value: unknown) => {
+    if (hasFilledValue(value)) labels.push(label);
+  };
+  addIfFilled("S.O. D.P. date", order.dpDate);
+  addIfFilled("D.P. extension count", order.dpExtensionCount);
+  addIfFilled("Revised D.P. date", order.revisedDp);
+  addIfFilled("L.D. type", order.ldType);
+  addIfFilled("L.D. percentage", order.ldPercentage);
+  addIfFilled("Delivery period start date", order.deliveryPeriodStartDate);
+  addIfFilled("Material receipt date", order.materialReceiptDate);
+  addIfFilled("Actual job-completion date", order.actualJobCompletionDate);
+  addIfFilled("Job-completion date", order.jobCompletionDate);
+  addIfFilled("I.R. preparation date", order.irPreparationDate);
+  addIfFilled("I.R. receipt date", order.irReceiptDate);
+  if (isYes(order.dpExtension ?? "")) labels.push("D.P. extension setting");
+  if (isYes(order.ld ?? "")) labels.push("L.D. setting");
+  if (order.currentMilestone && isParentDeliveryMilestone(order.currentMilestone)) {
+    labels.push("current parent delivery milestone");
+  }
+  if ((order.completedMilestones ?? []).some(isParentDeliveryMilestone)) {
+    labels.push("completed parent delivery milestone");
+  }
+  return labels;
 }
 
 function clearParentDeliveryData(order: SupplyOrderDetail): SupplyOrderDetail {
@@ -11872,7 +13197,12 @@ function cleanStageDeliveryRows(
     const effectiveRow = parentOrder
       ? getEffectiveStageFocusRow(normalized, parentOrder, index, normalizedRows)
       : normalized;
-    const deliveryState = getDerivedDeliveryMilestoneState(effectiveRow, form?.fileType, form?.ir);
+    const deliveryState = getDerivedDeliveryMilestoneState(
+      effectiveRow,
+      form?.fileType,
+      form?.ir,
+      form?.fileTypeGroup,
+    );
     const completedMilestones = normalizeCompletedMilestones(normalized.completedMilestones)
       .filter(
         (milestone) => !["delivery", "jobcompletion"].includes(normalizeMilestoneName(milestone)),
@@ -11880,13 +13210,28 @@ function cleanStageDeliveryRows(
       .concat(deliveryState.completed ? ["Delivery"] : [])
       .concat(isJobCompletionDone(normalized) ? ["Job Completion"] : []);
     const normalizedCurrent = normalizeMilestoneName(normalized.currentMilestone ?? "");
-    const currentMilestone =
-      !isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
-      deliveryState.current
-        ? "Delivery"
-        : ["delivery", "payment"].includes(normalizedCurrent)
-          ? ""
-          : normalized.currentMilestone;
+    const jobCompletionWorkflow = isJobCompletionWorkflow(
+      form?.fileType,
+      form?.ir,
+      form?.fileTypeGroup,
+    );
+    const hasMaterialReceipt = isCompleteDateValue(String(effectiveRow.materialReceiptDate ?? ""));
+    const hasIrPreparation = isCompleteDateValue(String(effectiveRow.irPreparationDate ?? ""));
+    const staleIrReceipt = normalizedCurrent === "irreceipt" && !hasIrPreparation;
+    const staleIrPreparation = normalizedCurrent === "irpreparation" && !hasMaterialReceipt;
+    let currentMilestone = normalized.currentMilestone;
+    if (!jobCompletionWorkflow && deliveryState.current) {
+      currentMilestone = "Delivery";
+    } else if (!jobCompletionWorkflow && staleIrReceipt && hasMaterialReceipt) {
+      currentMilestone = "IR Preparation";
+    } else if (
+      (jobCompletionWorkflow && ["irpreparation", "irreceipt"].includes(normalizedCurrent)) ||
+      staleIrReceipt ||
+      staleIrPreparation ||
+      ["delivery", "deliveryperiod", "payment"].includes(normalizedCurrent)
+    ) {
+      currentMilestone = "";
+    }
     return {
       includeInPaymentTiming: normalized.includeInPaymentTiming === false ? false : undefined,
       stageAmountCapital: normalized.stageAmountCapital || undefined,
@@ -11920,11 +13265,11 @@ function cleanStageDeliveryRows(
 }
 
 function normalizeSupplyOrderRows(file: FileRecord | undefined) {
-  const rows =
-    file?.supplyOrders
-      ?.map((row) => applySupplyOrderRules({ ...emptySupplyOrder, ...row }, undefined))
-      .filter(hasMeaningfulSupplyOrderData) ?? [];
-  return rows;
+  return (
+    file?.supplyOrders?.map((row) =>
+      applySupplyOrderRules({ ...emptySupplyOrder, ...row }, undefined),
+    ) ?? []
+  );
 }
 
 function firstSupplyOrderMirrorPatch(rows: SupplyOrderDetail[]) {
@@ -12107,6 +13452,10 @@ function applyConditionalRules(form: FormState) {
       rfpVetting: "No",
       rfpVettingInitiationDate: "",
       rfpVettingApprovalDate: "",
+      refloatGemBiddingMode: "",
+      refloatRfpVetting: "No",
+      refloatRfpVettingInitiationDate: "",
+      refloatRfpVettingApprovalDate: "",
       preBidMeeting: "No",
       preBidMeetingDate: "",
       bidNumber: "",
@@ -12114,6 +13463,9 @@ function applyConditionalRules(form: FormState) {
       bidOpeningDate: "",
       tenderLive: "No",
       bidOpened: "NO",
+      refloatBidNumber: "",
+      refloatTenderLive: "No",
+      refloatBidOpened: "NO",
       refloat: "No",
       refloatPreBidMeeting: "No",
       refloatPreBidMeetingDate: "",
@@ -12165,8 +13517,6 @@ function applyConditionalRules(form: FormState) {
       refloatPostTcecDate: "",
       refloatPostTcecMinutesDate: "",
       refloatPostTcecCommitteeNo: "",
-      refloatRecommendationDate: "",
-      refloatBiddingStageOver: "No",
       cncDate: "",
       cncApprovalDate: "",
     };
@@ -12175,13 +13525,13 @@ function applyConditionalRules(form: FormState) {
     next = {
       ...next,
       refloatRecommendationDate: "",
-      refloatBiddingStageOver: "No",
     };
   }
   if (isNo(next.gem)) {
     next = {
       ...next,
       gemBiddingMode: "",
+      refloatGemBiddingMode: "",
       gemUndertakingDate: "",
       refloatGemUndertakingDate: "",
       gemSoNo: "",
@@ -12239,6 +13589,13 @@ function applyConditionalRules(form: FormState) {
       rfpVettingApprovalDate: "",
     };
   }
+  if (isNo(next.refloatRfpVetting)) {
+    next = {
+      ...next,
+      refloatRfpVettingInitiationDate: "",
+      refloatRfpVettingApprovalDate: "",
+    };
+  }
   if (isNo(next.preBidMeeting)) {
     next = {
       ...next,
@@ -12254,6 +13611,13 @@ function applyConditionalRules(form: FormState) {
   if (isNo(next.refloat)) {
     next = {
       ...next,
+      refloatGemBiddingMode: "",
+      refloatRfpVetting: "No",
+      refloatRfpVettingInitiationDate: "",
+      refloatRfpVettingApprovalDate: "",
+      refloatBidNumber: "",
+      refloatTenderLive: "No",
+      refloatBidOpened: "NO",
       refloatPreBidMeeting: "No",
       refloatPreBidMeetingDate: "",
       refloatBiddingDate: "",
@@ -12272,6 +13636,14 @@ function applyConditionalRules(form: FormState) {
       refloatPreBidMeetingDate: "",
     };
   }
+  if (isNo(next.refloatBiddingStageOver)) {
+    next = {
+      ...next,
+      refloatPostTcecDate: "",
+      refloatPostTcecMinutesDate: "",
+      refloatPostTcecCommitteeNo: "",
+    };
+  }
   if (isYes(next.dpExtension)) {
     next = {
       ...next,
@@ -12288,12 +13660,19 @@ function applyConditionalRules(form: FormState) {
   next = {
     ...next,
     tenderLive: getAutoTenderLive(next),
+    refloatTenderLive: getAutoRefloatTenderLive(next),
   };
-  if (isYes(next.tenderLive)) {
+  if (!isYes(next.refloat) && isYes(next.tenderLive)) {
     next = {
       ...next,
       bidOpened: "NO",
       biddingStageOver: isYes(next.refloat) && isNo(next.tcec) ? next.biddingStageOver : "No",
+    };
+  }
+  if (isYes(next.refloatTenderLive)) {
+    next = {
+      ...next,
+      refloatBidOpened: "NO",
     };
   }
   return next;
@@ -12310,9 +13689,12 @@ const defaultNoFieldValues = {
   bg: "No",
   ir: "No",
   rfpVetting: "No",
+  refloatRfpVetting: "No",
   preBidMeeting: "No",
   tenderLive: "No",
+  refloatTenderLive: "No",
   bidOpened: "NO",
+  refloatBidOpened: "NO",
   refloat: "No",
   refloatPreBidMeeting: "No",
   rst: "No",
@@ -12365,6 +13747,10 @@ function applySupplyOrderRules(
     | undefined,
 ) {
   let next: SupplyOrderDetail = { ...emptySupplyOrder, ...order };
+  const normalizedBgCoverageType = normalizeBgCoverageType(next.bgCoverageType);
+  if (normalizedBgCoverageType) {
+    next = { ...next, bgCoverageType: normalizedBgCoverageType };
+  }
   const dpExtensionInactive = isDpExtensionInactiveFileType(form?.fileType);
   if (form?.valueCapitalSelected === "Yes") {
     next = {
@@ -12706,6 +14092,7 @@ function normalizeSupplyOrderMilestoneState(
     : completedWithDateDrivenMilestones;
   const rawManualCurrentMilestone =
     applicableByKey.get(normalizeMilestoneName(order.currentMilestone ?? "")) ?? "";
+  const manualCurrentMilestoneKey = normalizeMilestoneName(rawManualCurrentMilestone);
   const manualCurrentMilestone = [
     "financialsanction",
     "psb",
@@ -12800,17 +14187,41 @@ function normalizeSupplyOrderMilestoneState(
   const supplyOrderRollsBackToFinancialSanction =
     !isCompleteDateValue(order.financialSanctionDate ?? "") &&
     Boolean(financialSanctionMilestone) &&
-    normalizeMilestoneName(manualCurrentMilestone) === "supplyorder";
-  const currentMilestone =
-    !isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) && deliveryState.current
-      ? "Delivery"
-      : financialSanctionBecomesCurrent
-        ? financialSanctionMilestone!
-        : financialSanctionMovesToSupplyOrder
-          ? supplyOrderMilestone!
-          : supplyOrderMovesToDeliveryPeriod
+    manualCurrentMilestoneKey === "supplyorder";
+  const deliveryWorkflowCurrentKeys = ["deliveryperiod", "delivery", "irpreparation", "irreceipt"];
+  const supplyOrderRollsBackFromDeliveryWorkflow =
+    !isSupplyOrderTabComplete(order, form) &&
+    deliveryWorkflowCurrentKeys.includes(manualCurrentMilestoneKey) &&
+    Boolean(supplyOrderMilestone);
+  const inspectionTriggerWasCleared =
+    (manualCurrentMilestoneKey === "irpreparation" &&
+      !isCompleteDateValue(order.materialReceiptDate ?? "")) ||
+    (manualCurrentMilestoneKey === "irreceipt" &&
+      !isCompleteDateValue(order.irPreparationDate ?? ""));
+  const irReceiptRollsBackToIrPreparation =
+    manualCurrentMilestoneKey === "irreceipt" &&
+    !isCompleteDateValue(order.irPreparationDate ?? "") &&
+    isCompleteDateValue(order.materialReceiptDate ?? "") &&
+    Boolean(irPreparationMilestone);
+  const inspectionRollsBackToDeliveryPeriod =
+    inspectionTriggerWasCleared &&
+    !deliveryState.current &&
+    isSupplyOrderTabComplete(order, form) &&
+    !isYes(order.stageDelivery ?? "") &&
+    !isCompleteDateValue((order.revisedDp ?? "") || (order.dpDate ?? "")) &&
+    Boolean(deliveryPeriodMilestone);
+  const currentMilestone = financialSanctionBecomesCurrent
+    ? financialSanctionMilestone!
+    : financialSanctionMovesToSupplyOrder
+      ? supplyOrderMilestone!
+      : supplyOrderRollsBackFromDeliveryWorkflow
+        ? supplyOrderMilestone!
+        : !isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
+            deliveryState.current
+          ? "Delivery"
+          : supplyOrderMovesToDeliveryPeriod || inspectionRollsBackToDeliveryPeriod
             ? deliveryPeriodMilestone!
-            : deliveryMovesToIrPreparation
+            : deliveryMovesToIrPreparation || irReceiptRollsBackToIrPreparation
               ? irPreparationMilestone!
               : irPreparationMovesToIrReceipt
                 ? irReceiptMilestone!
@@ -12830,9 +14241,11 @@ function normalizeSupplyOrderMilestoneState(
                               ? billSentForPaymentMilestone!
                               : supplyOrderRollsBackToFinancialSanction
                                 ? financialSanctionMilestone!
-                                : manualCurrentMilestone === "Delivery"
+                                : inspectionTriggerWasCleared
                                   ? ""
-                                  : manualCurrentMilestone;
+                                  : manualCurrentMilestone === "Delivery"
+                                    ? ""
+                                    : manualCurrentMilestone;
   const normalizedCurrentMilestone = paymentRollsBackToJobCompletion ? "" : currentMilestone;
   return {
     ...order,
@@ -13143,7 +14556,7 @@ function getProportionalStageAmounts(value: string | undefined, weights: number[
   if (totalWeight <= 0) return [];
   const shares = positiveWeights.map((weight) => (totalRupees * weight) / totalWeight);
   const amounts = shares.map(Math.floor);
-  let remainder = totalRupees - amounts.reduce((total, share) => total + share, 0);
+  const remainder = totalRupees - amounts.reduce((total, share) => total + share, 0);
   const remainderOrder = shares
     .map((share, index) => ({ index, fraction: share - amounts[index] }))
     .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
@@ -13366,7 +14779,9 @@ function isFinancialSanctionReachedForForm(
       FormState,
       | "mode"
       | "fileType"
+      | "refloat"
       | "biddingStageOver"
+      | "refloatBiddingStageOver"
       | "tcec"
       | "cfaDate"
       | "cncApprovalDate"
@@ -13377,7 +14792,7 @@ function isFinancialSanctionReachedForForm(
   if (isYes(form.demandCancelled)) return false;
   if (isYes(form.tcec)) return hasFilledValue(form.cncApprovalDate);
   return isBiddingApplicableForFile(form)
-    ? isYes(form.biddingStageOver)
+    ? isYes(isYes(form.refloat) ? form.refloatBiddingStageOver : form.biddingStageOver)
     : hasFilledValue(form.cfaDate);
 }
 
@@ -13400,7 +14815,7 @@ function isDpExtensionFieldInactive(
 }
 
 function shouldShowSupplyOrderField(key: SupplyOrderKey, order: SupplyOrderDetail) {
-  const coverageType = String(order.bgCoverageType ?? "None");
+  const coverageType = normalizeBgCoverageType(order.bgCoverageType) ?? "None";
   const showPsb =
     isYes(order.psbApplicable ?? "") &&
     (coverageType === "PSB" || coverageType === "PSB and PWB separately");
@@ -13521,12 +14936,28 @@ function getInitialExtensionCount(value: string) {
 }
 
 function getAutoTenderLive(form: FormState) {
+  if (isYes(form.refloat)) return "No";
+  if (isYes(form.bidOpened) || isYes(form.biddingStageOver)) return "No";
   return isAutoTenderLive({
-    refloat: isYes(form.refloat),
+    refloat: false,
     normalStartDate: form.bidDate,
     normalOpeningDate: form.bidOpeningDate,
     refloatStartDate: form.refloatBiddingDate,
     refloatOpeningDate: form.refloatBidOpeningDate,
+    today: formatLocalDate(new Date()),
+  })
+    ? "Yes"
+    : "No";
+}
+
+function getAutoRefloatTenderLive(form: FormState) {
+  if (isYes(form.refloatBidOpened) || isYes(form.refloatBiddingStageOver)) return "No";
+  return isAutoTenderLive({
+    refloat: false,
+    normalStartDate: form.refloatBiddingDate,
+    normalOpeningDate: form.refloatBidOpeningDate,
+    refloatStartDate: undefined,
+    refloatOpeningDate: undefined,
     today: formatLocalDate(new Date()),
   })
     ? "Yes"
@@ -13572,8 +15003,10 @@ function isTimelineFieldDisabled(key: FieldKey, form: FormState) {
     (isNo(form.ifa) && ifaDisabledKeys.includes(key)) ||
     (isNo(form.bg) && bgDisabledKeys.includes(key)) ||
     (isNo(form.rfpVetting) && rfpVettingDisabledKeys.includes(key)) ||
+    (isNo(form.refloatRfpVetting) && refloatRfpVettingDisabledKeys.includes(key)) ||
     (isNo(form.preBidMeeting) && preBidMeetingDisabledKeys.includes(key)) ||
-    (!isYes(form.biddingStageOver) && biddingStageOverDisabledKeys.includes(key)) ||
+    (!isYes(form.biddingStageOver) && postTcecDisabledKeys.includes(key)) ||
+    (!isYes(form.refloatBiddingStageOver) && refloatPostTcecDisabledKeys.includes(key)) ||
     (isNo(form.refloat) && refloatDisabledKeys.includes(key)) ||
     (isNo(form.refloatPreBidMeeting) && refloatPreBidMeetingDisabledKeys.includes(key))
   );
@@ -13876,6 +15309,7 @@ function DynamicField({
   field,
   value,
   disabled = false,
+  compactWidth = false,
   onChange,
   inputRef,
   radioName,
@@ -13883,6 +15317,7 @@ function DynamicField({
   field: ExtraField<string>;
   value: string;
   disabled?: boolean;
+  compactWidth?: boolean;
   onChange: (value: string) => void;
   inputRef?: (element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | null) => void;
   radioName?: string;
@@ -13897,6 +15332,7 @@ function DynamicField({
           options={field.options}
           value={value}
           disabled={disabled}
+          compactWidth={compactWidth}
           onChange={onChange}
         />
       </Field>
@@ -13916,6 +15352,7 @@ function DynamicField({
           placeholder={field.placeholder}
           inputRef={inputRef as (element: HTMLInputElement | null) => void}
           data-testid={testId}
+          style={compactWidth ? { width: 160, minWidth: 160, maxWidth: 160 } : undefined}
           className={inputCls + disabledCls(disabled)}
         />
       </Field>
@@ -13931,9 +15368,14 @@ function DynamicField({
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           data-testid={testId}
+          style={
+            compactWidth || tcecCommitteeKeys.includes(field.key)
+              ? { width: 160, minWidth: 160, maxWidth: 160 }
+              : undefined
+          }
           className={inputCls + disabledCls(disabled)}
         >
-          {field.key === "gemBiddingMode" ? (
+          {field.key === "gemBiddingMode" || field.key === "refloatGemBiddingMode" ? (
             !value ? (
               <option value="" disabled>
                 Not set
@@ -14002,6 +15444,7 @@ function DynamicField({
           }}
           disabled={disabled}
           data-testid={testId}
+          style={compactWidth ? { width: 160, minWidth: 160, maxWidth: 160 } : undefined}
           min={
             field.type === "number"
               ? field.key === "noOfSo"
@@ -14018,6 +15461,100 @@ function DynamicField({
         />
       )}
     </Field>
+  );
+}
+
+function SecurityWarrantyBgRulesHelper() {
+  return (
+    <div className="flex items-center gap-2 text-sm font-semibold">
+      <span>Bank Guarantee coverage rules</span>
+      <TooltipProvider delayDuration={150}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex size-5 items-center justify-center rounded-full border border-border text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Bank Guarantee coverage rules help"
+            >
+              <Info className="size-3" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            align="start"
+            className="max-h-[min(75vh,42rem)] w-[min(64rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] overflow-y-auto border border-border bg-background p-3 text-foreground shadow-lg"
+          >
+            <div className="text-xs font-normal leading-relaxed">
+              <p>
+                Select the coverage type for each S.O. PSB applicability and the file-level
+                Warranty setting control different guarantee obligations.
+              </p>
+              <div className="mt-2 overflow-x-auto rounded-md border border-sky-200">
+                <table className="w-full min-w-[760px] border-collapse text-left">
+                  <thead className="bg-sky-100 text-sky-950">
+                    <tr>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">Coverage type</th>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">Required settings and fields</th>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">When Current activates</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-background">
+                    <tr>
+                      <td className="border border-sky-200 px-3 py-2 font-medium">None</td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        No PSB, PWB, or combined guarantee details apply.
+                      </td>
+                      <td className="border border-sky-200 px-3 py-2">No BG milestone becomes Current.</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-sky-200 px-3 py-2 font-medium">PSB</td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        PSB Applicable = Yes. Enter the PSB number, amount, received, validity, and return details.
+                      </td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        Financial Sanction date is recorded and PSB received date is blank.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-sky-200 px-3 py-2 font-medium">PWB</td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        Warranty = Yes. Enter the PWB details and Warranty Period.
+                      </td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        Material Receipt date is recorded and PWB received date is blank.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-sky-200 px-3 py-2 font-medium">PSB+PWB</td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        Warranty = Yes. Enter one combined guarantee and the Warranty Period.
+                      </td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        Financial Sanction date is recorded and combined received date is blank.
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-sky-200 px-3 py-2 font-medium">
+                        PSB and PWB separately
+                      </td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        PSB Applicable = Yes for PSB; Warranty = Yes for PWB. Enter each guarantee and its own dates; Warranty Period applies to PWB.
+                      </td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        PSB Current follows the Financial Sanction rule; PWB Current follows the Material Receipt rule. Each clears when its own received date is recorded.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2">
+                Current is derived automatically. A guarantee is completed by its corresponding received date: PSB, PWB, or combined PSB+PWB.
+              </p>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </div>
   );
 }
 
@@ -14313,6 +15850,7 @@ function RadioGroup({
   options,
   value,
   disabled,
+  compactWidth = false,
   onChange,
 }: {
   name: string;
@@ -14320,10 +15858,13 @@ function RadioGroup({
   options: string[];
   value: string;
   disabled: boolean;
+  compactWidth?: boolean;
   onChange: (value: string) => void;
 }) {
   return (
-    <div className={`grid max-w-md grid-cols-2 gap-2 ${disabledCls(disabled)}`}>
+    <div
+      className={`grid ${compactWidth ? "w-[160px] min-w-[160px] max-w-[160px]" : "max-w-md"} grid-cols-2 gap-2 ${disabledCls(disabled)}`}
+    >
       {options.map((option) => (
         <label
           key={option}
@@ -14383,7 +15924,7 @@ function Field({
                 <TooltipContent
                   side="top"
                   align="start"
-                  className="w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-[13px] font-normal leading-relaxed text-foreground shadow-lg"
+                  className="w-[min(56rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] border border-border bg-background p-2 text-[0.8125rem] font-normal leading-relaxed text-foreground shadow-lg"
                 >
                   <HelperContent lines={helperLines} />
                 </TooltipContent>
@@ -14391,7 +15932,7 @@ function Field({
             </TooltipProvider>
           ) : null}
         </span>
-        {hint && <span className="text-[10px] text-muted-foreground">{hint}</span>}
+        {hint && <span className="text-[0.625rem] text-muted-foreground">{hint}</span>}
       </div>
       <div className="min-w-0">{children}</div>
     </div>

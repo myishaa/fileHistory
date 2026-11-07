@@ -363,11 +363,14 @@ sequence after inserting backed-up IDs. A schema mismatch is rejected before
 existing data is truncated.
 
 Restoring a local `.rbk` backup requires two separate credentials: the password
-used to encrypt that backup file, and a restore-authorization password
-configured in Settings. The authorization password is stored only as a hash
-and is not included in the local application backup. The restore authorization
-must be verified before the application enables file selection, and it changes
-only when an Administrator explicitly saves a replacement.
+used to encrypt that backup file, and an Upload password
+configured in Settings. The Administrator also configures a separate recovery
+password of exactly six numeric digits. The restore and recovery passwords are
+stored only as hashes and are not included in the local application backup.
+The Upload password must be verified before the application enables file
+selection, and it changes only when an Administrator explicitly saves a
+replacement. If the Upload password is forgotten, the
+six-digit recovery password can be used to set a replacement.
 
 The disposable QA destructive-settings audit also performs an export → restore
 → export round trip. The second export is intentional: it verifies that the
@@ -404,6 +407,8 @@ RECORDKEEPER_BACKUP_CONFIG_FILE=/etc/recordkeeper/deployment.env
 RECORDKEEPER_BACKUP_SECRETS_FILE=/etc/recordkeeper/deployment.secrets
 PG_DUMP_PATH=/usr/bin/pg_dump
 PG_DUMPALL_PATH=/usr/bin/pg_dumpall
+PSQL_PATH=/usr/bin/psql
+PG_RESTORE_PATH=/usr/bin/pg_restore
 TAR_PATH=/usr/bin/tar
 ```
 
@@ -423,6 +428,24 @@ configuration/secrets, then start the matching application version and verify
 login, search, reports, and Add/Edit. The `.rbk` file is retained for
 application-level recovery and auditability; it is not a replacement for the
 PostgreSQL dump when rebuilding a server.
+
+An Administrator can also restore an `.rkdr` package from the local PC using
+**Settings → Protected backup → Restore full recovery package to server**.
+The browser uploads the encrypted package over the LAN; decryption, PostgreSQL
+restore, and configured external-storage restore all run on the application
+server. The server needs `psql`, `pg_restore`, and `tar` available to the
+backend service, and the `DATABASE_URL` account must have the privileges needed
+to restore PostgreSQL globals and the database. Existing users should stop
+editing while this restore is running.
+
+Restoring the database does **not** require deployment secret files. If the
+server already has its working environment configuration and secrets, they can
+remain unchanged. Secret/config files are restored only when the Administrator
+checks the explicit deployment-files option, and the backend must then be
+restarted before those values take effect. On a newly rebuilt server, the
+Administrator must provide whatever environment secrets the deployment needs
+before starting the application; the database restore itself does not create or
+require them.
 
 ## 15. Settings: Scheduled Server Backups
 

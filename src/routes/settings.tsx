@@ -1,14 +1,6 @@
 import { createFileRoute, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -27,9 +19,14 @@ import {
   X,
 } from "lucide-react";
 import { CompactTableText } from "@/components/compact-table-text";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 import { QuickAccessSettings } from "@/components/quick-access";
 import { QuickEntryExcelSettings } from "@/components/quick-entry-excel";
 import { chartColorOptions } from "@/lib/chart-colors";
+import {
+  hasUnsavedChanges as hasAnyUnsavedChanges,
+  useUnsavedChanges,
+} from "@/lib/unsaved-changes";
 import {
   createMasterFirm,
   deleteMasterFirm,
@@ -116,37 +113,15 @@ import {
   type FileTypeGroup,
   type FileTypeGroupSetting,
 } from "@/lib/file-type-groups";
+import {
+  SettingsDraftContext,
+  type SettingsDraftActions,
+  type SettingsExternalDraftHandlers,
+} from "@/lib/settings-draft";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
 });
-
-type SettingsDraftActions = {
-  hasChanges: boolean;
-  saving: boolean;
-  saveError: string;
-  cancelChanges: () => void;
-  saveChanges: () => Promise<void>;
-};
-
-type SettingsExternalDraftHandlers = {
-  save: () => Promise<void>;
-  cancel: () => void;
-};
-
-type SettingsDraftContextValue = {
-  settings: AppSettings;
-  updateSettings: (patch: Partial<AppSettings>) => void;
-  actions?: SettingsDraftActions;
-  sectionUnlocked?: boolean;
-  sectionSaving?: boolean;
-  sectionVerifying?: boolean;
-  unlockSection?: () => void;
-  setExternalDirty?: (dirty: boolean) => void;
-  registerExternalDraft?: (handlers: SettingsExternalDraftHandlers | null) => void;
-};
-
-const SettingsDraftContext = createContext<SettingsDraftContextValue | null>(null);
 
 function useSettings() {
   const draft = useContext(SettingsDraftContext);
@@ -173,7 +148,7 @@ function SettingsDraftActionBar({ actions }: { actions: SettingsDraftActions }) 
         <button
           type="button"
           onClick={actions.cancelChanges}
-          disabled={actions.saving || !actions.hasChanges}
+          disabled={actions.saving || !actions.hasUnsavedChanges}
           className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
         >
           Cancel
@@ -214,17 +189,28 @@ function UserSettingsDraft({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const hasChanges = Object.keys(draftPatch).length > 0;
+  const [localDirty, setLocalDirty] = useState(false);
+  const unsavedChangesSourceId = useId();
+  useUnsavedChanges(`settings-draft:${unsavedChangesSourceId}`, hasChanges || localDirty);
+  const externalDraftRef = useRef<SettingsExternalDraftHandlers | null>(null);
   const updateSettings = (patch: Partial<AppSettings>) => {
     setDraftPatch((current) => ({ ...current, ...patch }));
     setSaveError("");
   };
   const cancelChanges = () => {
-    if (hasChanges && !window.confirm("Discard your unsaved settings changes?")) return;
+    if ((hasChanges || localDirty) && !window.confirm("Discard your unsaved settings changes?"))
+      return;
     setDraftPatch({});
+    externalDraftRef.current?.cancel();
+    setLocalDirty(false);
     setSaveError("");
   };
   const saveChanges = async () => {
     if (!hasChanges || saving) return;
+    if (localDirty) {
+      setSaveError("Finish or cancel the section's local edit before saving these settings.");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -238,6 +224,7 @@ function UserSettingsDraft({
   };
   const actions: SettingsDraftActions = {
     hasChanges,
+    hasUnsavedChanges: hasChanges || localDirty,
     saving,
     saveError,
     cancelChanges,
@@ -248,7 +235,15 @@ function UserSettingsDraft({
       {showScope ? <SettingsScope scope={scope} editors={editors} /> : null}
       {actionPlacement === "top" ? <SettingsDraftActionBar actions={actions} /> : null}
       <SettingsDraftContext.Provider
-        value={{ settings: { ...savedSettings, ...draftPatch }, updateSettings, actions }}
+        value={{
+          settings: { ...savedSettings, ...draftPatch },
+          updateSettings,
+          actions,
+          setLocalDirty,
+          registerExternalDraft: (handlers) => {
+            externalDraftRef.current = handlers;
+          },
+        }}
       >
         <fieldset disabled={saving}>{children}</fieldset>
       </SettingsDraftContext.Provider>
@@ -402,7 +397,7 @@ type SettingsScopeKind = "personal" | "shared";
 
 function SettingsScope({ scope, editors }: { scope: SettingsScopeKind; editors: string }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] leading-4">
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs leading-4">
       <span className="font-semibold text-foreground">
         {scope === "personal" ? "Only for your account" : "Shared with all users"}
       </span>
@@ -459,6 +454,75 @@ const adminSectionKeys = new Set([
   "quickEntryExcel",
 ]);
 
+type SettingsAccent = "sky" | "amber" | "violet" | "teal" | "emerald";
+
+const settingsAccentByGroup: Record<string, SettingsAccent> = {
+  organization: "sky",
+  procurement: "amber",
+  analytics: "violet",
+  access: "teal",
+  personal: "emerald",
+};
+
+const settingsAccentBySection: Record<string, SettingsAccent> = {
+  workspace: "sky",
+  yearSetup: "sky",
+  divisions: "sky",
+  indentors: "sky",
+  modes: "amber",
+  gemBiddingModes: "amber",
+  fileTypes: "amber",
+  firmTypes: "amber",
+  firms: "amber",
+  tcec: "amber",
+  fileMarkers: "amber",
+  milestones: "amber",
+  thresholds: "violet",
+  bgReceiptDelay: "violet",
+  offsetDays: "violet",
+  demandProcessing: "violet",
+  presets: "violet",
+  firmRating: "violet",
+  mmgSummary: "violet",
+  anomalyGovernance: "violet",
+  quickEntryExcel: "violet",
+  user: "teal",
+  users: "teal",
+  ipAccess: "teal",
+  archive: "teal",
+  protectedBackup: "teal",
+  theme: "emerald",
+  noticeBoard: "emerald",
+};
+
+const settingsGroupHeaderAccentClasses: Record<SettingsAccent, string> = {
+  sky: "bg-primary/15 text-foreground shadow-sm",
+  amber: "bg-primary/15 text-foreground shadow-sm",
+  violet: "bg-primary/15 text-foreground shadow-sm",
+  teal: "bg-primary/15 text-foreground shadow-sm",
+  emerald: "bg-primary/15 text-foreground shadow-sm",
+};
+
+const settingsGroupAccentClasses: Record<SettingsAccent, string> = {
+  sky: "border-primary/20 bg-primary/5",
+  amber: "border-primary/20 bg-primary/5",
+  violet: "border-primary/20 bg-primary/5",
+  teal: "border-primary/20 bg-primary/5",
+  emerald: "border-primary/20 bg-primary/5",
+};
+
+const settingsPanelAccentClasses: Record<SettingsAccent, string> = {
+  sky: "bg-primary/5",
+  amber: "bg-primary/5",
+  violet: "bg-primary/5",
+  teal: "bg-primary/5",
+  emerald: "bg-primary/5",
+};
+
+function settingsAccentForSection(key: string) {
+  return settingsAccentBySection[key] ?? "sky";
+}
+
 const milestoneHelperSectionOrder = [
   "What it does",
   "Examples",
@@ -481,10 +545,11 @@ const settingsSectionHelpers = {
     "Administrators configure Excel exports here. Saved exports are shared with all users on the Quick Entry page.",
   ],
   protectedBackup: [
-    "Creates an encrypted local backup of the database for emergency recovery.",
+    "Creates an encrypted database backup (.rbk) for emergency recovery.",
     "Only Administrators can create or restore protected backups; backup files cannot be deleted from this application.",
-    "Restoring requires both the backup file's encryption password and a separately configured restore authorization password.",
-    "The restore authorization must be verified before Select Backup is enabled, and it changes only when an Administrator explicitly saves a replacement.",
+    "Restoring requires both the database backup's encryption password and the separately configured Upload password.",
+    "To change an existing Upload password, verify the current password first. The replacement fields remain disabled until verification succeeds, and a wrong current password cannot save the replacement.",
+    "If the Upload password is forgotten, use Forgot Upload password? and enter the separately configured six-digit Recovery PIN. If both are forgotten, a server/database administrator must recover the account.",
     "The full recovery package also captures PostgreSQL database data, PostgreSQL roles/globals, configured external storage, and explicitly configured deployment files.",
     "Deployment secrets are included only when the server administrator explicitly configures RECORDKEEPER_BACKUP_SECRETS_FILE; otherwise transfer them through the organisation's secure secret-management process.",
     "Scheduled server backups run only when the On switch is enabled and the server-side encryption password and destination directory are configured.",
@@ -661,7 +726,7 @@ const workspaceYearHelpers = {
     "Archives the selected FY for normal Search without deleting any files or records.",
     "Inactive files whose origin is this FY are excluded from normal Search; active carry-forward files remain searchable.",
     "Use Include active files from archived years to keep active carry-forward files from an archived initiation year in normal views. Explicit historical or all-files scopes include archived records separately.",
-    "Archive or restore changes remain pending until you click Save changes.",
+    "Archive or restore actions take effect immediately after confirmation; there is no separate Save changes step.",
     "The current FY cannot be archived. Only Administrators can archive or restore a FY.",
   ],
 } satisfies Record<string, string[]>;
@@ -714,9 +779,14 @@ const settingsControlHelpers = {
     "Example row: Old mode used by a file | Inactivate | File retains its saved mode.",
     "Choices already used by files should be retained for history and inactivated when available.",
   ],
+  archiveEntity: [
+    "Moves this saved record to Archive; it is not permanently deleted.",
+    "Restore it from Settings > Archive when you need it active again.",
+  ],
   userDelete: [
-    "Moves this user account out of active use.",
-    "Your personal deletion password is required.",
+    "Moves this user account to Archive and deactivates it; it is not permanently deleted.",
+    "Restore it from Settings > Archive to return it to active use.",
+    "Your personal verification password is required.",
   ],
   universalViewerCashOutgoScope: [
     "Universal Viewers are read-only MMG users whose data access is limited to their assigned divisions. They can use filters and reports, but cannot manage users or edit core file records.",
@@ -854,6 +924,23 @@ type SuspectedAnomalyRow = {
 
 function humanizeSettingsAnomalyLabel(value?: string) {
   if (!value) return "";
+  const knownLabels: Record<string, string> = {
+    refloatcycleactivityexistsbutrefloatrecommendationdateisblank:
+      "Refloat cycle activity exists but Refloat recommendation date is blank",
+    laterstagehaspaymentorbilldateswhileearlierstagedeliveryjobcompletionisincomplete:
+      "Later stage has payment or bill dates while earlier stage delivery/job completion is incomplete",
+    soisshortclosedbutdeliverypaymentjobcompletioncontinuesaftershortclosuredate:
+      "S.O. is shortclosed but delivery/payment/job completion continues after shortclosure date",
+    soisshortclosedbutjobcompletionispending: "S.O. is shortclosed but Job Completion is pending",
+    soisshortclosedbutmaterialreceiptispending:
+      "S.O. is shortclosed but material receipt is pending",
+    soisshortclosedbutpaymentispending: "S.O. is shortclosed but payment is pending",
+    soisshortclosedbutreturnedbillworkflowispending:
+      "S.O. is shortclosed but returned bill workflow is pending",
+    soisshortclosedbutsupplementarybillworkflowispending:
+      "S.O. is shortclosed but supplementary bill workflow is pending",
+  };
+  if (knownLabels[value]) return knownLabels[value];
   if (value === "fileclosedbutbgreturnpendingexists") {
     return "File is closed but BG return is still pending";
   }
@@ -912,7 +999,7 @@ type BackupScheduleSettings = {
   deploymentSecretsConfigured: boolean;
 };
 
-type BackupHealthStatus = "success" | "failed" | "not_run" | "running";
+type BackupHealthStatus = "success" | "failed" | "not_run" | "running" | "not_configured";
 
 type BackupStatusItem = {
   status: BackupHealthStatus;
@@ -935,6 +1022,7 @@ type BackupStatusPayload = {
     error: string | null;
   };
   restoreAuthorizationConfigured: boolean;
+  restoreAuthorizationRecoveryConfigured: boolean;
   schedule: BackupScheduleSettings;
 };
 
@@ -961,39 +1049,88 @@ function backupHealthLabel(status: BackupHealthStatus) {
   if (status === "success") return "Successful";
   if (status === "failed") return "Issue";
   if (status === "running") return "Running";
+  if (status === "not_configured") return "Optional / not configured";
   return "Not yet run";
 }
 
 function backupHealthClass(status: BackupHealthStatus) {
   if (status === "success") {
-    return "border-emerald-600/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
+    return "bg-emerald-500/10 text-foreground";
   }
   if (status === "failed") {
-    return "border-red-600/50 bg-red-500/10 text-red-700 dark:text-red-300";
+    return "bg-red-500/10 text-foreground";
   }
   if (status === "running") {
-    return "border-amber-600/50 bg-amber-500/10 text-amber-700 dark:text-amber-300";
+    return "bg-amber-500/10 text-foreground";
   }
-  return "border-border bg-background text-muted-foreground";
+  return "bg-background text-foreground";
+}
+
+function BackupTypeComparisonTooltip() {
+  return (
+    <div className="max-w-[min(44rem,calc(100vw-2rem))] space-y-2 text-sm leading-relaxed">
+      <p>
+        <strong>Database backup (.rbk):</strong> Contains application database records and settings.
+        It is smaller and faster, and is intended for routine database recovery after accidental
+        changes or data corruption. Restoring it replaces database records.
+      </p>
+      <p>
+        <strong>Full recovery package (.rkdr):</strong> Contains the database backup plus the
+        PostgreSQL dump, roles/globals, external storage, and configured deployment files and
+        secrets. It is larger and slower, and is intended only for rebuilding or replacing a server
+        or recovering from a major disaster. Restoring it can replace the database and selected
+        server/deployment files.
+      </p>
+      <p>
+        Secret files are included only when explicitly configured and available; otherwise they must
+        be provided separately. Both package types require the file&apos;s encryption password and
+        the configured Upload password.
+      </p>
+      <p>
+        Use the database backup for routine recovery. Use the full recovery package only for
+        complete server or disaster recovery.
+      </p>
+    </div>
+  );
 }
 
 function ProtectedBackupSettings() {
   const draft = useContext(SettingsDraftContext);
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [restoreAuthorizationCurrentPassword, setRestoreAuthorizationCurrentPassword] = useState("");
+  const [restoreAuthorizationCurrentPassword, setRestoreAuthorizationCurrentPassword] =
+    useState("");
+  const [currentRestoreAuthorizationStatus, setCurrentRestoreAuthorizationStatus] = useState<
+    "idle" | "checking" | "verified" | "invalid"
+  >("idle");
+  const [restoreAuthorizationRecoveryOpen, setRestoreAuthorizationRecoveryOpen] = useState(false);
+  const [restoreAuthorizationRecoveryPin, setRestoreAuthorizationRecoveryPin] = useState("");
+  const [
+    restoreAuthorizationRecoveryPinConfirmation,
+    setRestoreAuthorizationRecoveryPinConfirmation,
+  ] = useState("");
+  const [recoveryPinInput, setRecoveryPinInput] = useState("");
+  const [recoveryPassword, setRecoveryPassword] = useState("");
+  const [recoveryConfirmation, setRecoveryConfirmation] = useState("");
   const [restoreAuthorizationPassword, setRestoreAuthorizationPassword] = useState("");
   const [restoreAuthorizationConfirmation, setRestoreAuthorizationConfirmation] = useState("");
   const [backupFilePassword, setBackupFilePassword] = useState("");
   const [restoreAuthorizationInput, setRestoreAuthorizationInput] = useState("");
   const [restoreAuthorized, setRestoreAuthorized] = useState(false);
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [fullRestoreFile, setFullRestoreFile] = useState<File | null>(null);
+  const [fullRestoreFilePassword, setFullRestoreFilePassword] = useState("");
+  const [restoreDeploymentFiles, setRestoreDeploymentFiles] = useState(false);
   const backupFileInputRef = useRef<HTMLInputElement>(null);
+  const fullRestoreFileInputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState<
     | "download"
     | "fullDownload"
     | "restore"
+    | "fullRestore"
     | "restoreAuthorization"
+    | "verifyCurrentRestoreAuthorization"
+    | "recoverRestoreAuthorization"
     | "authorizeRestore"
     | "schedule"
     | "scheduleRun"
@@ -1016,11 +1153,36 @@ function ProtectedBackupSettings() {
   const restoreAuthorizationPasswordsMismatch =
     restoreAuthorizationConfirmation.length > 0 &&
     restoreAuthorizationPassword !== restoreAuthorizationConfirmation;
+  const restoreAuthorizationPasswordChangeRequested =
+    restoreAuthorizationPassword.length > 0 || restoreAuthorizationConfirmation.length > 0;
+  const restoreAuthorizationPasswordReady = backupStatus?.restoreAuthorizationConfigured
+    ? !restoreAuthorizationPasswordChangeRequested ||
+      (restoreAuthorizationPassword.length >= 8 && restoreAuthorizationPasswordsMatch)
+    : restoreAuthorizationPassword.length >= 8 && restoreAuthorizationPasswordsMatch;
   const backupPasswordReady = password.length >= 8 && backupPasswordsMatch;
   const restoreAuthorizationReady =
-    restoreAuthorizationPassword.length >= 8 &&
-    restoreAuthorizationPasswordsMatch &&
-    (!backupStatus?.restoreAuthorizationConfigured || restoreAuthorizationCurrentPassword.length >= 8);
+    restoreAuthorizationPasswordReady &&
+    restoreAuthorizationRecoveryPin.length === 6 &&
+    /^\d{6}$/.test(restoreAuthorizationRecoveryPin) &&
+    restoreAuthorizationRecoveryPin === restoreAuthorizationRecoveryPinConfirmation &&
+    (!backupStatus?.restoreAuthorizationConfigured ||
+      currentRestoreAuthorizationStatus === "verified");
+  const hasRestoreAuthorizationDraft =
+    restoreAuthorizationCurrentPassword.length > 0 ||
+    restoreAuthorizationPassword.length > 0 ||
+    restoreAuthorizationConfirmation.length > 0 ||
+    restoreAuthorizationRecoveryPin.length > 0 ||
+    restoreAuthorizationRecoveryPinConfirmation.length > 0;
+  const recoveryPasswordsMatch =
+    recoveryPassword.length > 0 &&
+    recoveryConfirmation.length > 0 &&
+    recoveryPassword === recoveryConfirmation;
+  const recoveryPasswordsMismatch =
+    recoveryConfirmation.length > 0 && recoveryPassword !== recoveryConfirmation;
+  const restoreAuthorizationRecoveryPinMismatch =
+    restoreAuthorizationRecoveryPinConfirmation.length > 0 &&
+    restoreAuthorizationRecoveryPin !== restoreAuthorizationRecoveryPinConfirmation;
+  const recoveryPinReady = /^\d{6}$/.test(recoveryPinInput);
 
   const passwordFieldClass = (invalid: boolean, valid: boolean) =>
     `h-9 w-full rounded-md border bg-background px-3 text-sm ${
@@ -1033,7 +1195,7 @@ function ProtectedBackupSettings() {
 
   const readError = async (response: Response, fallback: string) => {
     try {
-      const body = await response.json() as { error?: string };
+      const body = (await response.json()) as { error?: string };
       return body.error || fallback;
     } catch {
       return fallback;
@@ -1048,7 +1210,7 @@ function ProtectedBackupSettings() {
       if (!response.ok) {
         throw new Error(await readError(response, "Backup status could not be loaded."));
       }
-      const body = await response.json() as { status: BackupStatusPayload };
+      const body = (await response.json()) as { status: BackupStatusPayload };
       setBackupStatus(body.status);
       setSchedule(body.status.schedule);
       setScheduleDraft(body.status.schedule);
@@ -1063,52 +1225,169 @@ function ProtectedBackupSettings() {
     void loadBackupStatus();
   }, [loadBackupStatus]);
 
+  const resetRestoreAuthorizationDraft = () => {
+    setRestoreAuthorizationCurrentPassword("");
+    setCurrentRestoreAuthorizationStatus("idle");
+    setRestoreAuthorizationPassword("");
+    setRestoreAuthorizationConfirmation("");
+    setRestoreAuthorizationRecoveryPin("");
+    setRestoreAuthorizationRecoveryPinConfirmation("");
+  };
+
+  const verifyCurrentRestoreAuthorization = async () => {
+    if (restoreAuthorizationCurrentPassword.length < 8) {
+      setCurrentRestoreAuthorizationStatus("invalid");
+      setMessage("Enter the current Upload password first.");
+      return;
+    }
+    setBusy("verifyCurrentRestoreAuthorization");
+    setCurrentRestoreAuthorizationStatus("checking");
+    setMessage("");
+    try {
+      const response = await fetch(
+        `${apiBase}/api/settings/protected-backup/restore-authorization/verify`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: restoreAuthorizationCurrentPassword }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(await readError(response, "Current Upload password is incorrect."));
+      }
+      setCurrentRestoreAuthorizationStatus("verified");
+      setMessage("Current Upload password verified. You may enter a replacement.");
+    } catch (error) {
+      setCurrentRestoreAuthorizationStatus("invalid");
+      setMessage(error instanceof Error ? error.message : "Current Upload password is incorrect.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const recoverRestoreAuthorization = async () => {
+    if (!recoveryPinReady) {
+      setMessage("Enter the six-digit numeric Recovery PIN first.");
+      return;
+    }
+    if (recoveryPassword.length < 8) {
+      setMessage("Use an Upload password with at least 8 characters.");
+      return;
+    }
+    if (!recoveryPasswordsMatch) {
+      setMessage("Recovery PINs do not match.");
+      return;
+    }
+    if (!window.confirm("Reset the Upload password? The old Upload password will stop working.")) {
+      return;
+    }
+    setBusy("recoverRestoreAuthorization");
+    setMessage("");
+    try {
+      const response = await fetch(
+        `${apiBase}/api/settings/protected-backup/restore-authorization/recover`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            recoveryPin: recoveryPinInput,
+            password: recoveryPassword,
+            confirmation: recoveryConfirmation,
+          }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(await readError(response, "Upload password could not be reset."));
+      }
+      resetRestoreAuthorizationDraft();
+      setRecoveryPinInput("");
+      setRecoveryPassword("");
+      setRecoveryConfirmation("");
+      setRestoreAuthorizationRecoveryOpen(false);
+      setRestoreAuthorized(false);
+      setMessage("Upload password reset successfully. Use the new password for future restores.");
+      await loadBackupStatus();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload password could not be reset.");
+    } finally {
+      setBusy("");
+    }
+  };
+
   const saveRestoreAuthorization = async () => {
     if (
       backupStatus?.restoreAuthorizationConfigured &&
-      restoreAuthorizationCurrentPassword.length < 8
+      currentRestoreAuthorizationStatus !== "verified"
     ) {
-      setMessage("Enter the current restore authorization password before changing it.");
+      setMessage("Verify the current Upload password before changing it.");
       return;
     }
-    if (restoreAuthorizationPassword.length < 8) {
-      setMessage("Use a restore authorization password with at least 8 characters.");
+    if (
+      !backupStatus?.restoreAuthorizationConfigured ||
+      restoreAuthorizationPasswordChangeRequested
+    ) {
+      if (restoreAuthorizationPassword.length < 8) {
+        setMessage("Use an Upload password with at least 8 characters.");
+        return;
+      }
+      if (restoreAuthorizationPassword !== restoreAuthorizationConfirmation) {
+        setMessage("Upload passwords do not match.");
+        return;
+      }
+    }
+    if (!/^\d{6}$/.test(restoreAuthorizationRecoveryPin)) {
+      setMessage("Use exactly six numeric digits for the Recovery PIN.");
       return;
     }
-    if (restoreAuthorizationPassword !== restoreAuthorizationConfirmation) {
-      setMessage("Restore authorization passwords do not match.");
+    if (restoreAuthorizationRecoveryPin !== restoreAuthorizationRecoveryPinConfirmation) {
+      setMessage("Recovery PINs do not match.");
       return;
     }
     setBusy("restoreAuthorization");
     setRestoreAuthorized(false);
     setMessage("");
     try {
-      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore-authorization`, {
-        method: "PUT",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          currentPassword: backupStatus?.restoreAuthorizationConfigured
-            ? restoreAuthorizationCurrentPassword
-            : undefined,
-          password: restoreAuthorizationPassword,
-          confirmation: restoreAuthorizationConfirmation,
-        }),
-      });
+      const response = await fetch(
+        `${apiBase}/api/settings/protected-backup/restore-authorization`,
+        {
+          method: "PUT",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            currentPassword: backupStatus?.restoreAuthorizationConfigured
+              ? restoreAuthorizationCurrentPassword
+              : undefined,
+            password: restoreAuthorizationPassword || undefined,
+            confirmation: restoreAuthorizationConfirmation || undefined,
+            recoveryPin: restoreAuthorizationRecoveryPin,
+            recoveryPinConfirmation: restoreAuthorizationRecoveryPinConfirmation,
+          }),
+        },
+      );
       if (!response.ok) {
-        throw new Error(await readError(response, "Restore authorization password could not be saved."));
+        throw new Error(await readError(response, "Upload password could not be saved."));
       }
       setRestoreAuthorizationCurrentPassword("");
+      setCurrentRestoreAuthorizationStatus("idle");
       setRestoreAuthorizationPassword("");
       setRestoreAuthorizationConfirmation("");
-      setMessage("Restore authorization password saved securely.");
+      setRestoreAuthorizationRecoveryPin("");
+      setRestoreAuthorizationRecoveryPinConfirmation("");
+      setMessage(
+        restoreAuthorizationPasswordChangeRequested
+          ? "Upload password and Recovery PIN saved securely."
+          : "Recovery PIN saved securely.",
+      );
       await loadBackupStatus();
     } catch (error) {
-      setMessage(
-        error instanceof Error
-          ? error.message
-          : "Restore authorization password could not be saved.",
-      );
+      const errorMessage =
+        error instanceof Error ? error.message : "Upload password could not be saved.";
+      if (/current (?:restore authorization|upload) password is incorrect/i.test(errorMessage)) {
+        setCurrentRestoreAuthorizationStatus("invalid");
+      }
+      setMessage(errorMessage);
     } finally {
       setBusy("");
     }
@@ -1116,26 +1395,29 @@ function ProtectedBackupSettings() {
 
   const authorizeRestore = async () => {
     if (restoreAuthorizationInput.length < 8) {
-      setMessage("Enter the restore authorization password first.");
+      setMessage("Enter the Upload password first.");
       return;
     }
     setBusy("authorizeRestore");
     setMessage("");
     try {
-      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore-authorization/verify`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: restoreAuthorizationInput }),
-      });
+      const response = await fetch(
+        `${apiBase}/api/settings/protected-backup/restore-authorization/verify`,
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: restoreAuthorizationInput }),
+        },
+      );
       if (!response.ok) {
-        throw new Error(await readError(response, "Restore authorization failed."));
+        throw new Error(await readError(response, "Upload password verification failed."));
       }
       setRestoreAuthorized(true);
       setMessage("Restore authorized. You can now select the backup file.");
     } catch (error) {
       setRestoreAuthorized(false);
-      setMessage(error instanceof Error ? error.message : "Restore authorization failed.");
+      setMessage(error instanceof Error ? error.message : "Upload password verification failed.");
     } finally {
       setBusy("");
     }
@@ -1162,10 +1444,10 @@ function ProtectedBackupSettings() {
       if (!response.ok) {
         throw new Error(await readError(response, "Backup schedule could not be saved."));
       }
-      const body = await response.json() as { schedule: BackupScheduleSettings };
+      const body = (await response.json()) as { schedule: BackupScheduleSettings };
       setSchedule(body.schedule);
       setScheduleDraft(body.schedule);
-      setScheduleMessage("Server backup schedule saved.");
+      setScheduleMessage("Scheduled server backup settings saved.");
       await loadBackupStatus();
     } catch (error) {
       setScheduleMessage(
@@ -1185,16 +1467,16 @@ function ProtectedBackupSettings() {
         credentials: "include",
       });
       if (!response.ok) {
-        throw new Error(await readError(response, "Server backup could not be started."));
+        throw new Error(await readError(response, "Scheduled server backup could not be started."));
       }
-      const body = await response.json() as { schedule: BackupScheduleSettings };
+      const body = (await response.json()) as { schedule: BackupScheduleSettings };
       setSchedule(body.schedule);
       setScheduleDraft(body.schedule);
-      setScheduleMessage("Server backup completed successfully.");
+      setScheduleMessage("Scheduled server backup completed successfully.");
       await loadBackupStatus();
     } catch (error) {
       setScheduleMessage(
-        error instanceof Error ? error.message : "Server backup could not be started.",
+        error instanceof Error ? error.message : "Scheduled server backup could not be started.",
       );
       await loadBackupStatus();
     } finally {
@@ -1204,11 +1486,11 @@ function ProtectedBackupSettings() {
 
   const downloadBackup = async () => {
     if (password.length < 8) {
-      setMessage("Use a backup password with at least 8 characters.");
+      setMessage("Use a Backup encryption password with at least 8 characters.");
       return;
     }
     if (password !== confirmPassword) {
-      setMessage("Backup password and confirmation must match.");
+      setMessage("Backup encryption passwords must match.");
       return;
     }
     setBusy("download");
@@ -1229,7 +1511,7 @@ function ProtectedBackupSettings() {
       link.download = `recordkeeper-backup-${timestamp}.rbk`;
       link.click();
       URL.revokeObjectURL(url);
-      setMessage("Protected backup downloaded. Store it in a second safe location.");
+      setMessage("Database backup downloaded. Store it in a second safe location.");
       await loadBackupStatus();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Backup could not be created.");
@@ -1252,7 +1534,7 @@ function ProtectedBackupSettings() {
       return;
     }
     if (restoreAuthorizationInput.length < 8) {
-      setMessage("Enter the restore authorization password.");
+      setMessage("Enter the Upload password.");
       return;
     }
     if (!window.confirm("Restore this backup? Current database records will be replaced.")) return;
@@ -1271,7 +1553,7 @@ function ProtectedBackupSettings() {
         }),
       });
       if (!response.ok) throw new Error(await readError(response, "Backup could not be restored."));
-      const result = await response.json() as { tables?: number; rows?: number };
+      const result = (await response.json()) as { tables?: number; rows?: number };
       setMessage(`Backup restored: ${result.tables ?? 0} tables and ${result.rows ?? 0} rows.`);
       setRestoreFile(null);
     } catch (error) {
@@ -1281,13 +1563,70 @@ function ProtectedBackupSettings() {
     }
   };
 
+  const restoreFullRecoveryPackage = async () => {
+    if (!restoreAuthorized) {
+      setMessage(
+        "Enter the Upload password before selecting or restoring a Full recovery package.",
+      );
+      return;
+    }
+    if (!fullRestoreFile) {
+      setMessage("Choose a Full recovery package (.rkdr) first.");
+      return;
+    }
+    if (fullRestoreFilePassword.length < 8) {
+      setMessage("Enter the Full recovery package encryption password.");
+      return;
+    }
+    if (restoreAuthorizationInput.length < 8) {
+      setMessage("Enter the Upload password.");
+      return;
+    }
+    if (
+      !window.confirm(
+        "Restore this full recovery package? The server database will be replaced, and uploaded files may also be replaced.",
+      )
+    )
+      return;
+    setBusy("fullRestore");
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/full-restore`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Backup-File-Password": fullRestoreFilePassword,
+          "X-Restore-Authorization-Password": restoreAuthorizationInput,
+          "X-Restore-Deployment-Files": restoreDeploymentFiles ? "true" : "false",
+        },
+        body: fullRestoreFile,
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Full recovery package could not be restored."));
+      }
+      const result = (await response.json()) as { warnings?: string[] };
+      const warnings = result.warnings?.length ? ` Warnings: ${result.warnings.join(" ")}` : "";
+      setMessage(`Full recovery package restored on the server.${warnings}`);
+      setFullRestoreFile(null);
+      setFullRestoreFilePassword("");
+      if (fullRestoreFileInputRef.current) fullRestoreFileInputRef.current.value = "";
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Full recovery package could not be restored.",
+      );
+    } finally {
+      setBusy("");
+    }
+  };
+
   const downloadFullRecoveryPackage = async () => {
     if (password.length < 8) {
-      setMessage("Use a backup password with at least 8 characters.");
+      setMessage("Use a Backup encryption password with at least 8 characters.");
       return;
     }
     if (password !== confirmPassword) {
-      setMessage("Backup password and confirmation must match.");
+      setMessage("Backup encryption passwords must match.");
       return;
     }
     setBusy("fullDownload");
@@ -1299,7 +1638,8 @@ function ProtectedBackupSettings() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password }),
       });
-      if (!response.ok) throw new Error(await readError(response, "Full recovery package could not be created."));
+      if (!response.ok)
+        throw new Error(await readError(response, "Full recovery package could not be created."));
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
@@ -1308,38 +1648,91 @@ function ProtectedBackupSettings() {
       link.download = `recordkeeper-disaster-recovery-${timestamp}.rkdr`;
       link.click();
       URL.revokeObjectURL(url);
-      setMessage("Full recovery package downloaded. Keep it outside the server and transfer it only through a secure channel.");
+      setMessage(
+        "Full recovery package downloaded. Keep it outside the server and transfer it only through a secure channel.",
+      );
       await loadBackupStatus();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Full recovery package could not be created.");
+      setMessage(
+        error instanceof Error ? error.message : "Full recovery package could not be created.",
+      );
     } finally {
       setBusy("");
     }
   };
 
+  const closeProtectedBackupEditor = () => {
+    resetRestoreAuthorizationDraft();
+    setRestoreAuthorizationRecoveryOpen(false);
+    setRecoveryPinInput("");
+    setRecoveryPassword("");
+    setRecoveryConfirmation("");
+    setPassword("");
+    setConfirmPassword("");
+    setRestoreFile(null);
+    setBackupFilePassword("");
+    setRestoreAuthorizationInput("");
+    setRestoreAuthorized(false);
+    setFullRestoreFile(null);
+    setFullRestoreFilePassword("");
+    setRestoreDeploymentFiles(false);
+    setScheduleDraft(schedule);
+    setMessage("");
+    setScheduleMessage("");
+    draft?.actions?.cancelChanges();
+  };
+
   const statusTimeZone = backupStatus?.schedule.timezone ?? schedule?.timezone ?? "Asia/Kolkata";
-  const renderBackupStatusButton = (label: string, item: BackupStatusItem) => (
-    <button
-      type="button"
-      onClick={() =>
-        setStatusMessage(
-          item.error ??
-            `${label}: ${backupHealthLabel(item.status)}${
-              item.fileName ? ` — ${item.fileName}` : ""
-            }`,
-        )
-      }
-      title={item.error ?? `${label}: ${backupHealthLabel(item.status)}`}
-      className={`inline-flex min-h-12 min-w-48 flex-col items-start justify-center rounded-md border px-3 py-2 text-left text-xs font-medium ${backupHealthClass(item.status)}`}
-    >
-      <span>{label}: {backupHealthLabel(item.status)}</span>
-      <span className="font-normal opacity-80">
-        {item.lastBackupAt
-          ? `Last: ${formatBackupScheduleDate(item.lastBackupAt, statusTimeZone)}`
-          : "No backup recorded"}
-      </span>
-    </button>
-  );
+  const renderBackupStatusButton = (
+    label: string,
+    item: BackupStatusItem,
+    showTypeComparison = false,
+  ) => {
+    const button = (
+      <button
+        type="button"
+        onClick={() =>
+          setStatusMessage(
+            item.error ??
+              `${label}: ${backupHealthLabel(item.status)}${
+                item.fileName ? ` — ${item.fileName}` : ""
+              }`,
+          )
+        }
+        aria-label={`${label}: ${backupHealthLabel(item.status)}`}
+        className={`inline-flex min-h-12 w-full min-w-0 max-w-full flex-col items-start justify-center break-words rounded-md px-3 py-2 text-left text-xs font-medium whitespace-normal ${backupHealthClass(item.status)}`}
+      >
+        <span>
+          {label}: {backupHealthLabel(item.status)}
+        </span>
+        <span className="font-normal opacity-80">
+          {item.lastBackupAt
+            ? `Last: ${formatBackupScheduleDate(item.lastBackupAt, statusTimeZone)}`
+            : "No backup recorded"}
+        </span>
+      </button>
+    );
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          align="start"
+          className="max-w-[min(44rem,calc(100vw-2rem))] border border-border bg-background p-3 text-foreground shadow-lg"
+        >
+          {showTypeComparison ? (
+            <BackupTypeComparisonTooltip />
+          ) : (
+            <p className="text-sm leading-relaxed">
+              Scheduled server backups run automatically on the server according to the saved
+              schedule.
+            </p>
+          )}
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
 
   const renderSecretStatusButton = () => {
     if (!backupStatus) return null;
@@ -1347,7 +1740,7 @@ function ProtectedBackupSettings() {
     const includedAt = secret.lastIncludedAt
       ? formatBackupScheduleDate(secret.lastIncludedAt, statusTimeZone)
       : null;
-    return (
+    const button = (
       <button
         type="button"
         onClick={() =>
@@ -1358,8 +1751,8 @@ function ProtectedBackupSettings() {
               }.`,
           )
         }
-        title={secret.error ?? "Secret file status"}
-        className={`inline-flex min-h-12 min-w-48 flex-col items-start justify-center rounded-md border px-3 py-2 text-left text-xs font-medium ${backupHealthClass(secret.status)}`}
+        aria-label={secret.error ?? "Secret file status"}
+        className={`inline-flex min-h-12 w-full min-w-0 max-w-full flex-col items-start justify-center break-words rounded-md px-3 py-2 text-left text-xs font-medium whitespace-normal ${backupHealthClass(secret.status)}`}
       >
         <span>Secret files: {backupHealthLabel(secret.status)}</span>
         <span className="font-normal opacity-80">
@@ -1367,512 +1760,1055 @@ function ProtectedBackupSettings() {
         </span>
       </button>
     );
+
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent
+          side="bottom"
+          align="start"
+          className="border border-border bg-background p-3 text-foreground shadow-lg"
+        >
+          <p className="text-sm leading-relaxed">
+            Secret files are optional and included only when explicitly configured and available.
+          </p>
+        </TooltipContent>
+      </Tooltip>
+    );
   };
 
   return (
-    <section className="rounded-md border border-border bg-secondary/20 p-4">
-      <Tabs defaultValue="local" className="mt-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4 xl:flex-nowrap">
-          <TabsList className="h-12 w-fit shrink-0 justify-start gap-1 rounded-md border border-primary/30 bg-primary/5 p-1 shadow-sm">
+    <section className="protected-backup-settings min-w-0 w-full max-w-full rounded-md border border-border bg-secondary/20 p-4 text-[0.9375rem] shadow-sm [&_.text-xs]:text-sm">
+      <Tabs defaultValue="backup" className="mt-0">
+        <div className="flex flex-col items-stretch gap-3 border-b border-border pb-4">
+          <TabsList className="flex h-auto min-w-0 w-full flex-wrap justify-start gap-1 rounded-md border border-primary/30 bg-primary/5 p-1 shadow-sm">
+            <TabsTrigger
+              value="backup"
+              className="min-h-10 min-w-0 flex-1 gap-2 whitespace-normal px-4 text-center text-base leading-5 font-semibold data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-2 data-[state=active]:ring-primary/20 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
+            >
+              <DatabaseBackup className="size-4" />
+              Backup Settings
+            </TabsTrigger>
+            <TabsTrigger
+              value="password"
+              className="min-h-10 min-w-0 flex-1 gap-2 whitespace-normal px-4 text-center text-base leading-5 font-semibold data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-2 data-[state=active]:ring-primary/20 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
+            >
+              <Lock className="size-4 shrink-0" />
+              Upload Settings
+            </TabsTrigger>
             <TabsTrigger
               value="local"
-              className="h-10 gap-2 px-5 text-base font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:ring-2 data-[state=active]:ring-primary/30 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
+              className="min-h-10 min-w-0 flex-1 gap-2 whitespace-normal px-4 text-center text-base leading-5 font-semibold data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-2 data-[state=active]:ring-primary/20 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
             >
-              <DatabaseBackup className="size-4" />
-              Local Backup
+              <Upload className="size-4 shrink-0" />
+              Upload &amp; restore database backup (.rbk)
             </TabsTrigger>
             <TabsTrigger
-              value="server"
-              className="h-10 gap-2 px-5 text-base font-semibold data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-md data-[state=active]:ring-2 data-[state=active]:ring-primary/30 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
+              value="full"
+              className="min-h-10 min-w-0 flex-1 gap-2 whitespace-normal px-4 text-center text-base leading-5 font-semibold data-[state=active]:bg-primary/15 data-[state=active]:text-foreground data-[state=active]:shadow-sm data-[state=active]:ring-2 data-[state=active]:ring-primary/20 data-[state=inactive]:text-foreground data-[state=inactive]:hover:bg-primary/10"
             >
-              <DatabaseBackup className="size-4" />
-              Server Backup
+              <Upload className="size-4 shrink-0" />
+              Upload &amp; restore full recovery package (.rkdr)
             </TabsTrigger>
           </TabsList>
+        </div>
+        <div className="mt-3 flex min-w-0 flex-wrap items-center justify-between gap-3 text-sm text-muted-foreground">
+          <SettingsScope scope="shared" editors="Administrators" />
           {draft?.actions ? (
-            <div className="flex shrink-0 items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={draft.actions.cancelChanges}
-                disabled={draft.actions.saving || !draft.actions.hasChanges}
-                className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => void draft.actions?.saveChanges()}
-                disabled={!draft.actions.hasChanges || draft.actions.saving}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
-              >
-                <Save className="size-4" />
-                {draft.actions.saving ? "Saving..." : "Save changes"}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={closeProtectedBackupEditor}
+              disabled={draft.actions.saving}
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium text-foreground hover:bg-accent disabled:opacity-50"
+            >
+              Close editor
+            </button>
           ) : draft?.unlockSection ? (
             <button
               type="button"
               onClick={draft.unlockSection}
               disabled={draft.sectionVerifying || draft.sectionSaving}
-              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:cursor-wait disabled:opacity-60"
+              className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border border-border bg-background px-4 text-sm font-medium text-foreground hover:bg-accent disabled:cursor-wait disabled:opacity-60"
             >
               <Lock className="size-4" />
               {draft.sectionVerifying ? "Checking..." : "Edit"}
             </button>
           ) : null}
         </div>
-        <div className="mt-3 text-xs text-muted-foreground">
-          <SettingsScope scope="shared" editors="Administrators" />
-        </div>
         <fieldset
           disabled={!draft?.sectionUnlocked || draft?.sectionSaving}
           className={
-            !draft?.sectionUnlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : undefined
+            !draft?.sectionUnlocked
+              ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed"
+              : undefined
           }
         >
-        <TabsContent value="local" className="mt-5 space-y-5">
-      <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold">Create a backup</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Create an encrypted local backup or a complete recovery package.
-          </p>
-        </div>
-      <div className="grid max-w-full grid-cols-1 items-end gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-4">
-        <label className="block min-w-0">
-          <span className="mb-1 block text-xs font-medium">Backup password</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="At least 8 characters"
-            className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-          />
-        </label>
-        <label className="block min-w-0">
-          <span className="mb-1 block text-xs font-medium">Confirm backup password</span>
-          <input
-            type="password"
-            value={confirmPassword}
-            onChange={(event) => setConfirmPassword(event.target.value)}
-            placeholder="Re-enter password"
-            aria-invalid={backupPasswordsMismatch}
-            className={passwordFieldClass(backupPasswordsMismatch, backupPasswordsMatch)}
-          />
-          {backupPasswordsMismatch ? (
-            <p className="mt-1 text-xs text-destructive" role="alert">
-              Backup passwords do not match.
-            </p>
-          ) : backupPasswordsMatch ? (
-            <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300" role="status">
-              Backup passwords match.
-            </p>
-          ) : null}
-        </label>
-        <button
-          type="button"
-          onClick={() => void downloadBackup()}
-          disabled={Boolean(busy) || !backupPasswordReady}
-          className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
-        >
-          <Download className="size-4" />
-          {busy === "download" ? "Creating..." : "Download backup"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void downloadFullRecoveryPackage()}
-          disabled={Boolean(busy) || !backupPasswordReady}
-          className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
-        >
-          <Download className="size-4" />
-          {busy === "fullDownload" ? "Creating..." : "Download full recovery package"}
-        </button>
-        <div className="col-span-full border-t border-border pt-4">
-          <h4 className="text-sm font-semibold">Restore authorization</h4>
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            Set this Administrator password once. It remains fixed until an Administrator enters the current password and explicitly saves a replacement. It is required before a backup can be restored.
-          </p>
-        </div>
-        {backupStatus?.restoreAuthorizationConfigured ? (
-          <label className="block min-w-0">
-            <span className="mb-1 block text-xs font-medium">Current restore authorization password</span>
-            <input
-              type="password"
-              value={restoreAuthorizationCurrentPassword}
-              onChange={(event) => setRestoreAuthorizationCurrentPassword(event.target.value)}
-              placeholder="Enter the saved password"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </label>
-        ) : null}
-        <label className="block min-w-0">
-          <span className="mb-1 block text-xs font-medium">Restore authorization password (set by Administrator)</span>
-          <input
-            type="password"
-            value={restoreAuthorizationPassword}
-            onChange={(event) => setRestoreAuthorizationPassword(event.target.value)}
-            placeholder="At least 8 characters"
-            className={passwordFieldClass(
-              restoreAuthorizationPasswordsMismatch,
-              restoreAuthorizationPasswordsMatch,
-            )}
-          />
-        </label>
-        <label className="block min-w-0">
-          <span className="mb-1 block text-xs font-medium">Confirm restore authorization password</span>
-          <input
-            type="password"
-            value={restoreAuthorizationConfirmation}
-            onChange={(event) => setRestoreAuthorizationConfirmation(event.target.value)}
-            placeholder="Re-enter authorization"
-            aria-invalid={restoreAuthorizationPasswordsMismatch}
-            className={passwordFieldClass(
-              restoreAuthorizationPasswordsMismatch,
-              restoreAuthorizationPasswordsMatch,
-            )}
-          />
-          {restoreAuthorizationPasswordsMismatch ? (
-            <p className="mt-1 text-xs text-destructive" role="alert">
-              Restore authorization passwords do not match.
-            </p>
-          ) : restoreAuthorizationPasswordsMatch ? (
-            <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300" role="status">
-              Restore authorization passwords match.
-            </p>
-          ) : null}
-        </label>
-        <button
-          type="button"
-          onClick={() => void saveRestoreAuthorization()}
-          disabled={Boolean(busy) || !restoreAuthorizationReady}
-          className="inline-flex h-10 w-64 max-w-full items-center justify-center justify-self-start gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
-        >
-          <Save className="size-4" />
-          {busy === "restoreAuthorization"
-            ? "Saving..."
-            : backupStatus?.restoreAuthorizationConfigured
-              ? "Change restore authorization"
-              : "Save restore authorization"}
-        </button>
-        <span className="flex min-h-10 items-center text-xs text-muted-foreground">
-          Authorization: {backupStatus?.restoreAuthorizationConfigured ? "Configured" : "Not configured"}
-        </span>
-      </div>
-      </div>
-      {backupStatus ? (
-        <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-          <div className="mb-4">
-            <h3 className="text-sm font-semibold">Backup health</h3>
-            <p className="mt-1 text-xs text-muted-foreground">
-              Check the latest result and included secret files. Select a status for more detail.
-            </p>
-          </div>
-          <div className="grid gap-3 sm:grid-cols-3">
-            {renderBackupStatusButton("Local backup", backupStatus.local)}
-            {renderBackupStatusButton("Full recovery", backupStatus.fullRecovery)}
-            {renderSecretStatusButton()}
-          </div>
-        </div>
-      ) : null}
-      <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-        <div className="mb-4">
-          <h3 className="text-sm font-semibold">Restore from local backup</h3>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Enter the configured restore authorization password first. After authorization, select the backup and enter that file's encryption password.
-          </p>
-        </div>
-        <div className="grid grid-cols-1 items-end gap-x-4 gap-y-4 lg:grid-cols-[minmax(14rem,1fr)_auto_minmax(0,auto)_minmax(14rem,1fr)_auto]">
-          <input
-            ref={backupFileInputRef}
-            type="file"
-            accept=".rbk,application/json"
-            onChange={(event) => setRestoreFile(event.target.files?.[0] ?? null)}
-            className="sr-only"
-          />
-          <label className="block min-w-0">
-            <span className="mb-1 block text-xs font-medium">Restore authorization password</span>
-            <input
-              type="password"
-              value={restoreAuthorizationInput}
-              onChange={(event) => {
-                setRestoreAuthorizationInput(event.target.value);
-                setRestoreAuthorized(false);
-              }}
-              placeholder="Enter configured authorization password"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => void authorizeRestore()}
-            disabled={Boolean(busy) || restoreAuthorizationInput.length < 8}
-            className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+          <TabsContent
+            value="backup"
+            className="protected-backup-tab mt-5 min-w-0 w-full max-w-full space-y-5"
           >
-            <Lock className="size-4" />
-            {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
-          </button>
-          <div className="flex min-w-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={() => backupFileInputRef.current?.click()}
-              disabled={Boolean(busy) || !restoreAuthorized}
-              className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
-            >
-              <Upload className="size-4" />
-              Select Backup
-            </button>
-            <span className="min-w-0 truncate text-xs text-muted-foreground">
-              {restoreFile?.name ?? "No backup selected"}
-            </span>
-          </div>
-          <label className="block min-w-0">
-            <span className="mb-1 block text-xs font-medium">Backup file encryption password</span>
-            <input
-              type="password"
-              value={backupFilePassword}
-              onChange={(event) => setBackupFilePassword(event.target.value)}
-              placeholder="Password used to encrypt this .rbk file"
-              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-            />
-          </label>
-          <button
-            type="button"
-            onClick={() => void restoreBackup()}
-            disabled={Boolean(busy) || !restoreFile || !restoreAuthorized}
-            className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium disabled:opacity-50"
-          >
-            <Upload className="size-4" />
-            {busy === "restore" ? "Restoring..." : "Restore backup"}
-          </button>
-        </div>
-        <p className="mt-4 text-xs leading-5 text-muted-foreground">
-          Restoring replaces current records. The backup file password, restore authorization, file validation, and transaction checks must all pass before changes are committed.
-        </p>
-        <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          The full recovery package is encrypted with the same password and includes the application .rbk backup, PostgreSQL dump, roles/globals, configured external files, and deployment files. Actual deployment secrets are included only when the server administrator explicitly configures them for this feature; otherwise transfer them separately through a secure secret-management process.
-        </p>
-      </div>
-        </TabsContent>
-        <TabsContent value="server" className="mt-5 space-y-5">
-          <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h3 className="text-sm font-semibold">Scheduled server backups</h3>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Backups run on the server even when no browser is open. The server-side encryption password is configured outside the application and is never shown here.
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-foreground">Create a database backup</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Use one encryption password for the downloaded backup files. Remember this
+                  password and keep it different from the Upload password.
                 </p>
               </div>
-              {scheduleDraft ? (
+              <div className="protected-backup-action-grid grid min-w-0 w-full max-w-full grid-cols-1 items-end gap-x-4 gap-y-4 sm:grid-cols-2 2xl:grid-cols-4">
+                <label className="block min-w-0">
+                  <span className="mb-1 block text-xs font-medium">Backup encryption password</span>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    placeholder="At least 8 characters"
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  />
+                </label>
+                <label className="block min-w-0">
+                  <span className="mb-1 block text-xs font-medium">
+                    Confirm encryption password
+                  </span>
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    placeholder="Re-enter password"
+                    aria-invalid={backupPasswordsMismatch}
+                    className={passwordFieldClass(backupPasswordsMismatch, backupPasswordsMatch)}
+                  />
+                  {backupPasswordsMismatch ? (
+                    <p className="mt-1 text-xs text-destructive" role="alert">
+                      Backup encryption passwords do not match.
+                    </p>
+                  ) : backupPasswordsMatch ? (
+                    <p
+                      className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
+                      role="status"
+                    >
+                      Backup encryption passwords match.
+                    </p>
+                  ) : null}
+                </label>
                 <button
                   type="button"
-                  role="switch"
-                  aria-checked={scheduleDraft.enabled}
-                  onClick={() =>
-                    setScheduleDraft((current) =>
-                      current ? { ...current, enabled: !current.enabled } : current,
-                    )
-                  }
-                  className={`inline-flex h-9 items-center gap-2 rounded-full border px-3 text-xs font-semibold ${
-                    scheduleDraft.enabled
-                      ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border bg-background text-muted-foreground"
-                  }`}
+                  onClick={() => void downloadBackup()}
+                  disabled={Boolean(busy) || !backupPasswordReady}
+                  className="inline-flex h-10 min-w-0 w-full max-w-full items-center justify-center justify-self-start gap-2 whitespace-normal rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
                 >
-                  <span className="relative inline-flex h-4 w-7 rounded-full bg-current/25">
-                    <span
-                      className={`absolute top-0.5 size-3 rounded-full bg-current transition-transform ${
-                        scheduleDraft.enabled ? "translate-x-3.5" : "translate-x-0.5"
-                      }`}
-                    />
-                  </span>
-                  {scheduleDraft.enabled ? "On" : "Off"}
+                  <Download className="size-4" />
+                  {busy === "download" ? "Creating..." : "Download database backup"}
                 </button>
-              ) : null}
-            </div>
-          </div>
-
-          {backupStatus ? (
-            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-              <div className="mb-4">
-                <h3 className="text-sm font-semibold">Backup health</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Check the latest server run and whether configured secret files were included.
-                </p>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                {renderBackupStatusButton("Server backup", backupStatus.server)}
-                {renderSecretStatusButton()}
+                <button
+                  type="button"
+                  onClick={() => void downloadFullRecoveryPackage()}
+                  disabled={Boolean(busy) || !backupPasswordReady}
+                  className="inline-flex h-10 min-w-0 w-full max-w-full items-center justify-center justify-self-start gap-2 whitespace-normal rounded-md border border-primary/40 bg-primary/10 px-3 text-center text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                >
+                  <Download className="size-4" />
+                  {busy === "fullDownload" ? "Creating..." : "Download full recovery package"}
+                </button>
               </div>
             </div>
-          ) : null}
-
-          {scheduleDraft ? (
-            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+          </TabsContent>
+          <TabsContent value="password" className="mt-5 space-y-5">
+            <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-5 shadow-sm">
               <div className="mb-4">
-                <h3 className="text-sm font-semibold">Schedule and retention</h3>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Choose when the server creates packages and how many recent packages it keeps.
-                </p>
+                <h3 className="text-sm font-semibold text-foreground">
+                  Upload password and Recovery PIN
+                </h3>
               </div>
-              <div className="grid gap-x-4 gap-y-4 sm:grid-cols-2 lg:grid-cols-[14rem_14rem_14rem_14rem]">
-                <label className="block text-xs font-medium">
-                  Frequency
-                  <select
-                    value={scheduleDraft.frequency}
-                    onChange={(event) =>
-                      setScheduleDraft((current) =>
-                        current
-                          ? { ...current, frequency: event.target.value as "daily" | "weekly" }
-                          : current,
-                      )
-                    }
-                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
-                  >
-                    <option value="daily">Daily</option>
-                    <option value="weekly">Weekly</option>
-                  </select>
-                </label>
-                {scheduleDraft.frequency === "weekly" ? (
-                  <label className="block text-xs font-medium">
-                    Day
-                    <select
-                      value={scheduleDraft.dayOfWeek}
-                      onChange={(event) =>
-                        setScheduleDraft((current) =>
-                          current ? { ...current, dayOfWeek: Number(event.target.value) } : current,
-                        )
-                      }
-                      className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+              <div className="col-span-full grid grid-cols-1 items-start gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_auto_minmax(0,1.2fr)_minmax(0,1.2fr)]">
+                {backupStatus?.restoreAuthorizationConfigured ? (
+                  <label className="block min-w-0">
+                    <span className="mb-1 block min-h-[1.25em] text-xs font-medium">
+                      Current Upload password
+                    </span>
+                    <input
+                      type="password"
+                      value={restoreAuthorizationCurrentPassword}
+                      onChange={(event) => {
+                        setRestoreAuthorizationCurrentPassword(event.target.value);
+                        setCurrentRestoreAuthorizationStatus("idle");
+                        setMessage("");
+                      }}
+                      placeholder="Enter the saved password"
+                      aria-invalid={currentRestoreAuthorizationStatus === "invalid"}
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRestoreAuthorizationRecoveryOpen((open) => !open);
+                        setMessage("");
+                      }}
+                      disabled={Boolean(busy)}
+                      className="mt-2 block whitespace-nowrap text-xs font-medium text-primary underline-offset-2 hover:underline disabled:opacity-50"
                     >
-                      {backupScheduleDayOptions.map(([value, label]) => (
-                        <option key={value} value={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
+                      {restoreAuthorizationRecoveryOpen
+                        ? "Hide forgotten-password recovery"
+                        : "Forgot Upload password?"}
+                    </button>
                   </label>
                 ) : null}
-                <label className="block text-xs font-medium">
-                  Time ({scheduleDraft.timezone})
+                {backupStatus?.restoreAuthorizationConfigured ? (
+                  <div className="min-w-0">
+                    <span
+                      aria-hidden="true"
+                      className="invisible mb-1 hidden min-h-[1.25em] text-xs sm:block"
+                    >
+                      Current Upload password
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void verifyCurrentRestoreAuthorization()}
+                      disabled={Boolean(busy) || restoreAuthorizationCurrentPassword.length < 8}
+                      className="inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-md border border-primary/30 bg-primary/10 px-3 text-xs font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                    >
+                      {busy === "verifyCurrentRestoreAuthorization"
+                        ? "Verifying..."
+                        : "Verify current password"}
+                    </button>
+                  </div>
+                ) : null}
+                {currentRestoreAuthorizationStatus === "verified" ? (
+                  <span
+                    className="col-span-full text-xs text-emerald-700 dark:text-emerald-300"
+                    role="status"
+                  >
+                    Current password verified.
+                  </span>
+                ) : currentRestoreAuthorizationStatus === "invalid" ? (
+                  <span className="col-span-full text-xs text-destructive" role="alert">
+                    Current password did not match.
+                  </span>
+                ) : null}
+                <label className="block min-w-0">
+                  <span className="mb-1 block min-h-[1.25em] text-xs font-medium">
+                    New upload password
+                  </span>
                   <input
-                    type="time"
-                    value={scheduleDraft.timeOfDay}
-                    onChange={(event) =>
-                      setScheduleDraft((current) =>
-                        current ? { ...current, timeOfDay: event.target.value } : current,
-                      )
+                    type="password"
+                    value={restoreAuthorizationPassword}
+                    onChange={(event) => setRestoreAuthorizationPassword(event.target.value)}
+                    placeholder="At least 8 characters"
+                    disabled={
+                      Boolean(backupStatus?.restoreAuthorizationConfigured) &&
+                      currentRestoreAuthorizationStatus !== "verified"
                     }
-                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                    className={passwordFieldClass(
+                      restoreAuthorizationPasswordsMismatch,
+                      restoreAuthorizationPasswordsMatch,
+                    )}
                   />
                 </label>
-                <label className="block text-xs font-medium">
-                  <TooltipProvider delayDuration={150}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span className="inline-flex cursor-help items-center gap-1">
-                          Retain packages
-                          <Info className="size-3.5 text-muted-foreground" />
+                <label className="block min-w-0">
+                  <span className="mb-1 block min-h-[1.25em] text-xs font-medium">
+                    Confirm upload password
+                  </span>
+                  <input
+                    type="password"
+                    value={restoreAuthorizationConfirmation}
+                    onChange={(event) => setRestoreAuthorizationConfirmation(event.target.value)}
+                    placeholder="Re-enter authorization"
+                    aria-invalid={restoreAuthorizationPasswordsMismatch}
+                    disabled={
+                      Boolean(backupStatus?.restoreAuthorizationConfigured) &&
+                      currentRestoreAuthorizationStatus !== "verified"
+                    }
+                    className={passwordFieldClass(
+                      restoreAuthorizationPasswordsMismatch,
+                      restoreAuthorizationPasswordsMatch,
+                    )}
+                  />
+                  {restoreAuthorizationPasswordsMismatch ? (
+                    <p className="mt-1 text-xs text-destructive" role="alert">
+                      Upload passwords do not match.
+                    </p>
+                  ) : restoreAuthorizationPasswordsMatch ? (
+                    <p
+                      className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
+                      role="status"
+                    >
+                      Upload passwords match.
+                    </p>
+                  ) : null}
+                </label>
+                {restoreAuthorizationRecoveryOpen ? (
+                  <div className="col-span-full rounded-md border border-amber-600/30 bg-amber-500/5 p-4">
+                    <h5 className="text-sm font-semibold">Recover a forgotten Upload password</h5>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      Enter the configured Recovery PIN to set a new Upload password.
+                    </p>
+                    <div className="mt-3 grid grid-cols-1 items-start gap-4 sm:grid-cols-3">
+                      <label className="block min-w-0">
+                        <span className="mb-1 block text-xs font-medium">Recovery PIN</span>
+                        <input
+                          type="password"
+                          value={recoveryPinInput}
+                          onChange={(event) =>
+                            setRecoveryPinInput(event.target.value.replace(/\D/g, "").slice(0, 6))
+                          }
+                          placeholder="Enter PIN"
+                          inputMode="numeric"
+                          pattern="[0-9]{6}"
+                          maxLength={6}
+                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                        />
+                      </label>
+                      <label className="block min-w-0">
+                        <span className="mb-1 block text-xs font-medium">New Upload password</span>
+                        <input
+                          type="password"
+                          value={recoveryPassword}
+                          onChange={(event) => setRecoveryPassword(event.target.value)}
+                          placeholder="At least 8 characters"
+                          className={passwordFieldClass(
+                            recoveryPasswordsMismatch,
+                            recoveryPasswordsMatch,
+                          )}
+                        />
+                      </label>
+                      <label className="block min-w-0">
+                        <span className="mb-1 block text-xs font-medium">
+                          Confirm new Upload password
                         </span>
-                      </TooltipTrigger>
-                      <TooltipContent
-                        side="top"
-                        align="start"
-                        className="max-w-xs border border-border bg-background text-foreground shadow-lg"
+                        <input
+                          type="password"
+                          value={recoveryConfirmation}
+                          onChange={(event) => setRecoveryConfirmation(event.target.value)}
+                          placeholder="Re-enter new password"
+                          aria-invalid={recoveryPasswordsMismatch}
+                          className={passwordFieldClass(
+                            recoveryPasswordsMismatch,
+                            recoveryPasswordsMatch,
+                          )}
+                        />
+                        {recoveryPasswordsMismatch ? (
+                          <p className="mt-1 text-xs text-destructive" role="alert">
+                            Recovery PINs do not match.
+                          </p>
+                        ) : recoveryPasswordsMatch ? (
+                          <p
+                            className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
+                            role="status"
+                          >
+                            Recovery PINs match.
+                          </p>
+                        ) : null}
+                      </label>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void recoverRestoreAuthorization()}
+                        disabled={Boolean(busy) || !recoveryPinReady || !recoveryPasswordsMatch}
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-amber-700/40 bg-amber-600 px-3 text-sm font-medium text-white disabled:opacity-50"
                       >
-                        Number of recent server backup packages to keep. Older packages are removed during retention cleanup.
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                  <input
-                    type="number"
-                    min={1}
-                    max={90}
-                    value={scheduleDraft.retentionCount}
-                    onChange={(event) =>
-                      setScheduleDraft((current) =>
-                        current ? { ...current, retentionCount: Number(event.target.value) } : current,
-                      )
-                    }
-                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
-                  />
-                </label>
-                <label className="block text-xs font-medium sm:col-span-2 lg:col-span-2">
-                  Server destination directory
-                  <input
-                    type="text"
-                    value={scheduleDraft.destinationDir}
-                    onChange={(event) =>
-                      setScheduleDraft((current) =>
-                        current ? { ...current, destinationDir: event.target.value } : current,
-                      )
-                    }
-                    placeholder="/opt/recordkeeper/backups"
-                    className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
-                  />
-                </label>
-              </div>
-              <div className="mt-5 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => void saveBackupSchedule()}
-                  disabled={Boolean(busy) || !scheduleDraft}
-                  className="inline-flex h-9 items-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
-                >
-                  <Save className="size-4" />
-                  {busy === "schedule" ? "Saving..." : "Save schedule"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void runScheduledBackupNow()}
-                  disabled={Boolean(busy) || !schedule?.schedulePasswordConfigured}
-                  className="inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-medium disabled:opacity-50"
-                >
-                  <DatabaseBackup className="size-4" />
-                  {busy === "scheduleRun" ? "Creating..." : "Run backup now"}
-                </button>
-              </div>
-              <p className="mt-4 rounded-md bg-muted/30 px-4 py-3 text-xs leading-5 text-muted-foreground">
-                Deployment files and explicitly configured deployment secrets are included according to the server environment settings. Scheduled packages are encrypted with <code>RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD</code>.
-              </p>
-              {scheduleMessage ? (
-                <p className="mt-3 text-xs text-muted-foreground" role="status">
-                  {scheduleMessage}
-                </p>
-              ) : null}
-            </div>
-          ) : (
-            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-              <p className="text-xs text-muted-foreground">Loading backup schedule…</p>
-            </div>
-          )}
-
-          {schedule ? (
-            <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
-              <h3 className="mb-4 text-sm font-semibold">Server backup details</h3>
-              <div className="grid gap-3 rounded-md bg-muted/30 px-4 py-3 text-xs text-muted-foreground sm:grid-cols-2 lg:grid-cols-4">
-                <span>
-                  Server password: {schedule.schedulePasswordConfigured ? "Configured" : "Not configured"}
+                        {busy === "recoverRestoreAuthorization"
+                          ? "Resetting..."
+                          : "Reset Upload password"}
+                      </button>
+                      <span className="text-xs text-muted-foreground">
+                        This invalidates the old Upload password immediately.
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="col-span-full grid grid-cols-1 items-start gap-4 border-t border-border pt-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                  <div className="col-span-full">
+                    <h5 className="text-sm font-semibold">Recovery PIN</h5>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Recovery PIN is used to reset forgotten Upload password.
+                    </p>
+                  </div>
+                  <label className="block min-w-0">
+                    <span className="sr-only">Recovery PIN</span>
+                    <input
+                      type="password"
+                      value={restoreAuthorizationRecoveryPin}
+                      onChange={(event) =>
+                        setRestoreAuthorizationRecoveryPin(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      placeholder="Enter a six-digit numeric PIN"
+                      inputMode="numeric"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      aria-invalid={restoreAuthorizationRecoveryPinMismatch}
+                      className={passwordFieldClass(
+                        restoreAuthorizationRecoveryPinMismatch ||
+                          (restoreAuthorizationRecoveryPin.length > 0 &&
+                            !/^\d{6}$/.test(restoreAuthorizationRecoveryPin)),
+                        restoreAuthorizationRecoveryPin.length === 6 &&
+                          /^\d{6}$/.test(restoreAuthorizationRecoveryPin),
+                      )}
+                      disabled={
+                        Boolean(backupStatus?.restoreAuthorizationConfigured) &&
+                        currentRestoreAuthorizationStatus !== "verified"
+                      }
+                    />
+                  </label>
+                  <label className="block min-w-0">
+                    <span className="sr-only">Confirm Recovery PIN</span>
+                    <input
+                      type="password"
+                      value={restoreAuthorizationRecoveryPinConfirmation}
+                      onChange={(event) =>
+                        setRestoreAuthorizationRecoveryPinConfirmation(
+                          event.target.value.replace(/\D/g, "").slice(0, 6),
+                        )
+                      }
+                      placeholder="Re-enter PIN"
+                      inputMode="numeric"
+                      pattern="[0-9]{6}"
+                      maxLength={6}
+                      aria-invalid={restoreAuthorizationRecoveryPinMismatch}
+                      className={passwordFieldClass(
+                        restoreAuthorizationRecoveryPinMismatch,
+                        restoreAuthorizationRecoveryPin.length === 6 &&
+                          restoreAuthorizationRecoveryPinConfirmation.length === 6 &&
+                          restoreAuthorizationRecoveryPin ===
+                            restoreAuthorizationRecoveryPinConfirmation,
+                      )}
+                      disabled={
+                        Boolean(backupStatus?.restoreAuthorizationConfigured) &&
+                        currentRestoreAuthorizationStatus !== "verified"
+                      }
+                    />
+                    {restoreAuthorizationRecoveryPinMismatch ? (
+                      <p className="mt-1 text-xs text-destructive" role="alert">
+                        Recovery PINs do not match.
+                      </p>
+                    ) : restoreAuthorizationRecoveryPin.length === 6 &&
+                      restoreAuthorizationRecoveryPinConfirmation.length === 6 &&
+                      restoreAuthorizationRecoveryPin ===
+                        restoreAuthorizationRecoveryPinConfirmation ? (
+                      <p
+                        className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
+                        role="status"
+                      >
+                        Recovery PINs match.
+                      </p>
+                    ) : null}
+                  </label>
+                  <div className="min-w-0 self-end">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void saveRestoreAuthorization()}
+                        disabled={Boolean(busy) || !restoreAuthorizationReady}
+                        className="inline-flex h-10 w-64 max-w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                      >
+                        <Save className="size-4" />
+                        {busy === "restoreAuthorization"
+                          ? "Saving..."
+                          : backupStatus?.restoreAuthorizationConfigured
+                            ? restoreAuthorizationPasswordChangeRequested
+                              ? "Change Upload password"
+                              : "Save Recovery PIN"
+                            : "Save Upload password"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={resetRestoreAuthorizationDraft}
+                        disabled={Boolean(busy) || !hasRestoreAuthorizationDraft}
+                        className="h-10 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <span className="col-span-full flex min-h-10 flex-wrap items-center gap-2 text-xs">
+                  <span
+                    className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 font-medium ${
+                      backupStatus?.restoreAuthorizationConfigured
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
+                        : "border-amber-500/30 bg-amber-500/10 text-foreground"
+                    }`}
+                    role="status"
+                  >
+                    Upload password:{" "}
+                    {backupStatus?.restoreAuthorizationConfigured ? "Set" : "Not set"}
+                  </span>
+                  <span
+                    className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 font-medium ${
+                      backupStatus?.restoreAuthorizationRecoveryConfigured
+                        ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
+                        : "border-amber-500/30 bg-amber-500/10 text-foreground"
+                    }`}
+                    role="status"
+                  >
+                    Recovery PIN:{" "}
+                    {backupStatus?.restoreAuthorizationRecoveryConfigured ? "Set" : "Not set"}
+                  </span>
                 </span>
-                <span>Next run: {formatBackupScheduleDate(schedule.nextRunAt, schedule.timezone)}</span>
-                <span>Last status: {schedule.lastStatus}</span>
-                <span>Last file: {schedule.lastFileName ?? "None"}</span>
               </div>
-              {schedule.lastError ? (
-                <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive" role="alert">
-                  Last error: {schedule.lastError}
-                </p>
-              ) : null}
             </div>
-          ) : null}
-        </TabsContent>
+          </TabsContent>
+          <TabsContent value="backup" className="mt-5 space-y-5">
+            {backupStatus ? (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-5 shadow-sm">
+                <div className="mb-4">
+                  <h3 className="text-sm font-semibold text-foreground">Backup Status</h3>
+                </div>
+                <TooltipProvider delayDuration={0}>
+                  <div className="protected-backup-status-grid grid min-w-0 w-full max-w-full gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    {renderBackupStatusButton("Database backup", backupStatus.local, true)}
+                    {renderBackupStatusButton(
+                      "Full recovery package",
+                      backupStatus.fullRecovery,
+                      true,
+                    )}
+                    {renderBackupStatusButton("Scheduled server backup", backupStatus.server)}
+                    {renderSecretStatusButton()}
+                  </div>
+                </TooltipProvider>
+              </div>
+            ) : null}
+          </TabsContent>
+          <TabsContent value="local" className="mt-5 space-y-5">
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Upload &amp; restore database backup (.rbk)
+                </h3>
+              </div>
+              <div className="grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-3">
+                <input
+                  ref={backupFileInputRef}
+                  type="file"
+                  accept=".rbk,application/json"
+                  onChange={(event) => setRestoreFile(event.target.files?.[0] ?? null)}
+                  className="sr-only"
+                />
+                <div className="flex min-w-0 flex-wrap items-end gap-3">
+                  <label className="block min-w-0 flex-1">
+                    <span className="mb-1 block text-xs font-medium">Upload password</span>
+                    <input
+                      type="password"
+                      value={restoreAuthorizationInput}
+                      onChange={(event) => {
+                        setRestoreAuthorizationInput(event.target.value);
+                        setRestoreAuthorized(false);
+                      }}
+                      placeholder="Enter the configured Upload password"
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void authorizeRestore()}
+                    disabled={Boolean(busy) || restoreAuthorizationInput.length < 8}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
+                  >
+                    <Lock className="size-4" />
+                    {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
+                  </button>
+                </div>
+                <div className="flex min-w-0 flex-[1.2_1_20rem] flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => backupFileInputRef.current?.click()}
+                    disabled={Boolean(busy) || !restoreAuthorized}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-center text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                  >
+                    <Upload className="size-4" />
+                    Select database backup (.rbk)
+                  </button>
+                  <span className="min-w-0 flex-1 break-words text-xs leading-5 text-muted-foreground">
+                    {restoreFile?.name ?? "No database backup selected"}
+                  </span>
+                </div>
+                <div className="flex min-w-0 items-end gap-3">
+                  <label className="block min-w-0 flex-1">
+                    <span className="mb-1 block text-xs font-medium">
+                      Database backup encryption password
+                    </span>
+                    <input
+                      type="password"
+                      value={backupFilePassword}
+                      onChange={(event) => setBackupFilePassword(event.target.value)}
+                      placeholder="Password used to encrypt this .rbk file"
+                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void restoreBackup()}
+                    disabled={Boolean(busy) || !restoreFile || !restoreAuthorized}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center gap-2 rounded-md border border-border bg-background px-3 text-center text-sm font-medium disabled:opacity-50"
+                  >
+                    <Upload className="size-4" />
+                    {busy === "restore" ? "Restoring..." : "Restore database backup"}
+                  </button>
+                </div>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                The database restore does not require a secret file. If secret files are not
+                restored, the server keeps its existing files; on a newly rebuilt server, the
+                administrator must provide whatever environment secrets are needed before starting
+                the application.
+              </p>
+            </div>
+          </TabsContent>
+          <TabsContent value="full" className="mt-5 space-y-5">
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Upload &amp; restore full recovery package (.rkdr)
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Select an encrypted .rkdr package on this PC. It will be uploaded over the LAN and
+                  restored on the server. Secret files are optional when the server already has its
+                  working configuration.
+                </p>
+              </div>
+              <div className="mb-4 grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-[minmax(0,1fr)_auto]">
+                <label className="block min-w-0">
+                  <span className="mb-1 block text-xs font-medium">
+                    Upload password (same password used for database restore)
+                  </span>
+                  <input
+                    type="password"
+                    value={restoreAuthorizationInput}
+                    onChange={(event) => {
+                      setRestoreAuthorizationInput(event.target.value);
+                      setRestoreAuthorized(false);
+                    }}
+                    placeholder="Enter the configured Upload password"
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void authorizeRestore()}
+                  disabled={Boolean(busy) || restoreAuthorizationInput.length < 8}
+                  className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  <Lock className="size-4" />
+                  {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
+                </button>
+              </div>
+              <div className="grid min-w-0 grid-cols-1 items-end gap-x-4 gap-y-4 2xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto]">
+                <input
+                  ref={fullRestoreFileInputRef}
+                  type="file"
+                  accept=".rkdr,application/octet-stream"
+                  onChange={(event) => setFullRestoreFile(event.target.files?.[0] ?? null)}
+                  className="sr-only"
+                />
+                <label className="block min-w-0">
+                  <span className="mb-1 block text-xs font-medium">
+                    Full recovery package encryption password
+                  </span>
+                  <input
+                    type="password"
+                    value={fullRestoreFilePassword}
+                    onChange={(event) => setFullRestoreFilePassword(event.target.value)}
+                    placeholder="Password used for the .rkdr file"
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  />
+                </label>
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fullRestoreFileInputRef.current?.click()}
+                    disabled={Boolean(busy) || !restoreAuthorized}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-center whitespace-normal text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                  >
+                    <Upload className="size-4" />
+                    Select Full recovery package (.rkdr)
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void restoreFullRecoveryPackage()}
+                  disabled={Boolean(busy) || !fullRestoreFile || !restoreAuthorized}
+                  className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-amber-700/40 bg-amber-600 px-3 text-center whitespace-normal text-sm font-medium text-white disabled:opacity-50"
+                >
+                  <Upload className="size-4" />
+                  {busy === "fullRestore" ? "Restoring..." : "Restore full recovery package"}
+                </button>
+                <label className="col-span-full flex items-start gap-2 text-xs leading-5 text-muted-foreground">
+                  <input
+                    type="checkbox"
+                    checked={restoreDeploymentFiles}
+                    onChange={(event) => setRestoreDeploymentFiles(event.target.checked)}
+                    disabled={Boolean(busy) || !restoreAuthorized}
+                    className="mt-1 size-4 rounded border-input"
+                  />
+                  <span>
+                    Also restore configured deployment files and secrets. This is optional, may
+                    require server permissions, and requires a backend restart before the restored
+                    values take effect.
+                  </span>
+                </label>
+              </div>
+              <p className="mt-4 text-xs leading-5 text-muted-foreground">
+                The Full recovery package is encrypted with the same Backup encryption password and
+                includes the database backup, PostgreSQL dump, roles/globals, configured external
+                files, and deployment files. Actual deployment secrets are included only when the
+                server administrator explicitly configures them for this feature; otherwise transfer
+                them separately through a secure secret-management process.
+              </p>
+            </div>
+          </TabsContent>
+          <TabsContent value="backup" className="mt-5 space-y-5">
+            <div className="rounded-lg border border-indigo-500/30 bg-indigo-500/5 p-5 shadow-sm">
+              <div className="space-y-5">
+                {scheduleDraft ? (
+                  <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+                    <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <h3 className="text-sm font-semibold">Schedule and retention</h3>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Choose when the server creates packages and how many recent packages it
+                          keeps.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={scheduleDraft.enabled}
+                        onClick={() =>
+                          setScheduleDraft((current) =>
+                            current ? { ...current, enabled: !current.enabled } : current,
+                          )
+                        }
+                        className={`inline-flex h-9 items-center gap-2 rounded-full border px-3 text-xs font-semibold ${
+                          scheduleDraft.enabled
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-background text-muted-foreground"
+                        }`}
+                      >
+                        <span className="relative inline-flex h-4 w-7 rounded-full bg-current/25">
+                          <span
+                            className={`absolute top-0.5 size-3 rounded-full bg-current transition-transform ${
+                              scheduleDraft.enabled ? "translate-x-3.5" : "translate-x-0.5"
+                            }`}
+                          />
+                        </span>
+                        {scheduleDraft.enabled ? "On" : "Off"}
+                      </button>
+                    </div>
+                    <div
+                      className="grid min-w-0 gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6"
+                    >
+                      <label className="block text-xs font-medium">
+                        Frequency
+                        <select
+                          value={scheduleDraft.frequency}
+                          onChange={(event) =>
+                            setScheduleDraft((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    frequency: event.target.value as "daily" | "weekly",
+                                  }
+                                : current,
+                            )
+                          }
+                          className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                        >
+                          <option value="daily">Daily</option>
+                          <option value="weekly">Weekly</option>
+                        </select>
+                      </label>
+                      {scheduleDraft.frequency === "weekly" ? (
+                        <label className="block text-xs font-medium">
+                          Day
+                          <select
+                            value={scheduleDraft.dayOfWeek}
+                            onChange={(event) =>
+                              setScheduleDraft((current) =>
+                                current
+                                  ? { ...current, dayOfWeek: Number(event.target.value) }
+                                  : current,
+                              )
+                            }
+                            className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                          >
+                            {backupScheduleDayOptions.map(([value, label]) => (
+                              <option key={value} value={value}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      <label className="block text-xs font-medium">
+                        Time ({scheduleDraft.timezone})
+                        <input
+                          type="time"
+                          value={scheduleDraft.timeOfDay}
+                          onChange={(event) =>
+                            setScheduleDraft((current) =>
+                              current ? { ...current, timeOfDay: event.target.value } : current,
+                            )
+                          }
+                          className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium">
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="inline-flex cursor-help items-center gap-1">
+                                Retain packages
+                                <Info className="size-3.5 text-muted-foreground" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="top"
+                              align="start"
+                              className="max-w-xs border border-border bg-background text-foreground shadow-lg"
+                            >
+                              Number of recent server backup packages to keep. Older packages are
+                              removed during retention cleanup.
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                        <input
+                          type="number"
+                          min={1}
+                          max={90}
+                          value={scheduleDraft.retentionCount}
+                          onChange={(event) =>
+                            setScheduleDraft((current) =>
+                              current
+                                ? { ...current, retentionCount: Number(event.target.value) }
+                                : current,
+                            )
+                          }
+                          className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium sm:col-span-2 lg:col-span-1">
+                        Server destination directory
+                        <input
+                          type="text"
+                          value={scheduleDraft.destinationDir}
+                          onChange={(event) =>
+                            setScheduleDraft((current) =>
+                              current
+                                ? { ...current, destinationDir: event.target.value }
+                                : current,
+                            )
+                          }
+                          placeholder="/opt/recordkeeper/backups"
+                          className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
+                        />
+                      </label>
+                      <div className="flex min-w-0 flex-wrap items-center gap-3 self-end">
+                        <button
+                          type="button"
+                          onClick={() => void saveBackupSchedule()}
+                          disabled={Boolean(busy) || !scheduleDraft}
+                          className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 whitespace-normal rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
+                        >
+                          <Save className="size-4" />
+                          {busy === "schedule" ? "Saving..." : "Save schedule"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void runScheduledBackupNow()}
+                          disabled={Boolean(busy) || !schedule?.schedulePasswordConfigured}
+                          className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 whitespace-normal rounded-md border border-border bg-background px-3 text-center text-sm font-medium disabled:opacity-50"
+                        >
+                          <DatabaseBackup className="size-4" />
+                          {busy === "scheduleRun" ? "Creating..." : "Run backup now"}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="mt-4 rounded-md border border-indigo-500/25 bg-indigo-500/5 px-4 py-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          Deployment files and explicitly configured deployment secrets are included
+                          according to the server environment settings. Scheduled packages are
+                          encrypted with{" "}
+                          <code className="rounded bg-background/70 px-1 py-0.5 text-foreground">
+                            RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD
+                          </code>
+                          . The Server Administrator configures this password outside the
+                          application; it is never shown here. Application Administrators can
+                          enable, schedule, and run backups, but cannot view or change this
+                          password. If it is not configured, scheduled backups cannot run.
+                        </p>
+                        <TooltipProvider delayDuration={150}>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                role="img"
+                                aria-label="How to configure the scheduled backup password"
+                                className="inline-flex size-6 shrink-0 cursor-help items-center justify-center rounded-full text-indigo-700 transition hover:bg-indigo-500/10 dark:text-indigo-300"
+                              >
+                                <Info className="size-4" />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="top"
+                              align="end"
+                              className="max-w-[min(32rem,calc(100vw-2rem))] border border-indigo-500/30 bg-background p-3 text-foreground shadow-lg"
+                            >
+                              <div className="space-y-2 text-xs leading-5">
+                                <p className="font-semibold">Server Administrator procedure</p>
+                                <ol className="list-decimal space-y-1 pl-4">
+                                  <li>
+                                    Generate a strong, unique password for scheduled backup
+                                    encryption.
+                                  </li>
+                                  <li>
+                                    Set <code>RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD</code> in the
+                                    server backend environment or approved secret manager.
+                                  </li>
+                                  <li>
+                                    Restart the backend service so it loads the new environment
+                                    value.
+                                  </li>
+                                  <li>
+                                    Refresh this page and run a test scheduled backup to confirm the
+                                    configuration.
+                                  </li>
+                                </ol>
+                                <p className="text-muted-foreground">
+                                  Do not enter this password in the browser, commit it to source
+                                  control, or share it with Application Administrators.
+                                </p>
+                              </div>
+                            </TooltipContent>
+                          </Tooltip>
+                        </TooltipProvider>
+                      </div>
+                    </div>
+                    {scheduleMessage ? (
+                      <p className="mt-3 text-xs text-muted-foreground" role="status">
+                        {scheduleMessage}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+                    <p className="text-xs text-muted-foreground">Loading backup schedule…</p>
+                  </div>
+                )}
+
+                {schedule ? (
+                  <div className="rounded-lg border border-border bg-background/60 p-5 shadow-sm">
+                    <h3 className="mb-4 text-sm font-semibold">Scheduled server backup details</h3>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStatusMessage(
+                            `Scheduled backup encryption password: ${schedule.schedulePasswordConfigured ? "Configured" : "Not configured"}.`,
+                          )
+                        }
+                        className={`rounded-md px-3 py-2 text-left text-sm transition hover:brightness-95 dark:hover:brightness-110 ${
+                          schedule.schedulePasswordConfigured
+                            ? "bg-emerald-500/10 text-foreground"
+                            : "bg-red-500/10 text-foreground"
+                        }`}
+                      >
+                        <span className="block text-xs font-medium uppercase tracking-wide">
+                          Encryption password
+                        </span>
+                        <span className="mt-1 block text-sm font-semibold">
+                          {schedule.schedulePasswordConfigured ? "Configured" : "Not configured"}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStatusMessage(
+                            `Next scheduled server backup: ${formatBackupScheduleDate(schedule.nextRunAt, schedule.timezone)}.`,
+                          )
+                        }
+                        className={`rounded-md px-3 py-2 text-left text-sm transition hover:brightness-95 dark:hover:brightness-110 ${
+                          schedule.nextRunAt
+                            ? "bg-emerald-500/10 text-foreground"
+                            : "bg-red-500/10 text-foreground"
+                        }`}
+                      >
+                        <span className="block text-xs font-medium uppercase tracking-wide">
+                          Next run
+                        </span>
+                        <span className="mt-1 block text-sm font-semibold">
+                          {formatBackupScheduleDate(schedule.nextRunAt, schedule.timezone)}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStatusMessage(
+                            `Last scheduled server backup status: ${schedule.lastStatus}.`,
+                          )
+                        }
+                        className={`rounded-md px-3 py-2 text-left text-sm transition hover:brightness-95 dark:hover:brightness-110 ${
+                          schedule.lastStatus === "success"
+                            ? "bg-emerald-500/10 text-foreground"
+                            : "bg-red-500/10 text-foreground"
+                        }`}
+                      >
+                        <span className="block text-xs font-medium uppercase tracking-wide">
+                          Last status
+                        </span>
+                        <span className="mt-1 block text-sm font-semibold">
+                          {schedule.lastStatus}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setStatusMessage(
+                            `Last scheduled server backup file: ${schedule.lastFileName ?? "None"}.`,
+                          )
+                        }
+                        className={`rounded-md px-3 py-2 text-left text-sm transition hover:brightness-95 dark:hover:brightness-110 ${
+                          schedule.lastFileName
+                            ? "bg-emerald-500/10 text-foreground"
+                            : "bg-red-500/10 text-foreground"
+                        }`}
+                      >
+                        <span className="block text-xs font-medium uppercase tracking-wide">
+                          Last file
+                        </span>
+                        <span className="mt-1 block truncate text-sm font-semibold">
+                          {schedule.lastFileName ?? "None"}
+                        </span>
+                      </button>
+                    </div>
+                    {schedule.lastError ? (
+                      <p
+                        className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-4 py-3 text-xs text-destructive"
+                        role="alert"
+                      >
+                        Last error: {schedule.lastError}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </TabsContent>
         </fieldset>
       </Tabs>
       {statusMessage ? (
-        <p className="mt-3 text-xs text-muted-foreground" role="status">
+        <p
+          className="mt-3 rounded-md border border-primary/20 bg-primary/5 px-4 py-3 text-xs text-foreground"
+          role="status"
+        >
           {statusMessage}
         </p>
       ) : null}
-      {message ? <p className="mt-3 text-xs text-muted-foreground" role="status">{message}</p> : null}
+      {message ? (
+        <p className="mt-3 text-xs text-muted-foreground" role="status">
+          {message}
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -1937,8 +2873,11 @@ function SettingsPage() {
   const [activeAdminSection, setActiveAdminSection] = useState("theme");
   const [unlockedAdminSections, setUnlockedAdminSections] = useState<Record<string, boolean>>({});
   const [hasUnsavedAdminChanges, setHasUnsavedAdminChanges] = useState(false);
+  useUnsavedChanges("settings-admin-sections", hasUnsavedAdminChanges);
   const [settingsSidePanelHooked, setSettingsSidePanelHooked] = useState(true);
   const [expandedAdminGroup, setExpandedAdminGroup] = useState("personal");
+  const [viewerSettingsTab, setViewerSettingsTab] = useState("theme");
+  const [teamSettingsTab, setTeamSettingsTab] = useState("user");
 
   useEffect(() => {
     const requestedSection =
@@ -1951,7 +2890,19 @@ function SettingsPage() {
   if (activeUser?.role === "viewer" || activeUser?.role === "division_user") {
     return (
       <div className="settings-page max-w-6xl space-y-5">
-        <Tabs defaultValue="theme" className="space-y-5">
+        <Tabs
+          value={viewerSettingsTab}
+          onValueChange={(value) => {
+            if (
+              hasAnyUnsavedChanges() &&
+              !window.confirm("You have unsaved changes. Leave this section without saving?")
+            ) {
+              return;
+            }
+            setViewerSettingsTab(value);
+          }}
+          className="space-y-5"
+        >
           <TabsList
             aria-label="Settings sections"
             className="h-auto w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-secondary/20 p-1"
@@ -1987,7 +2938,19 @@ function SettingsPage() {
     const canEditMmgSummary = false;
     return (
       <div className="settings-page max-w-6xl space-y-5">
-        <Tabs defaultValue="user" className="space-y-5">
+        <Tabs
+          value={teamSettingsTab}
+          onValueChange={(value) => {
+            if (
+              hasAnyUnsavedChanges() &&
+              !window.confirm("You have unsaved changes. Leave this section without saving?")
+            ) {
+              return;
+            }
+            setTeamSettingsTab(value);
+          }}
+          className="space-y-5"
+        >
           <TabsList
             aria-label="Settings sections"
             className="h-auto w-full flex-wrap justify-start gap-1 rounded-lg border border-border bg-secondary/20 p-1"
@@ -2320,10 +3283,10 @@ function SettingsPage() {
   };
 
   return (
-    <div className="settings-page max-w-none space-y-5">
+    <div className="settings-page min-w-0 max-w-none space-y-5">
       <div
         className={
-          "grid grid-cols-1 gap-4 " +
+          "grid min-w-0 max-w-full grid-cols-1 gap-4 " +
           (settingsSidePanelHooked
             ? "lg:grid-cols-[260px_minmax(0,1fr)]"
             : "lg:grid-cols-[48px_minmax(0,1fr)]")
@@ -2338,7 +3301,7 @@ function SettingsPage() {
               <button
                 type="button"
                 onClick={() => setSettingsSidePanelHooked(false)}
-                className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="rounded-md border border-border bg-background px-2 py-1 text-[0.6875rem] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
                 title="Unhook side panel"
               >
                 Unhook
@@ -2348,7 +3311,10 @@ function SettingsPage() {
               {adminSectionGroups.map((group) => (
                 <section
                   key={group.key}
-                  className="overflow-hidden rounded-md border border-border bg-secondary/20"
+                  className={
+                    "overflow-hidden rounded-md border " +
+                    settingsGroupAccentClasses[settingsAccentByGroup[group.key] ?? "sky"]
+                  }
                 >
                   <button
                     type="button"
@@ -2359,7 +3325,9 @@ function SettingsPage() {
                     className={
                       "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-bold uppercase tracking-wide transition " +
                       (group.sections.some((section) => section.key === selectedAdminSection.key)
-                        ? "bg-accent text-foreground"
+                        ? settingsGroupHeaderAccentClasses[
+                            settingsAccentByGroup[group.key] ?? "sky"
+                          ]
                         : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground")
                     }
                   >
@@ -2383,7 +3351,7 @@ function SettingsPage() {
                               onClick={() => {
                                 if (
                                   section.key !== activeAdminSection &&
-                                  hasUnsavedAdminChanges &&
+                                  (hasUnsavedAdminChanges || hasAnyUnsavedChanges()) &&
                                   !window.confirm(
                                     "Discard unsaved settings changes and switch sections?",
                                   )
@@ -2420,7 +3388,7 @@ function SettingsPage() {
             <button
               type="button"
               onClick={() => setSettingsSidePanelHooked(true)}
-              className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-sm font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
               title="Hook side panel"
               aria-label="Hook side panel"
             >
@@ -2462,30 +3430,34 @@ function LockedAdminSection({
   onDirtyChange: (dirty: boolean) => void;
   hideUnlock?: boolean;
 }) {
-  // These panels persist their own validated local state and render their own
-  // save action.  Showing the outer draft action as well creates a second,
-  // inactive "Save changes" button because those local drafts are not part of
-  // the generic SettingsDraftContext.
-  const hasLocalSaveAction = new Set(["thresholds", "bgReceiptDelay", "quickEntryExcel"]).has(
-    section.key,
-  );
+  // These panels own their save/cancel controls. The outer draft action would
+  // otherwise imply that it can save or discard their local forms.
+  const hasLocalSaveAction = new Set([
+    "noticeBoard",
+    "quickEntryExcel",
+    "thresholds",
+    "bgReceiptDelay",
+    "divisions",
+    "indentors",
+    "users",
+    "archive",
+  ]).has(section.key);
   const hasInlineActionBar = section.key === "protectedBackup";
   const [verifying, setVerifying] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [draftPatch, setDraftPatch] = useState<Partial<AppSettings>>({});
   const [externalDirty, setExternalDirty] = useState(false);
+  const [localDirty, setLocalDirty] = useState(false);
   const externalDraftRef = useRef<SettingsExternalDraftHandlers | null>(null);
   const savedSettings = useStoreSettings();
   const draftSettings = { ...savedSettings, ...draftPatch };
   const hasChanges = Object.keys(draftPatch).length > 0 || externalDirty;
+  const hasUnsavedChanges = hasChanges || localDirty;
 
-  const registerExternalDraft = useCallback(
-    (handlers: SettingsExternalDraftHandlers | null) => {
-      externalDraftRef.current = handlers;
-    },
-    [],
-  );
+  const registerExternalDraft = useCallback((handlers: SettingsExternalDraftHandlers | null) => {
+    externalDraftRef.current = handlers;
+  }, []);
 
   const updateDraftSettings = (patch: Partial<AppSettings>) => {
     setDraftPatch((current) => ({ ...current, ...patch }));
@@ -2495,6 +3467,10 @@ function LockedAdminSection({
 
   const saveChanges = async () => {
     if (!hasChanges || saving) return;
+    if (localDirty) {
+      setSaveError("Finish or cancel the section's local edit before saving these settings.");
+      return;
+    }
     setSaving(true);
     setSaveError("");
     try {
@@ -2506,6 +3482,7 @@ function LockedAdminSection({
       }
       setDraftPatch({});
       setExternalDirty(false);
+      setLocalDirty(false);
       onDirtyChange(false);
       if (!hideUnlock) onLock();
     } catch (error) {
@@ -2516,10 +3493,11 @@ function LockedAdminSection({
   };
 
   const cancelChanges = () => {
-    if (hasChanges && !window.confirm("Discard your unsaved settings changes?")) return;
+    if (hasUnsavedChanges && !window.confirm("Discard your unsaved settings changes?")) return;
     setDraftPatch({});
     externalDraftRef.current?.cancel();
     setExternalDirty(false);
+    setLocalDirty(false);
     onDirtyChange(false);
     setSaveError("");
     if (!hideUnlock) onLock();
@@ -2538,6 +3516,7 @@ function LockedAdminSection({
       setDraftPatch({});
       externalDraftRef.current?.cancel();
       setExternalDirty(false);
+      setLocalDirty(false);
       onDirtyChange(false);
       setSaveError("");
       onUnlock();
@@ -2549,13 +3528,15 @@ function LockedAdminSection({
   };
 
   const hasOuterScope = !["theme", "noticeBoard", "offsetDays"].includes(section.key);
+  const sectionAccent = settingsAccentForSection(section.key);
 
   return (
     <div
       className={
         hasOuterScope
-          ? "settings-panel overflow-hidden rounded-lg border border-border bg-secondary/20 shadow-sm"
-          : "settings-panel space-y-0"
+          ? "settings-panel min-w-0 max-w-full overflow-hidden rounded-lg border border-border shadow-sm " +
+            settingsPanelAccentClasses[sectionAccent]
+          : "settings-panel min-w-0 max-w-full space-y-0 " + settingsPanelAccentClasses[sectionAccent]
       }
     >
       {section.key !== "theme" && !hasInlineActionBar ? (
@@ -2574,16 +3555,27 @@ function LockedAdminSection({
             ) : null}
           </div>
           {unlocked ? (
-            <div className="flex shrink-0 items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={cancelChanges}
-                disabled={saving || (!hasChanges && hideUnlock)}
-                className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              {!hasLocalSaveAction ? (
+            hasLocalSaveAction ? (
+              !hideUnlock ? (
+                <button
+                  type="button"
+                  onClick={cancelChanges}
+                  disabled={saving}
+                  className="h-9 inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                >
+                  <Lock className="size-3.5" /> Lock section
+                </button>
+              ) : null
+            ) : (
+              <div className="flex shrink-0 items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={cancelChanges}
+                  disabled={saving || (!hasUnsavedChanges && hideUnlock)}
+                  className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+                >
+                  Cancel
+                </button>
                 <button
                   type="button"
                   onClick={() => void saveChanges()}
@@ -2592,15 +3584,15 @@ function LockedAdminSection({
                 >
                   <Save className="size-4" /> {saving ? "Saving..." : "Save changes"}
                 </button>
-              ) : null}
-            </div>
+              </div>
+            )
           ) : !hideUnlock ? (
             <button
               type="button"
               onClick={() => void unlock()}
               disabled={verifying || saving}
               className={
-                "h-8 shrink-0 px-2.5 inline-flex items-center justify-center gap-1.5 rounded-md border text-[11px] font-medium disabled:cursor-wait disabled:opacity-60 " +
+                "h-8 shrink-0 px-2.5 inline-flex items-center justify-center gap-1.5 rounded-md border text-xs font-medium disabled:cursor-wait disabled:opacity-60 " +
                 (unlocked
                   ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
                   : "border-border bg-background hover:bg-accent")
@@ -2617,7 +3609,7 @@ function LockedAdminSection({
             settings: draftSettings,
             updateSettings: updateDraftSettings,
             actions: unlocked
-              ? { hasChanges, saving, saveError, cancelChanges, saveChanges }
+              ? { hasChanges, hasUnsavedChanges, saving, saveError, cancelChanges, saveChanges }
               : undefined,
             sectionUnlocked: unlocked,
             sectionSaving: saving,
@@ -2625,18 +3617,22 @@ function LockedAdminSection({
             unlockSection: () => void unlock(),
             setExternalDirty: (dirty) => {
               setExternalDirty(dirty);
-              onDirtyChange(Object.keys(draftPatch).length > 0 || dirty);
+              onDirtyChange(Object.keys(draftPatch).length > 0 || dirty || localDirty);
+            },
+            setLocalDirty: (dirty) => {
+              setLocalDirty(dirty);
+              onDirtyChange(Object.keys(draftPatch).length > 0 || externalDirty || dirty);
             },
             registerExternalDraft,
           }}
         >
-          {section.content}
+          <div className="settings-content-inset min-w-0 max-w-full px-3">{section.content}</div>
         </SettingsDraftContext.Provider>
       ) : (
         <fieldset
           disabled={!unlocked || saving}
           className={
-            "text-sm text-foreground " +
+            "settings-content-inset min-w-0 max-w-full px-3 text-sm text-foreground " +
             (!unlocked ? "pointer-events-none opacity-70 [&_*]:cursor-not-allowed" : "")
           }
         >
@@ -2645,11 +3641,15 @@ function LockedAdminSection({
               settings: draftSettings,
               updateSettings: updateDraftSettings,
               actions: unlocked
-                ? { hasChanges, saving, saveError, cancelChanges, saveChanges }
+                ? { hasChanges, hasUnsavedChanges, saving, saveError, cancelChanges, saveChanges }
                 : undefined,
               setExternalDirty: (dirty) => {
                 setExternalDirty(dirty);
-                onDirtyChange(Object.keys(draftPatch).length > 0 || dirty);
+                onDirtyChange(Object.keys(draftPatch).length > 0 || dirty || localDirty);
+              },
+              setLocalDirty: (dirty) => {
+                setLocalDirty(dirty);
+                onDirtyChange(Object.keys(draftPatch).length > 0 || externalDirty || dirty);
               },
               registerExternalDraft,
             }}
@@ -2672,10 +3672,10 @@ function SettingsTabTrigger({
   helperKey: keyof typeof settingsSectionHelpers;
 }) {
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="inline-flex min-w-[12rem] flex-[1_1_14rem] items-center gap-1">
       <TabsTrigger
         value={value}
-        className="px-3 py-2 text-xs font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
+        className="min-h-10 min-w-0 flex-1 justify-start rounded-md px-3 py-2 text-left text-sm font-medium data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm"
       >
         {label}
       </TabsTrigger>
@@ -2729,12 +3729,14 @@ function AuthorisedUserRolesTooltip() {
     {
       role: "Admin",
       can: "Manage all divisions, records, users, shared settings, and security.",
-      limits: "Protected actions may still require the signed-in Admin's personal deletion password.",
+      limits:
+        "Protected actions may still require the signed-in Admin's personal deletion password.",
     },
     {
       role: "Sub-admin",
       can: "Work within assigned divisions; edit records and settings enabled for this role.",
-      limits: "Cannot access unassigned divisions, manage user accounts, or manage IP security settings.",
+      limits:
+        "Cannot access unassigned divisions, manage user accounts, or manage IP security settings.",
     },
     {
       role: "Editor",
@@ -2815,7 +3817,7 @@ function AuthorisedUserRolesTooltip() {
                 ))}
               </tbody>
             </table>
-            <p className="mt-2 max-w-[38rem] text-[11px] text-muted-foreground">
+            <p className="mt-2 max-w-[38rem] text-[0.6875rem] text-muted-foreground">
               Admin can access all divisions. Universal Viewer, Sub-admin, Editor, Viewer, and
               Division user access is limited to assigned divisions; file-category limits apply to
               Editors.
@@ -2991,7 +3993,8 @@ function CashOutGoOffsetSettings({ canEdit, scopeNote }: { canEdit: boolean; sco
       setDirty(false);
       setSaved(true);
     } catch (saveError) {
-      const message = saveError instanceof Error ? saveError.message : "Offsets could not be saved.";
+      const message =
+        saveError instanceof Error ? saveError.message : "Offsets could not be saved.";
       setError(message);
       throw saveError;
     } finally {
@@ -3061,11 +4064,12 @@ function CashOutGoOffsetSettings({ canEdit, scopeNote }: { canEdit: boolean; sco
         <SettingsScope scope={personalScope ? "personal" : "shared"} editors={cashOutGoEditors} />
       </div>
       <p className="mb-4 mt-1 text-xs text-muted-foreground">
-        {scopeNote} {parentOwnsSave
+        {scopeNote}{" "}
+        {parentOwnsSave
           ? "Use the section Save changes action above to keep changes for future visits."
-          : "Save shared offsets to keep changes for future visits."} They remain in effect until
-        changed and saved again. Row-specific overrides remain separate where the report allows
-        them.
+          : "Save shared offsets to keep changes for future visits."}{" "}
+        They remain in effect until changed and saved again. Row-specific overrides remain separate
+        where the report allows them.
       </p>
       {loading ? <p className="text-xs text-muted-foreground">Loading shared offsets...</p> : null}
       <div className="grid gap-3 md:grid-cols-3">
@@ -3245,6 +4249,7 @@ function PreferenceSettings() {
 
 function GlobalChartColorSettings() {
   const settings = useSettings();
+  const draftContext = useContext(SettingsDraftContext);
   const [order, setOrder] = useState(
     settings.globalChartColorOrder ?? chartColorOptions.map((option) => option.color),
   );
@@ -3256,6 +4261,14 @@ function GlobalChartColorSettings() {
     setOrder(settings.globalChartColorOrder ?? chartColorOptions.map((option) => option.color));
     setEnforced(settings.globalChartColorsEnforced === true);
   }, [settings.globalChartColorOrder, settings.globalChartColorsEnforced]);
+
+  const savedOrder =
+    settings.globalChartColorOrder ?? chartColorOptions.map((option) => option.color);
+  const changed =
+    JSON.stringify(order) !== JSON.stringify(savedOrder) ||
+    enforced !== (settings.globalChartColorsEnforced === true);
+  const saveRef = useRef<() => Promise<void>>(async () => undefined);
+  const cancelRef = useRef<() => void>(() => undefined);
 
   const save = async () => {
     setSaving(true);
@@ -3274,10 +4287,33 @@ function GlobalChartColorSettings() {
       setMessage(
         error instanceof Error ? error.message : "Could not save the shared chart colours.",
       );
+      throw error;
     } finally {
       setSaving(false);
     }
   };
+
+  saveRef.current = save;
+  cancelRef.current = () => {
+    setOrder(savedOrder);
+    setEnforced(settings.globalChartColorsEnforced === true);
+    setMessage("");
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: () => saveRef.current(),
+      cancel: () => cancelRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setExternalDirty?.(changed);
+  }, [draftContext?.setExternalDirty, changed]);
+
+  const parentOwnsSave = Boolean(draftContext?.actions);
 
   const reset = async () => {
     if (
@@ -3333,14 +4369,20 @@ function GlobalChartColorSettings() {
         </div>
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={saving}
-              className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
-            >
-              {saving ? "Saving..." : enforced ? "Apply to all users" : "Save colour policy"}
-            </button>
+            {!parentOwnsSave ? (
+              <button
+                type="button"
+                onClick={() => void save().catch(() => undefined)}
+                disabled={saving || !changed}
+                className="inline-flex h-9 items-center justify-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
+              >
+                {saving ? "Saving..." : enforced ? "Apply to all users" : "Save colour policy"}
+              </button>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Use the section Save changes action above to apply the shared colour policy.
+              </p>
+            )}
             <button
               type="button"
               onClick={() => void reset()}
@@ -3362,6 +4404,7 @@ function GlobalChartColorSettings() {
 }
 
 function AccountSettings() {
+  const draftContext = useContext(SettingsDraftContext);
   const activeUser = useActiveUser();
   const divisions = useDivisions();
   const settings = useSettings();
@@ -3373,7 +4416,30 @@ function AccountSettings() {
   const [deletionPasswordError, setDeletionPasswordError] = useState("");
   const deletionPasswordsMatch = deletionPassword === deletionPasswordConfirmation;
   const canSaveDeletionPassword =
-    deletionPassword.length > 0 && deletionPasswordConfirmation.length > 0 && deletionPasswordsMatch;
+    deletionPassword.length > 0 &&
+    deletionPasswordConfirmation.length > 0 &&
+    deletionPasswordsMatch;
+  const deletionPasswordDirty = Boolean(deletionPassword || deletionPasswordConfirmation);
+  const cancelDeletionPasswordRef = useRef(() => undefined);
+  cancelDeletionPasswordRef.current = () => {
+    setDeletionPassword("");
+    setDeletionPasswordConfirmation("");
+    setDeletionPasswordError("");
+    setDeletionPasswordMessage("");
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelDeletionPasswordRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setLocalDirty?.(deletionPasswordDirty);
+  }, [draftContext?.setLocalDirty, deletionPasswordDirty]);
   const savePersonalDeletionPassword = async () => {
     if (!canSaveDeletionPassword) return;
     setDeletionPasswordSaving(true);
@@ -3460,6 +4526,14 @@ function AccountSettings() {
           >
             <Save className="size-4" />
             {deletionPasswordSaving ? "Saving..." : "Save deletion password"}
+          </button>
+          <button
+            type="button"
+            onClick={() => cancelDeletionPasswordRef.current()}
+            disabled={!deletionPasswordDirty || deletionPasswordSaving}
+            className="mt-3 ml-2 inline-flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-sm font-semibold hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
           </button>
         </section>
       ) : null}
@@ -3629,6 +4703,7 @@ function OffsetDaysSettings() {
 }
 
 function WorkspaceSettings() {
+  const draftContext = useContext(SettingsDraftContext);
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
@@ -3720,10 +4795,31 @@ function WorkspaceSettings() {
   const deleteSelectedFinancialYear = async () => {
     if (!canDeleteSelectedYear) return;
     if (await requestDeletionPassword(`delete financial year "${workspaceYear}"`)) {
-      store.deleteFinancialYear(workspaceYear);
+      await store.deleteFinancialYear(workspaceYear);
       setWorkspaceYear(settings.financialYear);
     }
   };
+
+  const workspaceDraftDirty = Boolean(newFinancialYear.trim());
+  const cancelWorkspaceDraftsRef = useRef(() => undefined);
+  cancelWorkspaceDraftsRef.current = () => {
+    setNewFinancialYear("");
+    setNewFinancialYearError("");
+    setWorkspaceYear(settings.financialYear);
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelWorkspaceDraftsRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setLocalDirty?.(workspaceDraftDirty);
+  }, [draftContext?.setLocalDirty, workspaceDraftDirty]);
 
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
@@ -3839,41 +4935,60 @@ function WorkspaceSettings() {
                 helper={workspaceYearHelpers.archive}
                 label="Archive financial year help"
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextArchived = !selectedYearArchived;
-                    const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
-                      status.label === workspaceYear
-                        ? { ...status, archived: nextArchived }
-                        : status,
-                    );
-                    updateSettings({ financialYearStatuses: nextStatuses });
-                  }}
-                  disabled={!canManageYearArchive || workspaceYear === settings.financialYear}
-                  className={
-                    "h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border text-sm font-medium disabled:opacity-50 " +
-                    (selectedYearArchived
-                      ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                      : "border-border bg-background hover:bg-accent")
-                  }
-                >
-                  {selectedYearArchived ? "Restore FY" : "Archive FY"}
-                </button>
+                {selectedYearArchived ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
+                        status.label === workspaceYear
+                          ? { ...status, archived: false }
+                          : status,
+                      );
+                      updateSettings({ financialYearStatuses: nextStatuses });
+                    }}
+                    disabled={!canManageYearArchive || workspaceYear === settings.financialYear}
+                    className="h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                  >
+                    Restore FY
+                  </button>
+                ) : (
+                  <DeleteConfirmation
+                    mode="archive"
+                    actionLabel="Mark archived"
+                    description="This financial year will be marked as archived. Its records will be retained. Save Settings to apply this change."
+                    onConfirm={() => {
+                      const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
+                        status.label === workspaceYear
+                          ? { ...status, archived: true }
+                          : status,
+                      );
+                      updateSettings({ financialYearStatuses: nextStatuses });
+                    }}
+                  >
+                    <button
+                      type="button"
+                      disabled={!canManageYearArchive || workspaceYear === settings.financialYear}
+                      className="h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      Archive FY
+                    </button>
+                  </DeleteConfirmation>
+                )}
               </HelpedControl>
 
               <HelpedControl
                 helper={settingsControlHelpers.workspaceDelete}
                 label="Delete financial year help"
               >
-                <button
-                  type="button"
-                  onClick={deleteSelectedFinancialYear}
-                  disabled={!canEditWorkspaceGlobals || !canDeleteSelectedYear}
-                  className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-background text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                >
-                  <Trash2 className="size-4" /> Delete
-                </button>
+                <DeleteConfirmation onConfirm={deleteSelectedFinancialYear}>
+                  <button
+                    type="button"
+                    disabled={!canEditWorkspaceGlobals || !canDeleteSelectedYear}
+                    className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-background text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                  >
+                    <Trash2 className="size-4" /> Delete
+                  </button>
+                </DeleteConfirmation>
               </HelpedControl>
               {selectedYearFileCount < 0 && !yearUsageError ? (
                 <span className="text-xs text-muted-foreground">Checking year records...</span>
@@ -4203,7 +5318,7 @@ function ModeSettings() {
                     <MasterValueMeta row={row} />
                   </div>
                   {protectedMode ? (
-                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground">
                       Default
                     </span>
                   ) : (
@@ -4290,24 +5405,28 @@ function GemBiddingModeSettings() {
                   </span>
                 ) : null}
               </span>
-              <button
-                type="button"
-                onClick={() =>
+              <DeleteConfirmation
+                mode="draft"
+                onConfirm={() =>
                   updateSettings({ gemBiddingModes: modes.filter((item) => item !== mode) })
                 }
-                disabled={cannotDelete}
-                className="grid size-8 shrink-0 place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
-                aria-label={`Delete ${mode} GeM bidding mode`}
-                title={
-                  usageCount > 0
-                    ? `In use by ${usageCount} file${usageCount === 1 ? "" : "s"}`
-                    : isBuiltIn
-                      ? "Built-in modes cannot be removed"
-                      : `Delete ${mode}`
-                }
               >
-                <Trash2 className="size-4" />
-              </button>
+                <button
+                  type="button"
+                  disabled={cannotDelete}
+                  className="grid size-8 shrink-0 place-items-center rounded-md text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  aria-label={`Delete ${mode} GeM bidding mode`}
+                  title={
+                    usageCount > 0
+                      ? `In use by ${usageCount} file${usageCount === 1 ? "" : "s"}`
+                      : isBuiltIn
+                        ? "Built-in modes cannot be removed"
+                        : `Delete ${mode}`
+                  }
+                >
+                  <Trash2 className="size-4" />
+                </button>
+              </DeleteConfirmation>
             </li>
           );
         })}
@@ -4506,7 +5625,7 @@ function FileTypeSettings() {
                     />
                   </div>
                   {protectedFileType ? (
-                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                    <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground">
                       {usedFileType ? "In use" : "Default"}
                     </span>
                   ) : (
@@ -4863,7 +5982,10 @@ function getModeUsage(files: FileRecord[]) {
 
 function getGemBiddingModeUsage(files: FileRecord[]) {
   const usage = new Map<string, { value: string; fileIds: Set<string> }>();
-  files.forEach((file) => addUsage(usage, file.id, file.gemBiddingMode));
+  files.forEach((file) => {
+    addUsage(usage, file.id, file.gemBiddingMode);
+    addUsage(usage, file.id, file.refloatGemBiddingMode);
+  });
   return usage;
 }
 
@@ -5018,7 +6140,7 @@ function getSpecialFileMarkerUsageRows(
 
 function MasterValueMeta({ row }: { row: MasterValueUsageRow }) {
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-[0.6875rem] text-muted-foreground">
       <span
         className={
           "inline-flex items-center rounded-md border px-2 py-0.5 font-medium " +
@@ -5078,14 +6200,15 @@ function MasterValueActions({
 
   return (
     <HelpedControl helper={settingsControlHelpers.genericDelete} label={`Delete ${label} help`}>
-      <button
-        type="button"
-        onClick={onDelete}
-        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-        aria-label={`Delete ${label}`}
-      >
-        <Trash2 className="size-4" />
-      </button>
+      <DeleteConfirmation mode="draft" onConfirm={onDelete}>
+        <button
+          type="button"
+          className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+          aria-label={`Delete ${label}`}
+        >
+          <Trash2 className="size-4" />
+        </button>
+      </DeleteConfirmation>
     </HelpedControl>
   );
 }
@@ -5108,6 +6231,7 @@ function createThresholdLevels(count: number, existing: ValueThresholdLevel[]) {
 
 function ValueThresholdSettings() {
   const settings = useSettings();
+  const draft = useContext(SettingsDraftContext);
   const activeUser = useActiveUser();
   const [levels, setLevels] = useState<ValueThresholdLevel[]>(() =>
     formatThresholdLevels(settings.valueThresholdLevels ?? []),
@@ -5136,6 +6260,24 @@ function ValueThresholdSettings() {
     normalizeLevelsForSave(levels),
     normalizeLevelsForSave(formatThresholdLevels(settings.valueThresholdLevels ?? [])),
   );
+  const cancelThresholdsRef = useRef(() => undefined);
+  cancelThresholdsRef.current = () => {
+    setLevels(formatThresholdLevels(settings.valueThresholdLevels ?? []));
+    setMessage("");
+  };
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelThresholdsRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(thresholdsChanged);
+  }, [draft?.setLocalDirty, thresholdsChanged]);
   const save = async (nextLevels = levels) => {
     const normalized = normalizeLevelsForSave(nextLevels);
     const invalid = normalized.find((level) => {
@@ -5287,14 +6429,24 @@ function ValueThresholdSettings() {
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div className="text-xs text-muted-foreground">{message}</div>
-        <button
-          type="button"
-          onClick={() => void save()}
-          disabled={!thresholdsChanged || saving}
-          className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <Check className="size-4" /> {saving ? "Saving..." : "Save thresholds"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => cancelThresholdsRef.current()}
+            disabled={!thresholdsChanged || saving}
+            className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void save()}
+            disabled={!thresholdsChanged || saving}
+            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Check className="size-4" /> {saving ? "Saving..." : "Save thresholds"}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -5315,6 +6467,7 @@ function normalizeBgReceiptDelaySettings(value: number[] | undefined) {
 
 function BgReceiptDelaySettings() {
   const settings = useSettings();
+  const draft = useContext(SettingsDraftContext);
   const activeUser = useActiveUser();
   const [days, setDays] = useState(() =>
     normalizeBgReceiptDelaySettings(settings.bgReceiptDelayDays).map(String),
@@ -5337,6 +6490,26 @@ function BgReceiptDelaySettings() {
   const savedDays = normalizeBgReceiptDelaySettings(settings.bgReceiptDelayDays);
   const changed =
     valid && JSON.stringify([...normalized].sort((a, b) => a - b)) !== JSON.stringify(savedDays);
+  const draftChanged =
+    JSON.stringify(days.map((value) => value.trim())) !== JSON.stringify(savedDays.map(String));
+  const cancelBgReceiptDelayRef = useRef(() => undefined);
+  cancelBgReceiptDelayRef.current = () => {
+    setDays(savedDays.map(String));
+    setMessage("");
+  };
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelBgReceiptDelayRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(draftChanged);
+  }, [draft?.setLocalDirty, draftChanged]);
 
   const save = async (nextDays = normalized) => {
     const sorted = [...nextDays].sort((left, right) => left - right);
@@ -5413,14 +6586,18 @@ function BgReceiptDelaySettings() {
           >
             Add threshold
           </button>
-          <button
-            type="button"
-            disabled={saving || days.length <= 1}
-            onClick={() => setDays((current) => current.slice(0, -1))}
-            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          <DeleteConfirmation
+            mode="draft"
+            onConfirm={() => setDays((current) => current.slice(0, -1))}
           >
-            Remove last
-          </button>
+            <button
+              type="button"
+              disabled={saving || days.length <= 1}
+              className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+            >
+              Remove last
+            </button>
+          </DeleteConfirmation>
           <button
             type="button"
             disabled={saving || !changed}
@@ -5428,6 +6605,14 @@ function BgReceiptDelaySettings() {
             className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <Save className="size-3.5" /> Save
+          </button>
+          <button
+            type="button"
+            disabled={saving || !draftChanged}
+            onClick={() => cancelBgReceiptDelayRef.current()}
+            className="h-9 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent disabled:opacity-50"
+          >
+            Cancel
           </button>
           <button
             type="button"
@@ -6073,7 +7258,7 @@ function MilestoneSettings() {
                       </>
                     ) : null}
                     {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
-                      <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground">
+                      <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground">
                         Existing
                       </span>
                     ) : active ? (
@@ -6209,7 +7394,7 @@ function TableFieldPresetSettings() {
                   <span className="flex items-center justify-between gap-2">
                     <span className="truncate">{preset.name}</span>
                     {preset.owner === "global" && activeUser?.role !== "admin" ? (
-                      <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                      <span className="rounded bg-background/80 px-1.5 py-0.5 text-[0.625rem] uppercase text-muted-foreground">
                         Shared
                       </span>
                     ) : null}
@@ -6251,14 +7436,15 @@ function TableFieldPresetSettings() {
                   helper={settingsControlHelpers.genericDelete}
                   label="Delete table preset help"
                 >
-                  <button
-                    type="button"
-                    onClick={removePreset}
-                    disabled={!selectedPresetEditable}
-                    className="h-10 rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
-                  >
-                    Delete
-                  </button>
+                  <DeleteConfirmation mode="draft" onConfirm={removePreset}>
+                    <button
+                      type="button"
+                      disabled={!selectedPresetEditable}
+                      className="h-10 rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+                    >
+                      Delete
+                    </button>
+                  </DeleteConfirmation>
                 </HelpedControl>
               </div>
               {!selectedPresetEditable ? (
@@ -6418,7 +7604,7 @@ function DemandProcessingPresetSettings() {
                     <span className="flex items-center justify-between gap-2">
                       <span className="truncate">{preset.name}</span>
                       {preset.active === false ? (
-                        <span className="rounded bg-background/80 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                        <span className="rounded bg-background/80 px-1.5 py-0.5 text-[0.625rem] uppercase text-muted-foreground">
                           Hidden
                         </span>
                       ) : null}
@@ -6452,13 +7638,14 @@ function DemandProcessingPresetSettings() {
                     helper={settingsControlHelpers.genericDelete}
                     label="Delete demand processing preset help"
                   >
-                    <button
-                      type="button"
-                      onClick={removePreset}
-                      className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
-                    >
-                      Delete
-                    </button>
+                    <DeleteConfirmation mode="draft" onConfirm={removePreset}>
+                      <button
+                        type="button"
+                        className="h-10 self-end rounded-md border border-destructive/40 bg-background px-3 text-xs text-destructive hover:bg-destructive/10"
+                      >
+                        Delete
+                      </button>
+                    </DeleteConfirmation>
                   </HelpedControl>
                 </div>
 
@@ -6677,13 +7864,14 @@ function DemandProcessingDayRangeSettings({
                 helper={settingsControlHelpers.genericDelete}
                 label="Delete day range help"
               >
-                <button
-                  type="button"
-                  onClick={() => onRemove(range.id ?? "")}
-                  className="h-9 w-full rounded-md border border-destructive/40 bg-background px-2 text-xs text-destructive hover:bg-destructive/10"
-                >
-                  Delete
-                </button>
+                <DeleteConfirmation mode="draft" onConfirm={() => onRemove(range.id ?? "")}>
+                  <button
+                    type="button"
+                    className="h-9 w-full rounded-md border border-destructive/40 bg-background px-2 text-xs text-destructive hover:bg-destructive/10"
+                  >
+                    Delete
+                  </button>
+                </DeleteConfirmation>
               </HelpedControl>
             </div>
           </div>
@@ -6818,6 +8006,7 @@ function MmgSummarySettings() {
 }
 
 function DivisionSettings() {
+  const draft = useContext(SettingsDraftContext);
   const divisions = useDivisions();
   const files = useSettingsUsageFiles();
   const divisionUsage = getDivisionUsage(files);
@@ -6855,6 +8044,30 @@ function DivisionSettings() {
     setEditingId(null);
   };
 
+  const divisionDraftDirty = Boolean(name.trim() || code.trim() || editingId);
+  const cancelDivisionDraftsRef = useRef(() => undefined);
+  cancelDivisionDraftsRef.current = () => {
+    setName("");
+    setCode("");
+    setEditingId(null);
+    setEditName("");
+    setEditCode("");
+    setEditViewerPassword("");
+  };
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelDivisionDraftsRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(divisionDraftDirty);
+  }, [draft?.setLocalDirty, divisionDraftDirty]);
+
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Divisions</h2>
@@ -6866,13 +8079,24 @@ function DivisionSettings() {
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[1.2fr_0.8fr_auto]">
         <DivisionInput value={name} onChange={setName} placeholder="Division name" />
         <DivisionInput value={code} onChange={setCode} placeholder="Division code" />
-        <button
-          type="button"
-          onClick={add}
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
-        >
-          <Plus className="size-4" /> Add
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={add}
+            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
+          >
+            <Plus className="size-4" /> Add
+          </button>
+          {name.trim() || code.trim() ? (
+            <button
+              type="button"
+              onClick={() => cancelDivisionDraftsRef.current()}
+              className="h-10 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="mt-5 overflow-x-auto rounded-md border border-border">
@@ -6998,24 +8222,28 @@ function DivisionSettings() {
                             </button>
                           ) : (
                             <HelpedControl
-                              helper={settingsControlHelpers.genericDelete}
-                              label={`Delete ${division.name} help`}
+                              helper={settingsControlHelpers.archiveEntity}
+                              label={`Archive ${division.name} help`}
                             >
-                              <button
-                                type="button"
-                                onClick={async () => {
+                              <DeleteConfirmation
+                                mode="archive"
+                                onConfirm={async () => {
                                   if (
                                     await requestDeletionPassword(
-                                      `delete division "${division.name}"`,
+                                      `archive division "${division.name}"`,
                                     )
                                   ) {
-                                    store.deleteDivision(division.id);
+                                    await store.deleteDivision(division.id);
                                   }
                                 }}
-                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
                               >
-                                <Trash2 className="size-4" />
-                              </button>
+                                <button
+                                  type="button"
+                                  className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                >
+                                  <Trash2 className="size-4" />
+                                </button>
+                              </DeleteConfirmation>
                             </HelpedControl>
                           )}
                         </>
@@ -7107,6 +8335,8 @@ function FirmRatingSettings() {
         id: `rating${config.fields.length + 1}`,
         label: `Rating ${config.fields.length + 1}`,
         weight: "1",
+        minValue: "0",
+        maxValue: "5",
       },
     ]);
   };
@@ -7125,8 +8355,9 @@ function FirmRatingSettings() {
         <div>
           <h2 className="text-sm font-semibold mb-1">Firm Rating</h2>
           <p className="text-xs text-muted-foreground">
-            Configure the score fields used for every supply order. Final score is calculated as a
-            weighted average of filled numeric values.
+            Configure the score fields used for every supply order. Final score is the total of
+            filled numeric values multiplied by their weights. Each field accepts values within its
+            configured range.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -7151,7 +8382,7 @@ function FirmRatingSettings() {
         {config.fields.map((field, index) => (
           <div
             key={`${field.id}:${index}`}
-            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(0,1fr)_160px_auto]"
+            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(0,1fr)_100px_120px_120px_auto]"
           >
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Field label</span>
@@ -7172,14 +8403,35 @@ function FirmRatingSettings() {
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
-            <button
-              type="button"
-              onClick={() => removeField(index)}
-              disabled={config.fields.length <= 1}
-              className="h-9 self-end rounded-md border border-border bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Remove
-            </button>
+            <label className="text-xs text-muted-foreground">
+              <span className="mb-1 block">Minimum value</span>
+              <input
+                type="number"
+                step="any"
+                value={field.minValue ?? "0"}
+                onChange={(event) => updateField(index, { minValue: event.target.value })}
+                className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <label className="text-xs text-muted-foreground">
+              <span className="mb-1 block">Maximum value</span>
+              <input
+                type="number"
+                step="any"
+                value={field.maxValue ?? "5"}
+                onChange={(event) => updateField(index, { maxValue: event.target.value })}
+                className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              />
+            </label>
+            <DeleteConfirmation mode="draft" onConfirm={() => removeField(index)}>
+              <button
+                type="button"
+                disabled={config.fields.length <= 1}
+                className="h-9 self-end rounded-md border border-border bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Remove
+              </button>
+            </DeleteConfirmation>
           </div>
         ))}
       </div>
@@ -7188,6 +8440,7 @@ function FirmRatingSettings() {
 }
 
 function FirmDatabaseSettings() {
+  const draftContext = useContext(SettingsDraftContext);
   const activeUser = useActiveUser();
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
@@ -7254,9 +8507,7 @@ function FirmDatabaseSettings() {
   const lastResultNumber = Math.min(firmTotal, (page - 1) * pageSize + firms.length);
   const isComplete = (value: FirmDraft) => {
     const cleaned = cleanFirmDraft(value);
-    return Boolean(
-      cleaned.firmName && (cleaned.firmType?.toUpperCase() !== "OTHER" || cleaned.firmTypeOther),
-    );
+    return Boolean(cleaned.firmName);
   };
 
   const updateDraft = (key: keyof FirmDraft, value: string) => {
@@ -7337,9 +8588,10 @@ function FirmDatabaseSettings() {
       } else {
         loadFirms();
       }
-      setMessage("Firm deleted.");
+      setMessage("Firm archived.");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to delete firm.");
+      setMessage(error instanceof Error ? error.message : "Failed to archive firm.");
+      throw error;
     }
   };
 
@@ -7347,6 +8599,33 @@ function FirmDatabaseSettings() {
     if (activeUser?.role !== "admin") return;
     await store.saveSettings({ firmUniqueNoLabel: labelDraft.trim() || "Firm Unique No." });
   };
+
+  const firmDraftDirty = Boolean(
+    Object.values(draft).some((value) => value.trim()) ||
+    editingId ||
+    labelDraft.trim() !== firmUniqueNoLabel,
+  );
+  const cancelFirmDraftsRef = useRef(() => undefined);
+  cancelFirmDraftsRef.current = () => {
+    setDraft(emptyFirmDraft);
+    setEditingId(null);
+    setEditDraft(emptyFirmDraft);
+    setLabelDraft(firmUniqueNoLabel);
+    setMessage(undefined);
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelFirmDraftsRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setLocalDirty?.(firmDraftDirty);
+  }, [draftContext?.setLocalDirty, firmDraftDirty]);
 
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
@@ -7356,6 +8635,9 @@ function FirmDatabaseSettings() {
           <p className="text-xs text-muted-foreground">
             Edit only for same-firm corrections. Delete is available only when no files/S.O.s use
             the firm name or unique number.
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Firm name is required. Firm Unique No. and all other firm details are optional.
           </p>
         </div>
         <input
@@ -7375,8 +8657,8 @@ function FirmDatabaseSettings() {
               placeholder="Firm Unique No. label"
             />
             <p className="mt-1 text-xs text-muted-foreground">
-              Changes the label shown for the firm&apos;s unique-number field; it does not save a firm
-              record.
+              Changes the label shown for the firm&apos;s unique-number field; it does not save a
+              firm record.
             </p>
           </div>
           <button
@@ -7399,7 +8681,7 @@ function FirmDatabaseSettings() {
         <DivisionInput
           value={draft.firmUniqueNo ?? ""}
           onChange={(value) => updateDraft("firmUniqueNo", value)}
-          placeholder={firmUniqueNoLabel}
+          placeholder={`${firmUniqueNoLabel} (optional)`}
         />
         <FirmInput
           value={draft.emailId ?? ""}
@@ -7435,8 +8717,7 @@ function FirmDatabaseSettings() {
             <FirmInput
               value={draft.firmTypeOther ?? ""}
               onChange={(value) => updateDraft("firmTypeOther", value)}
-              placeholder="Specify firm type"
-              invalid={!draft.firmTypeOther?.trim()}
+              placeholder="Specify firm type (optional)"
             />
           ) : null}
         </div>
@@ -7477,19 +8758,21 @@ function FirmDatabaseSettings() {
         <table className="w-full min-w-[1120px] table-fixed text-sm">
           <colgroup>
             <col className="w-[16%]" />
-            <col className="w-[12%]" />
-            <col className="w-[12%]" />
+            <col className="w-[10%]" />
+            <col className="w-[18%]" />
             <col className="w-[13%]" />
             <col className="w-[8%]" />
             <col className="w-[9%]" />
-            <col className="w-[16%]" />
+            <col className="w-[12%]" />
             <col className="w-[8%]" />
             <col className="w-[6%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
               <th className="px-4 py-2.5 text-left font-medium">Firm name</th>
-              <th className="px-4 py-2.5 text-left font-medium">{firmUniqueNoLabel}</th>
+              <th className="px-4 py-2.5 text-left font-medium">
+                {firmUniqueNoLabel} (optional)
+              </th>
               <th className="px-4 py-2.5 text-left font-medium">Email</th>
               <th className="px-4 py-2.5 text-left font-medium">Address</th>
               <th className="px-4 py-2.5 text-left font-medium">City</th>
@@ -7533,6 +8816,7 @@ function FirmDatabaseSettings() {
                       editing={isEditing}
                       value={isEditing ? editDraft.firmUniqueNo : firm.firmUniqueNo}
                       onChange={(value) => updateEditDraft("firmUniqueNo", value)}
+                      placeholder={`${firmUniqueNoLabel} (optional)`}
                     />
                     <FirmCell
                       editing={isEditing}
@@ -7573,8 +8857,7 @@ function FirmDatabaseSettings() {
                             <FirmInput
                               value={editDraft.firmTypeOther ?? ""}
                               onChange={(value) => updateEditDraft("firmTypeOther", value)}
-                              placeholder="Specify firm type"
-                              invalid={!editDraft.firmTypeOther?.trim()}
+                              placeholder="Specify firm type (optional)"
                             />
                           ) : null}
                         </div>
@@ -7631,22 +8914,23 @@ function FirmDatabaseSettings() {
                                   type="button"
                                   disabled
                                   title={`Used in ${usageCount} file${usageCount === 1 ? "" : "s"} including Archive. Keep historical firm reference.`}
-                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[11px] font-medium text-muted-foreground opacity-70"
+                                  className="inline-flex h-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground opacity-70"
                                 >
                                   Used
                                 </button>
                               ) : (
                                 <HelpedControl
-                                  helper={settingsControlHelpers.genericDelete}
-                                  label={`Delete ${firm.firmName || "firm"} help`}
+                                  helper={settingsControlHelpers.archiveEntity}
+                                  label={`Archive ${firm.firmName || "firm"} help`}
                                 >
-                                  <button
-                                    type="button"
-                                    onClick={() => void removeFirm(firm.id)}
-                                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                                  >
-                                    <Trash2 className="size-4" />
-                                  </button>
+                                  <DeleteConfirmation mode="archive" onConfirm={() => removeFirm(firm.id)}>
+                                    <button
+                                      type="button"
+                                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </DeleteConfirmation>
                                 </HelpedControl>
                               )
                             ) : null}
@@ -7691,6 +8975,7 @@ function FirmCell({
   invalid = false,
   options,
   displayWidth,
+  placeholder,
 }: {
   editing: boolean;
   value?: string;
@@ -7699,6 +8984,7 @@ function FirmCell({
   invalid?: boolean;
   options?: string[];
   displayWidth?: number;
+  placeholder?: string;
 }) {
   return (
     <td className="break-words px-3 py-3 text-muted-foreground">
@@ -7709,7 +8995,7 @@ function FirmCell({
           <FirmInput
             value={value ?? ""}
             onChange={onChange}
-            placeholder=""
+            placeholder={placeholder ?? ""}
             type={type}
             invalid={invalid}
           />
@@ -7992,6 +9278,7 @@ const indentorDesignationOptions = [
 ];
 
 function IndentorSettings() {
+  const draftContext = useContext(SettingsDraftContext);
   const activeUser = useActiveUser();
   const divisions = useDivisions();
   const files = useSettingsUsageFiles();
@@ -8133,6 +9420,35 @@ function IndentorSettings() {
     }
   };
 
+  const indentorDraftDirty = Boolean(
+    draft.name.trim() ||
+    draft.sfId.trim() ||
+    draft.designation.trim() ||
+    draft.mobileNo.trim() ||
+    draft.landlineNo.trim() ||
+    draft.email.trim() ||
+    editingId,
+  );
+  const cancelIndentorDraftsRef = useRef(() => undefined);
+  cancelIndentorDraftsRef.current = () => {
+    resetDraft();
+    setEditingId(null);
+    setEditDraft(emptyIndentorDraft);
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelIndentorDraftsRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setLocalDirty?.(indentorDraftDirty);
+  }, [draftContext?.setLocalDirty, indentorDraftDirty]);
+
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -8150,7 +9466,7 @@ function IndentorSettings() {
             name and division saved on them.
           </p>
         </div>
-        <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:max-w-2xl sm:grid-cols-[minmax(180px,0.8fr)_minmax(300px,1.2fr)]">
+        <div className="grid w-full min-w-0 grid-cols-1 gap-2 sm:max-w-2xl sm:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
           <SearchableDropdown
             value={divisionFilter}
             onChange={(value) => {
@@ -8216,14 +9532,25 @@ function IndentorSettings() {
           onChange={(value) => updateDraft("email", value)}
           placeholder="Email id"
         />
-        <button
-          type="button"
-          onClick={addIndentor}
-          disabled={!isReadyToSave(draft)}
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Plus className="size-4" /> Add indentor
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={addIndentor}
+            disabled={!isReadyToSave(draft)}
+            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Plus className="size-4" /> Add indentor
+          </button>
+          {indentorDraftDirty && !editingId ? (
+            <button
+              type="button"
+              onClick={() => cancelIndentorDraftsRef.current()}
+              className="h-10 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <SettingsPaginationControls
@@ -8246,13 +9573,13 @@ function IndentorSettings() {
       <div className="mt-5 max-w-full overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[900px] table-fixed text-sm">
           <colgroup>
-            <col className="w-[15%]" />
+            <col className="w-[10%]" />
             <col className="w-[15%]" />
             <col className="w-[9%]" />
             <col className="w-[12%]" />
             <col className="w-[11%]" />
             <col className="w-[10%]" />
-            <col className="w-[18%]" />
+            <col className="w-[23%]" />
             <col className="w-[10%]" />
           </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
@@ -8377,16 +9704,17 @@ function IndentorSettings() {
                                 </button>
                               ) : (
                                 <HelpedControl
-                                  helper={settingsControlHelpers.genericDelete}
-                                  label={`Delete ${indentor.name} help`}
+                                  helper={settingsControlHelpers.archiveEntity}
+                                  label={`Archive ${indentor.name} help`}
                                 >
-                                  <button
-                                    type="button"
-                                    onClick={() => deleteIndentor(indentor.id)}
-                                    className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                                  >
-                                    <Trash2 className="size-4" />
-                                  </button>
+                                  <DeleteConfirmation mode="archive" onConfirm={() => deleteIndentor(indentor.id)}>
+                                    <button
+                                      type="button"
+                                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </DeleteConfirmation>
                                 </HelpedControl>
                               )}
                             </>
@@ -8532,10 +9860,7 @@ function IpAccessSettings() {
     setRemarks("");
   };
 
-  const updateTrustedIp = async (
-    id: string,
-    patch: { remarks?: string; active?: boolean },
-  ) => {
+  const updateTrustedIp = async (id: string, patch: { remarks?: string; active?: boolean }) => {
     if (id.startsWith("pending-")) {
       setPendingAdds((current) =>
         current.map((row) => (row.id === id ? { ...row, ...patch } : row)),
@@ -8563,6 +9888,7 @@ function IpAccessSettings() {
       setConfig(await store.permanentlyDeleteArchivedIpLoginAttempt(attempt.id, deletionPassword));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Failed to delete archived IP attempt.");
+      throw error;
     }
   };
 
@@ -8594,7 +9920,7 @@ function IpAccessSettings() {
           </div>
         ) : null}
 
-        <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+        <div className="grid items-end gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
           <label className="block">
             <div className="mb-1.5 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               Mode
@@ -8612,16 +9938,18 @@ function IpAccessSettings() {
             </select>
           </label>
           <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-            <div className="rounded-md border border-border bg-secondary/20 px-3 py-2">
-              <div className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                Current detected IP
-                <SettingsHelper
-                  items={settingsControlHelpers.ipCurrent}
-                  label="Current detected IP help"
-                />
-              </div>
-              <div className="mt-1 font-mono text-sm font-semibold">
-                {config?.currentIp || "Not detected"}
+            <div className="min-w-0">
+              <div className="flex min-h-10 items-center gap-3 rounded-md border border-border bg-secondary/20 px-3 py-2">
+                <div className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
+                  Current detected IP
+                  <SettingsHelper
+                    items={settingsControlHelpers.ipCurrent}
+                    label="Current detected IP help"
+                  />
+                </div>
+                <div className="shrink-0 whitespace-nowrap font-mono text-sm font-semibold">
+                  {config?.currentIp || "Not detected"}
+                </div>
               </div>
               {config?.emergencyBypassEnv ? (
                 <div className="mt-1 text-xs text-destructive">
@@ -8667,10 +9995,7 @@ function IpAccessSettings() {
         </div>
       </div>
 
-      <TrustedIpTable
-        rows={displayedTrustedIps}
-        onUpdate={updateTrustedIp}
-      />
+      <TrustedIpTable rows={displayedTrustedIps} onUpdate={updateTrustedIp} />
 
       <IpAttemptTable
         title={`New IP login history (${activeAttempts.length})`}
@@ -8838,26 +10163,33 @@ function IpAttemptTable({
                         helper={settingsControlHelpers.ipAttemptArchive}
                         label={`${row.ipAddress} attempt archive help`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => void onArchive(row.id)}
-                          className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
+                        <DeleteConfirmation
+                          mode="archive"
+                          actionLabel="Archive attempt"
+                          description="This login attempt will be moved to the archived list. You can permanently delete it from there later."
+                          onConfirm={() => onArchive(row.id)}
                         >
-                          Archive
-                        </button>
+                          <button
+                            type="button"
+                            className="rounded-md border border-border px-2 py-1 text-xs font-medium hover:bg-accent"
+                          >
+                            Archive
+                          </button>
+                        </DeleteConfirmation>
                       </HelpedControl>
                     ) : archived && onDelete ? (
                       <div className="flex flex-col items-end gap-1.5">
                         <span className="text-xs text-muted-foreground">
                           {row.archivedByName ? `By ${row.archivedByName}` : "Archived"}
                         </span>
-                        <button
-                          type="button"
-                          onClick={() => void onDelete(row)}
-                          className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
-                        >
-                          Delete
-                        </button>
+                        <DeleteConfirmation onConfirm={() => onDelete(row)}>
+                          <button
+                            type="button"
+                            className="rounded-md border border-destructive/40 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        </DeleteConfirmation>
                       </div>
                     ) : (
                       <span className="text-xs text-muted-foreground">
@@ -8892,6 +10224,7 @@ function roleRequiresDivisionAssignment(role: AppUserRole) {
 }
 
 function UserSettings() {
+  const draftContext = useContext(SettingsDraftContext);
   const users = useUsers();
   const divisions = useDivisions();
   const settings = useSettings();
@@ -9002,6 +10335,51 @@ function UserSettings() {
     setEditingId(null);
   };
 
+  const userDraftDirty = Boolean(
+    name.trim() ||
+    username.trim() ||
+    password.trim() ||
+    role !== "editor" ||
+    cashOutgoEditScope !== "none" ||
+    emergencyIpBypass ||
+    divisionIds.length ||
+    !isSettingsDirtyValueEqual(allowedFileCategories, allFileAccessKeys) ||
+    editingId,
+  );
+  const cancelUserDraftsRef = useRef(() => undefined);
+  cancelUserDraftsRef.current = () => {
+    setName("");
+    setUsername("");
+    setPassword("");
+    setRole("editor");
+    setCashOutgoEditScope("none");
+    setEmergencyIpBypass(false);
+    setDivisionIds([]);
+    setAllowedFileCategories(allFileAccessKeys);
+    setEditingId(null);
+    setEditName("");
+    setEditUsername("");
+    setEditPassword("");
+    setEditRole("editor");
+    setEditCashOutgoEditScope("none");
+    setEditEmergencyIpBypass(false);
+    setEditDivisionIds([]);
+    setEditAllowedFileCategories([]);
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelUserDraftsRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setLocalDirty?.(userDraftDirty);
+  }, [draftContext?.setLocalDirty, userDraftDirty]);
+
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="mb-1 inline-flex items-center gap-1.5 text-sm font-semibold">
@@ -9013,9 +10391,9 @@ function UserSettings() {
       </p>
       <div className="mb-4 rounded-md border border-border bg-background/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
         <span className="font-semibold text-foreground">Role distinction:</span> Viewer is a
-        division-password login for exactly one division. Division user is a named account with
-        its own login and one or more assigned divisions. Both are read-only for file records, but
-        both can submit file queries/messages; neither can resolve or reply to them.
+        division-password login for exactly one division. Division user is a named account with its
+        own login and one or more assigned divisions. Both are read-only for file records, but both
+        can submit file queries/messages; neither can resolve or reply to them.
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_0.8fr_auto] gap-3">
@@ -9029,19 +10407,30 @@ function UserSettings() {
           className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
         />
         <UserRoleSelect value={role} onChange={setRole} />
-        <button
-          type="button"
-          onClick={add}
-          disabled={
-            !name.trim() ||
-            !username.trim() ||
-            !password.trim() ||
-            (roleRequiresDivisionAssignment(role) && divisionIds.length === 0)
-          }
-          className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-        >
-          <Plus className="size-4" /> Add
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={add}
+            disabled={
+              !name.trim() ||
+              !username.trim() ||
+              !password.trim() ||
+              (roleRequiresDivisionAssignment(role) && divisionIds.length === 0)
+            }
+            className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus className="size-4" /> Add
+          </button>
+          {userDraftDirty && !editingId ? (
+            <button
+              type="button"
+              onClick={() => cancelUserDraftsRef.current()}
+              className="h-10 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div className="mt-3">
@@ -9103,215 +10492,228 @@ function UserSettings() {
         <TabsContent value={userRoleTab} className="mt-3">
           <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full min-w-[1100px] table-fixed text-sm">
-          <colgroup>
-            <col className="w-[15%]" />
-            <col className="w-[15%]" />
-            <col className="w-[13%]" />
-            <col className="w-[14%]" />
-            <col className="w-[23%]" />
-            <col className="w-[12%]" />
-            <col className="w-[8%]" />
-          </colgroup>
-          <thead className="bg-secondary text-xs text-muted-foreground">
-            <tr>
-              <th className="text-left font-medium px-4 py-2.5">Name</th>
-              <th className="text-left font-medium px-4 py-2.5">Username</th>
-              <th className="text-left font-medium px-4 py-2.5">Role</th>
-              <th className="text-left font-medium px-4 py-2.5">Cash plan/MER</th>
-              <th className="text-left font-medium px-4 py-2.5">Visible divisions</th>
-              <th className="text-left font-medium px-4 py-2.5">File types</th>
-              <th className="text-right font-medium px-4 py-2.5">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleUsers.length === 0 ? (
-              <tr className="border-t border-border">
-                <td className="px-4 py-6 text-muted-foreground text-center" colSpan={7}>
-                  No {selectedRoleTab.label.toLowerCase()} users added yet.
-                </td>
-              </tr>
-            ) : (
-              visibleUsers.map((user) => {
-                const isEditing = editingId === user.id;
-                const editChanged =
-                  editName.trim() !== user.name ||
-                  editUsername.trim() !== user.username ||
-                  Boolean(editPassword.trim()) ||
-                  editRole !== user.role ||
-                  (editRole === "universal_viewer" ? editCashOutgoEditScope : "none") !==
-                    (user.cashOutgoEditScope ?? "none") ||
-                  (editRole === "admin" && editEmergencyIpBypass) !==
-                    Boolean(user.emergencyIpBypass) ||
-                  !isSettingsDirtyValueEqual(
-                    [...editDivisionIds].sort(),
-                    [...(user.divisionIds ?? [])].sort(),
-                  ) ||
-                  !isSettingsDirtyValueEqual(
-                    normalizeUserFileCategories(editAllowedFileCategories, fileAccessOptions),
-                    normalizeUserFileCategories(user.allowedFileCategories, fileAccessOptions),
-                  );
-                return (
-                  <tr key={user.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3">
-                      {isEditing ? (
-                        <DivisionInput
-                          value={editName}
-                          onChange={setEditName}
-                          placeholder="User name"
-                        />
-                      ) : (
-                        <span className="font-medium">{user.name}</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {isEditing ? (
-                        <div className="space-y-2">
-                          <DivisionInput
-                            value={editUsername}
-                            onChange={setEditUsername}
-                            placeholder="Username"
-                          />
-                          <input
-                            type="password"
-                            value={editPassword}
-                            onChange={(event) => setEditPassword(event.target.value)}
-                            placeholder="New password"
-                            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
-                          />
-                        </div>
-                      ) : (
-                        user.username
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {isEditing ? (
-                        <div className="space-y-2">
-                          <UserRoleSelect value={editRole} onChange={setEditRole} />
-                          <EmergencyIpBypassToggle
-                            role={editRole}
-                            checked={editEmergencyIpBypass}
-                            onChange={setEditEmergencyIpBypass}
-                          />
-                        </div>
-                      ) : (
-                        <div>
-                          <div>{roleLabel(user.role)}</div>
-                          {user.role === "admin" && user.emergencyIpBypass ? (
-                            <div className="mt-1 text-xs text-destructive">Emergency IP bypass</div>
-                          ) : null}
-                        </div>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {isEditing ? (
-                        <UniversalViewerCashOutgoScopeSelect
-                          role={editRole}
-                          value={editCashOutgoEditScope}
-                          onChange={setEditCashOutgoEditScope}
-                          compact
-                        />
-                      ) : (
-                        cashOutgoEditScopeLabel(user.role, user.cashOutgoEditScope)
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {isEditing ? (
-                        <div>
-                          <DivisionAccessPicker
-                            divisions={divisions}
-                            selectedIds={editDivisionIds}
-                            onChange={setEditDivisionIds}
-                          />
-                          {roleRequiresDivisionAssignment(editRole) && editDivisionIds.length === 0 ? (
-                            <div className="mt-1.5 text-xs font-medium text-destructive">
-                              No divisions assigned — assign at least one division before saving.
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <span
-                          className={
-                            roleRequiresDivisionAssignment(user.role) && user.divisionIds.length === 0
-                              ? "font-medium text-destructive"
-                              : undefined
-                          }
-                        >
-                          {roleRequiresDivisionAssignment(user.role) && user.divisionIds.length === 0
-                            ? "No divisions assigned"
-                            : divisionAccessLabel(user.divisionIds, divisions)}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {isEditing ? (
-                        <FileCategoryAccessPicker
-                          options={fileAccessOptions}
-                          selectedCategories={editAllowedFileCategories}
-                          onChange={setEditAllowedFileCategories}
-                        />
-                      ) : (
-                        fileCategoryAccessLabel(user.allowedFileCategories, fileAccessOptions)
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-1">
-                        {isEditing ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => saveEdit(user.id)}
-                              disabled={
-                                !editChanged ||
-                                !editName.trim() ||
-                                !editUsername.trim() ||
-                                (roleRequiresDivisionAssignment(editRole) && editDivisionIds.length === 0)
-                              }
-                              className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
-                            >
-                              <Check className="size-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setEditingId(null)}
-                              className="size-8 grid place-items-center rounded-md hover:bg-accent"
-                            >
-                              <X className="size-4" />
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => startEdit(user)}
-                              className="size-8 grid place-items-center rounded-md hover:bg-accent"
-                            >
-                              <Pencil className="size-4" />
-                            </button>
-                            <HelpedControl
-                              helper={settingsControlHelpers.userDelete}
-                              label={`Delete ${user.name} help`}
-                            >
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  if (await requestDeletionPassword(`delete user "${user.name}"`)) {
-                                    store.deleteUser(user.id);
-                                  }
-                                }}
-                                className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
-                              >
-                                <Trash2 className="size-4" />
-                              </button>
-                            </HelpedControl>
-                          </>
-                        )}
-                      </div>
+              <colgroup>
+                <col className="w-[15%]" />
+                <col className="w-[15%]" />
+                <col className="w-[13%]" />
+                <col className="w-[14%]" />
+                <col className="w-[23%]" />
+                <col className="w-[12%]" />
+                <col className="w-[8%]" />
+              </colgroup>
+              <thead className="bg-secondary text-xs text-muted-foreground">
+                <tr>
+                  <th className="text-left font-medium px-4 py-2.5">Name</th>
+                  <th className="text-left font-medium px-4 py-2.5">Username</th>
+                  <th className="text-left font-medium px-4 py-2.5">Role</th>
+                  <th className="text-left font-medium px-4 py-2.5">Cash plan/MER</th>
+                  <th className="text-left font-medium px-4 py-2.5">Visible divisions</th>
+                  <th className="text-left font-medium px-4 py-2.5">File types</th>
+                  <th className="text-right font-medium px-4 py-2.5">Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleUsers.length === 0 ? (
+                  <tr className="border-t border-border">
+                    <td className="px-4 py-6 text-muted-foreground text-center" colSpan={7}>
+                      No {selectedRoleTab.label.toLowerCase()} users added yet.
                     </td>
                   </tr>
-                );
-              })
-            )}
-          </tbody>
+                ) : (
+                  visibleUsers.map((user) => {
+                    const isEditing = editingId === user.id;
+                    const editChanged =
+                      editName.trim() !== user.name ||
+                      editUsername.trim() !== user.username ||
+                      Boolean(editPassword.trim()) ||
+                      editRole !== user.role ||
+                      (editRole === "universal_viewer" ? editCashOutgoEditScope : "none") !==
+                        (user.cashOutgoEditScope ?? "none") ||
+                      (editRole === "admin" && editEmergencyIpBypass) !==
+                        Boolean(user.emergencyIpBypass) ||
+                      !isSettingsDirtyValueEqual(
+                        [...editDivisionIds].sort(),
+                        [...(user.divisionIds ?? [])].sort(),
+                      ) ||
+                      !isSettingsDirtyValueEqual(
+                        normalizeUserFileCategories(editAllowedFileCategories, fileAccessOptions),
+                        normalizeUserFileCategories(user.allowedFileCategories, fileAccessOptions),
+                      );
+                    return (
+                      <tr key={user.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3">
+                          {isEditing ? (
+                            <DivisionInput
+                              value={editName}
+                              onChange={setEditName}
+                              placeholder="User name"
+                            />
+                          ) : (
+                            <span className="font-medium">{user.name}</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <DivisionInput
+                                value={editUsername}
+                                onChange={setEditUsername}
+                                placeholder="Username"
+                              />
+                              <input
+                                type="password"
+                                value={editPassword}
+                                onChange={(event) => setEditPassword(event.target.value)}
+                                placeholder="New password"
+                                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
+                              />
+                            </div>
+                          ) : (
+                            user.username
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {isEditing ? (
+                            <div className="space-y-2">
+                              <UserRoleSelect value={editRole} onChange={setEditRole} />
+                              <EmergencyIpBypassToggle
+                                role={editRole}
+                                checked={editEmergencyIpBypass}
+                                onChange={setEditEmergencyIpBypass}
+                              />
+                            </div>
+                          ) : (
+                            <div>
+                              <div>{roleLabel(user.role)}</div>
+                              {user.role === "admin" && user.emergencyIpBypass ? (
+                                <div className="mt-1 text-xs text-destructive">
+                                  Emergency IP bypass
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {isEditing ? (
+                            <UniversalViewerCashOutgoScopeSelect
+                              role={editRole}
+                              value={editCashOutgoEditScope}
+                              onChange={setEditCashOutgoEditScope}
+                              compact
+                            />
+                          ) : (
+                            cashOutgoEditScopeLabel(user.role, user.cashOutgoEditScope)
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {isEditing ? (
+                            <div>
+                              <DivisionAccessPicker
+                                divisions={divisions}
+                                selectedIds={editDivisionIds}
+                                onChange={setEditDivisionIds}
+                              />
+                              {roleRequiresDivisionAssignment(editRole) &&
+                              editDivisionIds.length === 0 ? (
+                                <div className="mt-1.5 text-xs font-medium text-destructive">
+                                  No divisions assigned — assign at least one division before
+                                  saving.
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <span
+                              className={
+                                roleRequiresDivisionAssignment(user.role) &&
+                                user.divisionIds.length === 0
+                                  ? "font-medium text-destructive"
+                                  : undefined
+                              }
+                            >
+                              {roleRequiresDivisionAssignment(user.role) &&
+                              user.divisionIds.length === 0
+                                ? "No divisions assigned"
+                                : divisionAccessLabel(user.divisionIds, divisions)}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {isEditing ? (
+                            <FileCategoryAccessPicker
+                              options={fileAccessOptions}
+                              selectedCategories={editAllowedFileCategories}
+                              onChange={setEditAllowedFileCategories}
+                            />
+                          ) : (
+                            fileCategoryAccessLabel(user.allowedFileCategories, fileAccessOptions)
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-1">
+                            {isEditing ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => saveEdit(user.id)}
+                                  disabled={
+                                    !editChanged ||
+                                    !editName.trim() ||
+                                    !editUsername.trim() ||
+                                    (roleRequiresDivisionAssignment(editRole) &&
+                                      editDivisionIds.length === 0)
+                                  }
+                                  className="size-8 grid place-items-center rounded-md text-success hover:bg-success/10 disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                  <Check className="size-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingId(null)}
+                                  className="size-8 grid place-items-center rounded-md hover:bg-accent"
+                                >
+                                  <X className="size-4" />
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => startEdit(user)}
+                                  className="size-8 grid place-items-center rounded-md hover:bg-accent"
+                                >
+                                  <Pencil className="size-4" />
+                                </button>
+                                <HelpedControl
+                                  helper={settingsControlHelpers.userDelete}
+                                  label={`Archive ${user.name} help`}
+                                >
+                                  <DeleteConfirmation
+                                    mode="archive"
+                                    onConfirm={async () => {
+                                      if (
+                                        await requestDeletionPassword(`archive user "${user.name}"`)
+                                      ) {
+                                        await store.deleteUser(user.id);
+                                      }
+                                    }}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                                    >
+                                      <Trash2 className="size-4" />
+                                    </button>
+                                  </DeleteConfirmation>
+                                </HelpedControl>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
             </table>
           </div>
         </TabsContent>
@@ -9424,7 +10826,14 @@ function ArchiveSettings() {
         listArchivedMasterFirms(),
         store.listArchivedIndentors(),
       ]);
-      const labels = ["Files", "Cancelled demands", "Divisions", "Users", "Master firms", "Indentors"];
+      const labels = [
+        "Files",
+        "Cancelled demands",
+        "Divisions",
+        "Users",
+        "Master firms",
+        "Indentors",
+      ];
       const failures: string[] = [];
 
       if (results[0].status === "fulfilled") setArchivedFiles(results[0].value.files);
@@ -9489,12 +10898,8 @@ function ArchiveSettings() {
       `permanently delete archived division "${division.name}"`,
     );
     if (deletionPassword === null) return;
-    try {
-      await store.permanentlyDeleteArchivedDivision(division.id, deletionPassword);
-      await loadArchive();
-    } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Failed to delete archived division.");
-    }
+    await store.permanentlyDeleteArchivedDivision(division.id, deletionPassword);
+    await loadArchive();
   };
 
   const permanentlyDelete = async (file: FileRecord) => {
@@ -9570,21 +10975,26 @@ function ArchiveSettings() {
             Files <span className="text-xs text-muted-foreground">({archivedFiles.length})</span>
           </TabsTrigger>
           <TabsTrigger value="cancelledDemands" className="gap-1.5 px-3 py-2">
-            Cancelled demands <span className="text-xs text-muted-foreground">({cancelledDemandFiles.length})</span>
+            Cancelled demands{" "}
+            <span className="text-xs text-muted-foreground">({cancelledDemandFiles.length})</span>
           </TabsTrigger>
           {!isSubAdmin ? (
             <>
               <TabsTrigger value="divisions" className="gap-1.5 px-3 py-2">
-                Divisions <span className="text-xs text-muted-foreground">({archivedDivisions.length})</span>
+                Divisions{" "}
+                <span className="text-xs text-muted-foreground">({archivedDivisions.length})</span>
               </TabsTrigger>
               <TabsTrigger value="users" className="gap-1.5 px-3 py-2">
-                Users <span className="text-xs text-muted-foreground">({archivedUsers.length})</span>
+                Users{" "}
+                <span className="text-xs text-muted-foreground">({archivedUsers.length})</span>
               </TabsTrigger>
               <TabsTrigger value="firms" className="gap-1.5 px-3 py-2">
-                Master firms <span className="text-xs text-muted-foreground">({archivedFirms.length})</span>
+                Master firms{" "}
+                <span className="text-xs text-muted-foreground">({archivedFirms.length})</span>
               </TabsTrigger>
               <TabsTrigger value="indentors" className="gap-1.5 px-3 py-2">
-                Indentors <span className="text-xs text-muted-foreground">({archivedIndentors.length})</span>
+                Indentors{" "}
+                <span className="text-xs text-muted-foreground">({archivedIndentors.length})</span>
               </TabsTrigger>
             </>
           ) : null}
@@ -9592,173 +11002,179 @@ function ArchiveSettings() {
 
         <TabsContent value="divisions" className="mt-3">
           <details open className="overflow-hidden rounded-md border border-border">
-        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
-          Divisions bin ({archivedDivisions.length})
-        </summary>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[560px] table-fixed text-sm">
-            <colgroup>
-              <col className="w-[34%]" />
-              <col className="w-[20%]" />
-              <col className="w-[24%]" />
-              <col className="w-[22%]" />
-            </colgroup>
-            <thead className="bg-secondary text-xs text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2.5 text-left font-medium">Archived division</th>
-                <th className="px-4 py-2.5 text-left font-medium">Code</th>
-                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
-                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr className="border-t border-border">
-                  <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
-                    Loading archived divisions...
-                  </td>
-                </tr>
-              ) : archivedDivisions.length === 0 ? (
-                <tr className="border-t border-border">
-                  <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
-                    No archived divisions.
-                  </td>
-                </tr>
-              ) : (
-                archivedDivisions.map((division) => (
-                  <tr key={division.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3 font-medium">{division.name}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {division.code || "Not set"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {division.archivedAt ? formatArchiveDate(division.archivedAt) : "Not set"}
-                    </td>
-                    <td className="py-3 pl-8 pr-4">
-                      <div className="flex justify-end gap-1">
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveRestore}
-                          label="Restore archived division help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void restoreDivision(division)}
-                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                          >
-                            Restore
-                          </button>
-                        </HelpedControl>
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveDelete}
-                          label="Delete archived division help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void permanentlyDeleteDivision(division)}
-                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                          >
-                            Delete
-                          </button>
-                        </HelpedControl>
-                      </div>
-                    </td>
+            <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+              Divisions bin ({archivedDivisions.length})
+            </summary>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[560px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[34%]" />
+                  <col className="w-[20%]" />
+                  <col className="w-[24%]" />
+                  <col className="w-[22%]" />
+                </colgroup>
+                <thead className="bg-secondary text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">Archived division</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Code</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                    <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading archived divisions...
+                      </td>
+                    </tr>
+                  ) : archivedDivisions.length === 0 ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">
+                        No archived divisions.
+                      </td>
+                    </tr>
+                  ) : (
+                    archivedDivisions.map((division) => (
+                      <tr key={division.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3 font-medium">{division.name}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {division.code || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {division.archivedAt ? formatArchiveDate(division.archivedAt) : "Not set"}
+                        </td>
+                        <td className="py-3 pl-8 pr-4">
+                          <div className="flex justify-end gap-1">
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveRestore}
+                              label="Restore archived division help"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => void restoreDivision(division)}
+                                className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                              >
+                                Restore
+                              </button>
+                            </HelpedControl>
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveDelete}
+                              label="Delete archived division help"
+                            >
+                              <DeleteConfirmation
+                                onConfirm={() => permanentlyDeleteDivision(division)}
+                              >
+                                <button
+                                  type="button"
+                                  className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                                >
+                                  Delete
+                                </button>
+                              </DeleteConfirmation>
+                            </HelpedControl>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </details>
         </TabsContent>
 
         <TabsContent value="files" className="mt-3">
           <details open className="overflow-hidden rounded-md border border-border">
-        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
-          Files bin ({archivedFiles.length})
-        </summary>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] table-fixed text-sm">
-            <colgroup>
-              <col className="w-[16%]" />
-              <col className="w-[16%]" />
-              <col className="w-[16%]" />
-              <col className="w-[26%]" />
-              <col className="w-[10%]" />
-              <col className="w-[16%]" />
-            </colgroup>
-            <thead className="bg-secondary text-xs text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2.5 text-left font-medium">Unique code</th>
-                <th className="px-4 py-2.5 text-left font-medium">Division</th>
-                <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
-                <th className="px-4 py-2.5 text-left font-medium">Description</th>
-                <th className="px-4 py-2.5 text-left font-medium">Year</th>
-                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                    Loading archive...
-                  </td>
-                </tr>
-              ) : archivedFiles.length === 0 ? (
-                <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                    No archived files.
-                  </td>
-                </tr>
-              ) : (
-                archivedFiles.map((file) => (
-                  <tr key={file.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3 font-medium">{file.uniqueCode || "Not set"}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {file.division || "Not set"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {file.indentor || "Not set"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {getArchivedFileDescription(file)}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
-                    <td className="py-3 pl-8 pr-4">
-                      <div className="flex justify-end gap-1">
-                        {!isSubAdmin ? (
-                          <HelpedControl
-                            helper={settingsControlHelpers.archiveRestore}
-                            label="Restore archived file help"
-                          >
-                            <button
-                              type="button"
-                              onClick={() => void restore(file)}
-                              className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                            >
-                              Restore
-                            </button>
-                          </HelpedControl>
-                        ) : null}
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveDelete}
-                          label="Delete archived file help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void permanentlyDelete(file)}
-                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                          >
-                            Delete
-                          </button>
-                        </HelpedControl>
-                      </div>
-                    </td>
+            <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+              Files bin ({archivedFiles.length})
+            </summary>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[900px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[16%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[26%]" />
+                  <col className="w-[10%]" />
+                  <col className="w-[16%]" />
+                </colgroup>
+                <thead className="bg-secondary text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">Unique code</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Division</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Description</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Year</th>
+                    <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading archive...
+                      </td>
+                    </tr>
+                  ) : archivedFiles.length === 0 ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        No archived files.
+                      </td>
+                    </tr>
+                  ) : (
+                    archivedFiles.map((file) => (
+                      <tr key={file.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3 font-medium">{file.uniqueCode || "Not set"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {file.division || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {file.indentor || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {getArchivedFileDescription(file)}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {file.year || "Not set"}
+                        </td>
+                        <td className="py-3 pl-8 pr-4">
+                          <div className="flex justify-end gap-1">
+                            {!isSubAdmin ? (
+                              <HelpedControl
+                                helper={settingsControlHelpers.archiveRestore}
+                                label="Restore archived file help"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => void restore(file)}
+                                  className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                                >
+                                  Restore
+                                </button>
+                              </HelpedControl>
+                            ) : null}
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveDelete}
+                              label="Delete archived file help"
+                            >
+                              <DeleteConfirmation onConfirm={() => permanentlyDelete(file)}>
+                                <button
+                                  type="button"
+                                  className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                                >
+                                  Delete
+                                </button>
+                              </DeleteConfirmation>
+                            </HelpedControl>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </details>
         </TabsContent>
 
@@ -9802,14 +11218,20 @@ function ArchiveSettings() {
                     cancelledDemandFiles.map((file) => (
                       <tr key={file.id} className="border-t border-border align-top">
                         <td className="px-4 py-3 font-medium">{file.uniqueCode || "Not set"}</td>
-                        <td className="px-4 py-3 text-muted-foreground">{file.division || "Not set"}</td>
                         <td className="px-4 py-3 text-muted-foreground">
-                          {file.demandCancelledDate ? formatArchiveDate(file.demandCancelledDate) : "Not set"}
+                          {file.division || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {file.demandCancelledDate
+                            ? formatArchiveDate(file.demandCancelledDate)
+                            : "Not set"}
                         </td>
                         <td className="px-4 py-3 text-muted-foreground">
                           {getArchivedFileDescription(file)}
                         </td>
-                        <td className="px-4 py-3 text-muted-foreground">{file.year || "Not set"}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {file.year || "Not set"}
+                        </td>
                       </tr>
                     ))
                   )}
@@ -9821,261 +11243,268 @@ function ArchiveSettings() {
 
         <TabsContent value="users" className="mt-3">
           <details className="overflow-hidden rounded-md border border-border">
-        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
-          Users bin ({archivedUsers.length})
-        </summary>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[720px] table-fixed text-sm">
-            <colgroup>
-              <col className="w-[24%]" />
-              <col className="w-[22%]" />
-              <col className="w-[18%]" />
-              <col className="w-[18%]" />
-              <col className="w-[18%]" />
-            </colgroup>
-            <thead className="bg-secondary text-xs text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2.5 text-left font-medium">User</th>
-                <th className="px-4 py-2.5 text-left font-medium">Username</th>
-                <th className="px-4 py-2.5 text-left font-medium">Role</th>
-                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
-                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr className="border-t border-border">
-                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                    Loading archived users...
-                  </td>
-                </tr>
-              ) : archivedUsers.length === 0 ? (
-                <tr className="border-t border-border">
-                  <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
-                    No archived users.
-                  </td>
-                </tr>
-              ) : (
-                archivedUsers.map((user) => (
-                  <tr key={user.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3 font-medium">{user.name}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{user.username}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{roleLabel(user.role)}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {user.archivedAt ? formatArchiveDate(user.archivedAt) : "Not set"}
-                    </td>
-                    <td className="py-3 pl-8 pr-4">
-                      <div className="flex justify-end gap-1">
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveRestore}
-                          label="Restore archived user help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void restoreUser(user)}
-                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                          >
-                            Restore
-                          </button>
-                        </HelpedControl>
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveDelete}
-                          label="Delete archived user help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void permanentlyDeleteUser(user)}
-                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                          >
-                            Delete
-                          </button>
-                        </HelpedControl>
-                      </div>
-                    </td>
+            <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+              Users bin ({archivedUsers.length})
+            </summary>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[24%]" />
+                  <col className="w-[22%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[18%]" />
+                </colgroup>
+                <thead className="bg-secondary text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">User</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Username</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Role</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                    <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading archived users...
+                      </td>
+                    </tr>
+                  ) : archivedUsers.length === 0 ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={5} className="px-4 py-6 text-center text-muted-foreground">
+                        No archived users.
+                      </td>
+                    </tr>
+                  ) : (
+                    archivedUsers.map((user) => (
+                      <tr key={user.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3 font-medium">{user.name}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{user.username}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{roleLabel(user.role)}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {user.archivedAt ? formatArchiveDate(user.archivedAt) : "Not set"}
+                        </td>
+                        <td className="py-3 pl-8 pr-4">
+                          <div className="flex justify-end gap-1">
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveRestore}
+                              label="Restore archived user help"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => void restoreUser(user)}
+                                className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                              >
+                                Restore
+                              </button>
+                            </HelpedControl>
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveDelete}
+                              label="Delete archived user help"
+                            >
+                              <DeleteConfirmation onConfirm={() => permanentlyDeleteUser(user)}>
+                                <button
+                                  type="button"
+                                  className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                                >
+                                  Delete
+                                </button>
+                              </DeleteConfirmation>
+                            </HelpedControl>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </details>
         </TabsContent>
 
         <TabsContent value="firms" className="mt-3">
           <details className="overflow-hidden rounded-md border border-border">
-        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
-          Master firms bin ({archivedFirms.length})
-        </summary>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[820px] table-fixed text-sm">
-            <colgroup>
-              <col className="w-[22%]" />
-              <col className="w-[18%]" />
-              <col className="w-[18%]" />
-              <col className="w-[16%]" />
-              <col className="w-[12%]" />
-              <col className="w-[14%]" />
-            </colgroup>
-            <thead className="bg-secondary text-xs text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2.5 text-left font-medium">Firm</th>
-                <th className="px-4 py-2.5 text-left font-medium">Unique No.</th>
-                <th className="px-4 py-2.5 text-left font-medium">Email</th>
-                <th className="px-4 py-2.5 text-left font-medium">Contact</th>
-                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
-                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                    Loading archived firms...
-                  </td>
-                </tr>
-              ) : archivedFirms.length === 0 ? (
-                <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                    No archived firms.
-                  </td>
-                </tr>
-              ) : (
-                archivedFirms.map((firm) => (
-                  <tr key={firm.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3 font-medium">
-                      <CompactTableText value={firm.firmName || "Not set"} width={20} />
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {firm.firmUniqueNo || "Not set"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">{firm.emailId || "Not set"}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {firm.contactNo || "Not set"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {firm.archivedAt ? formatArchiveDate(firm.archivedAt) : "Not set"}
-                    </td>
-                    <td className="py-3 pl-8 pr-4">
-                      <div className="flex justify-end gap-1">
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveRestore}
-                          label="Restore archived firm help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void restoreFirm(firm)}
-                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                          >
-                            Restore
-                          </button>
-                        </HelpedControl>
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveDelete}
-                          label="Delete archived firm help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void permanentlyDeleteFirm(firm)}
-                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                          >
-                            Delete
-                          </button>
-                        </HelpedControl>
-                      </div>
-                    </td>
+            <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+              Master firms bin ({archivedFirms.length})
+            </summary>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[22%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[14%]" />
+                </colgroup>
+                <thead className="bg-secondary text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">Firm</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Unique No.</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Email</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Contact</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                    <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading archived firms...
+                      </td>
+                    </tr>
+                  ) : archivedFirms.length === 0 ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        No archived firms.
+                      </td>
+                    </tr>
+                  ) : (
+                    archivedFirms.map((firm) => (
+                      <tr key={firm.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3 font-medium">
+                          <CompactTableText value={firm.firmName || "Not set"} width={20} />
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {firm.firmUniqueNo || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {firm.emailId || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {firm.contactNo || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {firm.archivedAt ? formatArchiveDate(firm.archivedAt) : "Not set"}
+                        </td>
+                        <td className="py-3 pl-8 pr-4">
+                          <div className="flex justify-end gap-1">
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveRestore}
+                              label="Restore archived firm help"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => void restoreFirm(firm)}
+                                className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                              >
+                                Restore
+                              </button>
+                            </HelpedControl>
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveDelete}
+                              label="Delete archived firm help"
+                            >
+                              <DeleteConfirmation onConfirm={() => permanentlyDeleteFirm(firm)}>
+                                <button
+                                  type="button"
+                                  className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                                >
+                                  Delete
+                                </button>
+                              </DeleteConfirmation>
+                            </HelpedControl>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </details>
         </TabsContent>
 
         <TabsContent value="indentors" className="mt-3">
           <details className="overflow-hidden rounded-md border border-border">
-        <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
-          Indentors bin ({archivedIndentors.length})
-        </summary>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[820px] table-fixed text-sm">
-            <colgroup>
-              <col className="w-[20%]" />
-              <col className="w-[20%]" />
-              <col className="w-[16%]" />
-              <col className="w-[18%]" />
-              <col className="w-[12%]" />
-              <col className="w-[14%]" />
-            </colgroup>
-            <thead className="bg-secondary text-xs text-muted-foreground">
-              <tr>
-                <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
-                <th className="px-4 py-2.5 text-left font-medium">Division</th>
-                <th className="px-4 py-2.5 text-left font-medium">SF ID</th>
-                <th className="px-4 py-2.5 text-left font-medium">Email</th>
-                <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
-                <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                    Loading archived indentors...
-                  </td>
-                </tr>
-              ) : archivedIndentors.length === 0 ? (
-                <tr className="border-t border-border">
-                  <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                    No archived indentors.
-                  </td>
-                </tr>
-              ) : (
-                archivedIndentors.map((indentor) => (
-                  <tr key={indentor.id} className="border-t border-border align-top">
-                    <td className="px-4 py-3 font-medium">{indentor.name}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{indentor.divisionName}</td>
-                    <td className="px-4 py-3 text-muted-foreground">{indentor.sfId}</td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {indentor.email || "Not set"}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {indentor.archivedAt ? formatArchiveDate(indentor.archivedAt) : "Not set"}
-                    </td>
-                    <td className="py-3 pl-8 pr-4">
-                      <div className="flex justify-end gap-1">
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveRestore}
-                          label="Restore archived indentor help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void restoreIndentor(indentor)}
-                            className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
-                          >
-                            Restore
-                          </button>
-                        </HelpedControl>
-                        <HelpedControl
-                          helper={settingsControlHelpers.archiveDelete}
-                          label="Delete archived indentor help"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void permanentlyDeleteIndentor(indentor)}
-                            className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
-                          >
-                            Delete
-                          </button>
-                        </HelpedControl>
-                      </div>
-                    </td>
+            <summary className="cursor-pointer bg-secondary px-4 py-2.5 text-xs font-semibold uppercase text-muted-foreground">
+              Indentors bin ({archivedIndentors.length})
+            </summary>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[820px] table-fixed text-sm">
+                <colgroup>
+                  <col className="w-[20%]" />
+                  <col className="w-[20%]" />
+                  <col className="w-[16%]" />
+                  <col className="w-[18%]" />
+                  <col className="w-[12%]" />
+                  <col className="w-[14%]" />
+                </colgroup>
+                <thead className="bg-secondary text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-medium">Indentor</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Division</th>
+                    <th className="px-4 py-2.5 text-left font-medium">SF ID</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Email</th>
+                    <th className="px-4 py-2.5 text-left font-medium">Archived on</th>
+                    <th className="py-2.5 pl-8 pr-4 text-right font-medium">Action</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {loading ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        Loading archived indentors...
+                      </td>
+                    </tr>
+                  ) : archivedIndentors.length === 0 ? (
+                    <tr className="border-t border-border">
+                      <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
+                        No archived indentors.
+                      </td>
+                    </tr>
+                  ) : (
+                    archivedIndentors.map((indentor) => (
+                      <tr key={indentor.id} className="border-t border-border align-top">
+                        <td className="px-4 py-3 font-medium">{indentor.name}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{indentor.divisionName}</td>
+                        <td className="px-4 py-3 text-muted-foreground">{indentor.sfId}</td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {indentor.email || "Not set"}
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
+                          {indentor.archivedAt ? formatArchiveDate(indentor.archivedAt) : "Not set"}
+                        </td>
+                        <td className="py-3 pl-8 pr-4">
+                          <div className="flex justify-end gap-1">
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveRestore}
+                              label="Restore archived indentor help"
+                            >
+                              <button
+                                type="button"
+                                onClick={() => void restoreIndentor(indentor)}
+                                className="h-8 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
+                              >
+                                Restore
+                              </button>
+                            </HelpedControl>
+                            <HelpedControl
+                              helper={settingsControlHelpers.archiveDelete}
+                              label="Delete archived indentor help"
+                            >
+                              <DeleteConfirmation
+                                onConfirm={() => permanentlyDeleteIndentor(indentor)}
+                              >
+                                <button
+                                  type="button"
+                                  className="h-8 rounded-md border border-destructive/30 px-2 text-xs font-medium text-destructive hover:bg-destructive/10"
+                                >
+                                  Delete
+                                </button>
+                              </DeleteConfirmation>
+                            </HelpedControl>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </details>
         </TabsContent>
       </Tabs>

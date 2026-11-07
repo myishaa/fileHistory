@@ -107,6 +107,32 @@ export function isBiddingApplicableForFile(file: { mode?: string; fileType?: str
   );
 }
 
+export function isRefloatBiddingApplicableForFile(file: {
+  mode?: string;
+  fileType?: string;
+  gem?: string;
+  refloatGemBiddingMode?: string;
+}): boolean {
+  const mode = String(file.mode ?? "")
+    .trim()
+    .toUpperCase();
+  const fileType = String(file.fileType ?? "")
+    .trim()
+    .toLowerCase();
+  const gem = String(file.gem ?? "")
+    .trim()
+    .toLowerCase();
+  const refloatGemBiddingMode = String(file.refloatGemBiddingMode ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    mode !== "LPC" &&
+    fileType !== "cars" &&
+    fileType !== "capsi" &&
+    !(gem === "yes" && refloatGemBiddingMode === "comparison")
+  );
+}
+
 function isNo(value: unknown) {
   return (
     String(value ?? "")

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { AuthUser, Indentor } from "../types.js";
+import { isQaLabelSql, visibleFileSql } from "../utils/qa-data.js";
 import {
   canAccessDivision,
   canUseAllDivisions,
@@ -179,6 +180,8 @@ async function getIndentor(id: string, includeArchived = false) {
      join divisions d on d.id = i.division_id
      left join app_users u on u.id = i.created_by
      where i.id = $1
+       and lower(trim(coalesce(d.name, ''))) <> 'trial'
+       and not ${isQaLabelSql("i.name")}
        and ($2::boolean or i.archived_at is null)`,
     [id, includeArchived],
   );
@@ -208,7 +211,11 @@ function buildIndentorTransferWhere(
   financialYear: string | undefined,
 ) {
   const values: unknown[] = [source.name];
-  const where = ["f.archived_at is null", "lower(trim(f.indentor)) = lower(trim($1::text))"];
+  const where = [
+    "f.archived_at is null",
+    visibleFileSql("f"),
+    "lower(trim(f.indentor)) = lower(trim($1::text))",
+  ];
   if (scope === "active") {
     where.push("f.file_closure_date is null");
   } else if (scope === "financialYear") {
@@ -269,7 +276,12 @@ indentorsRouter.get(
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     const values: unknown[] = [];
-    const where: string[] = ["d.archived_at is null", "i.archived_at is null"];
+    const where: string[] = [
+      "d.archived_at is null",
+      "i.archived_at is null",
+      "lower(trim(coalesce(d.name, ''))) <> 'trial'",
+      `not ${isQaLabelSql("i.name")}`,
+    ];
     const divisionId =
       typeof request.query.divisionId === "string" && request.query.divisionId.trim()
         ? request.query.divisionId.trim()
@@ -623,6 +635,8 @@ indentorsRouter.get(
        join divisions d on d.id = i.division_id
        left join app_users u on u.id = i.created_by
        where i.archived_at is not null
+         and lower(trim(coalesce(d.name, ''))) <> 'trial'
+         and not ${isQaLabelSql("i.name")}
        order by i.archived_at desc, d.name asc, i.name asc`,
     );
     response.json({ indentors: result.rows.map(mapIndentor) });

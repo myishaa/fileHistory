@@ -85,7 +85,7 @@ export function MonthlyCountCalendar({
                       className={`flex min-w-0 items-center gap-1 ${metric.hideLabel ? "justify-center" : "justify-between"}`}
                     >
                       {day.metrics.length > 1 && !metric.hideLabel ? (
-                        <span className="min-w-0 truncate text-[10px] leading-3 text-muted-foreground">
+                        <span className="min-w-0 truncate text-[0.625rem] leading-3 text-muted-foreground">
                           {metric.label}
                         </span>
                       ) : null}

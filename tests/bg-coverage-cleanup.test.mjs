@@ -3,7 +3,15 @@ import test from "node:test";
 import {
   clearInapplicableBgCoverageFields,
   getClearedBgCoverageFieldLabels,
+  normalizeBgCoverageType,
 } from "../src/lib/bg-coverage-cleanup.ts";
+
+test("BG coverage values are normalized without inventing an unknown value", () => {
+  assert.equal(normalizeBgCoverageType("pwb"), "PWB");
+  assert.equal(normalizeBgCoverageType("PSB + PWB"), "PSB+PWB");
+  assert.equal(normalizeBgCoverageType("PSB and PWB separately"), "PSB and PWB separately");
+  assert.equal(normalizeBgCoverageType("unverified coverage"), undefined);
+});
 
 test("PSB coverage clears hidden PWB, combined, and warranty data", () => {
   const order = clearInapplicableBgCoverageFields({

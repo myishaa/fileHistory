@@ -1,5 +1,6 @@
 import type { PoolClient } from "pg";
 import { pool } from "../db/pool.js";
+import { visibleFileSql } from "./qa-data.js";
 import type { AuthUser, FileRecord, SupplyOrderDetail, StageDeliveryDetail } from "../types.js";
 import { canUseAllDivisions } from "./auth.js";
 
@@ -226,7 +227,7 @@ export async function loadFileProcessingNotifications(user: AuthUser) {
        n.changed_by_name, n.changed_by_role, n.changes, n.summary, n.status,
        n.acknowledged_by_name, n.acknowledged_at, n.created_at
      from file_processing_notifications n
-     join files f on f.id = n.file_id and f.archived_at is null
+     join files f on f.id = n.file_id and f.archived_at is null and ${visibleFileSql("f")}
      left join divisions d on d.id = n.division_id
      ${whereSql}
      order by

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { AuthUser, MasterFirm } from "../types.js";
+import { isQaLabelSql, visibleFileSql } from "../utils/qa-data.js";
 import { canMutateFiles, requireAuth, type AuthRequest } from "../utils/auth.js";
 import { verifyDeletionPassword } from "../utils/deletion-password.js";
 import { fromDbText, toDbText } from "../utils/db-values.js";
@@ -123,17 +124,17 @@ function readRatingValues(value: unknown): Record<string, string> {
 
 function calculateFirmRatingScore(values: Record<string, string>, config: FirmRatingConfig) {
   let weightedTotal = 0;
-  let weightTotal = 0;
+  let hasScoredValue = false;
   for (const field of config.fields) {
     const rawValue = values[field.id];
-    if (!rawValue) continue;
+    if (rawValue === undefined || rawValue.trim() === "") continue;
     const score = Number.parseFloat(rawValue);
     const weight = Number.parseFloat(field.weight ?? "1");
     if (!Number.isFinite(score) || !Number.isFinite(weight) || weight <= 0) continue;
     weightedTotal += score * weight;
-    weightTotal += weight;
+    hasScoredValue = true;
   }
-  return weightTotal > 0 ? weightedTotal / weightTotal : undefined;
+  return hasScoredValue ? weightedTotal : undefined;
 }
 
 function formatFirmRatingScore(score: number | undefined) {
@@ -159,12 +160,14 @@ async function getAverageFirmRatings(firms: MasterFirmRow[]) {
 
   const config = await getFirmRatingConfig();
   const result = await pool.query<SupplyOrderRatingRow>(
-    `select firm, firm_unique_no, firm_rating_values
-     from supply_orders
-     where firm_rating_values <> '{}'::jsonb
+    `select so.firm, so.firm_unique_no, so.firm_rating_values
+     from supply_orders so
+     join files qa_f on qa_f.id = so.file_id
+     where so.firm_rating_values <> '{}'::jsonb
+       and ${visibleFileSql("qa_f")}
        and (
-         lower(coalesce(firm_unique_no, '')) = any($1::text[])
-         or lower(coalesce(firm, '')) = any($2::text[])
+         lower(coalesce(so.firm_unique_no, '')) = any($1::text[])
+         or lower(coalesce(so.firm, '')) = any($2::text[])
        )`,
     [firmUniqueNos, firmNames],
   );
@@ -280,9 +283,6 @@ function readFirmPayload(body: Record<string, unknown>) {
   if (!firmName) {
     throw new HttpError(400, "Firm name is required.");
   }
-  if (firmType?.toUpperCase() === "OTHER" && !firmTypeOther) {
-    throw new HttpError(400, "Specify the firm type when Other is selected.");
-  }
   return { firmName, firmType, firmTypeOther, emailId, city, address, firmUniqueNo, contactNo };
 }
 
@@ -298,6 +298,8 @@ async function getFirm(id: string, includeArchived = false) {
      from master_firms mf
      left join app_users u on u.id = mf.created_by
      where mf.id = $1
+       and not ${isQaLabelSql("coalesce(mf.firm_name, '')")}
+       and not ${isQaLabelSql("coalesce(mf.firm_unique_no, '')")}
        and ($2::boolean or mf.archived_at is null)`,
     [id, includeArchived],
   );
@@ -309,7 +311,11 @@ firmsRouter.get(
   asyncHandler(async (request, response) => {
     requireAuth(request as AuthRequest);
     const values: unknown[] = [];
-    const where: string[] = ["mf.archived_at is null"];
+    const where: string[] = [
+      "mf.archived_at is null",
+      `not ${isQaLabelSql("coalesce(mf.firm_name, '')")}`,
+      `not ${isQaLabelSql("coalesce(mf.firm_unique_no, '')")}`,
+    ];
     const q = typeof request.query.q === "string" ? request.query.q.trim() : "";
     const prefix = request.query.prefix === "true";
     const page = readPositiveInteger(request.query.page, 1, 1_000_000);
@@ -369,8 +375,33 @@ firmsRouter.post(
     const user = requireAuth(request as AuthRequest);
     if (!canManageFirms(user)) throw new HttpError(403, "You cannot add firms.");
     const payload = readFirmPayload(requireObjectBody(request.body));
+    const normalizedFirmName = payload.firmName.trim().toLowerCase();
+    const normalizedFirmUniqueNo = payload.firmUniqueNo?.trim().toLowerCase() ?? "";
+    const duplicateLockKeys = [
+      `master-firm-name:${normalizedFirmName}`,
+      ...(normalizedFirmUniqueNo ? [`master-firm-unique-no:${normalizedFirmUniqueNo}`] : []),
+    ].sort();
+    const client = await pool.connect();
     try {
-      const result = await pool.query<MasterFirmRow>(
+      await client.query("begin");
+      for (const lockKey of duplicateLockKeys) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [lockKey]);
+      }
+      const duplicate = await client.query<{ id: string }>(
+        `select id
+         from master_firms
+         where archived_at is null
+           and (
+             lower(trim(coalesce(firm_name, ''))) = $1
+             or ($2 <> '' and lower(trim(coalesce(firm_unique_no, ''))) = $2)
+           )
+         limit 1`,
+        [normalizedFirmName, normalizedFirmUniqueNo],
+      );
+      if (duplicate.rowCount) {
+        throw new HttpError(409, "Firm already exists in the firm database. Select it instead.");
+      }
+      const result = await client.query<MasterFirmRow>(
         `insert into master_firms (firm_name, firm_type, firm_type_other, email_id, city, address, firm_unique_no, contact_no, created_by)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          returning *, null::text as created_by_name`,
@@ -386,12 +417,16 @@ firmsRouter.post(
           user.id,
         ],
       );
+      await client.query("commit");
       response.status(201).json({ firm: mapFirm(result.rows[0]) });
     } catch (error) {
+      await client.query("rollback").catch(() => undefined);
       if (isUniqueViolation(error)) {
         throw new HttpError(409, "Firm Unique No. already exists.");
       }
       throw error;
+    } finally {
+      client.release();
     }
   }),
 );
@@ -463,6 +498,8 @@ firmsRouter.get(
        from master_firms mf
        left join app_users u on u.id = mf.created_by
        where mf.archived_at is not null
+         and not ${isQaLabelSql("coalesce(mf.firm_name, '')")}
+         and not ${isQaLabelSql("coalesce(mf.firm_unique_no, '')")}
        order by mf.archived_at desc, lower(coalesce(mf.firm_name, '')) asc`,
     );
     response.json({ firms: result.rows.map(mapFirm) });

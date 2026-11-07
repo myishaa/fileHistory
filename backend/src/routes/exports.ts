@@ -21,6 +21,8 @@ exportsRouter.post(
     const subtitle = optionalString(body.subtitle);
     const description = optionalString(body.description);
     const tables = requireTables(body.tables);
+    const sheets = format === "excel" ? requireSheets(body.sheets) : undefined;
+    const primarySheetName = optionalString(body.primarySheetName);
     const plot = requirePlot(body.plot);
     const plots = requirePlots(body.plots);
     const requestedFileName = optionalString(body.fileName);
@@ -31,7 +33,16 @@ exportsRouter.post(
       : getExportFileName(requestedFileName?.replace(/\.(?:xlsx|xls|pdf)$/i, "") || title, extension);
 
     if (format === "excel") {
-      const workbook = renderExcelDocument({ title, subtitle, description, tables, plot, plots });
+      const workbook = renderExcelDocument({
+        title,
+        primarySheetName,
+        subtitle,
+        description,
+        tables,
+        sheets,
+        plot,
+        plots,
+      });
       response.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
       response.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
       response.send(workbook);
@@ -79,6 +90,20 @@ function requireTables(value: unknown) {
         return row.map((cell) => String(cell ?? ""));
       }),
     };
+  });
+}
+
+function requireSheets(value: unknown) {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new HttpError(400, "sheets must be an array.");
+  return value.map((sheet, index) => {
+    if (!sheet || typeof sheet !== "object") {
+      throw new HttpError(400, `sheets[${index}] must be an object.`);
+    }
+    const record = sheet as Record<string, unknown>;
+    const name = requireString(record.name, `sheets[${index}].name`).trim();
+    if (!name) throw new HttpError(400, `sheets[${index}].name must not be empty.`);
+    return { name, tables: requireTables(record.tables) };
   });
 }
 

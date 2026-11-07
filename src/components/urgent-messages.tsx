@@ -13,11 +13,21 @@ import {
 } from "lucide-react";
 import { useActiveUser, useDivisions, useUsers, type AppUser } from "@/lib/files-store";
 import { hasCapability } from "@/lib/permissions";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
   /\/$/,
   "",
 );
+
+function sameIds(left: string[], right: string[]) {
+  const normalizedRight = [...right].sort();
+  return (
+    left.length === right.length &&
+    [...left].sort().every((value, index) => value === normalizedRight[index])
+  );
+}
 
 export type UrgentMessage = {
   id: string;
@@ -203,7 +213,7 @@ function UrgentMessageCard({
       <div className={`flex items-start ${compact ? "gap-2" : "gap-3"}`}>
         {number !== undefined ? (
           <span
-            className={`${compact ? "size-5 text-[10px]" : "mt-0.5 size-6 text-[11px]"} inline-flex shrink-0 items-center justify-center rounded-full font-bold ${
+            className={`${compact ? "size-5 text-[0.625rem]" : "mt-0.5 size-6 text-[0.6875rem]"} inline-flex shrink-0 items-center justify-center rounded-full font-bold ${
               accent === "amber"
                 ? "bg-warning/15 text-warning-foreground"
                 : "bg-primary/10 text-primary"
@@ -221,13 +231,13 @@ function UrgentMessageCard({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-start justify-between gap-2">
             {message.status === "done" ? (
-              <span className="rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
+              <span className="rounded-full bg-success/10 px-2 py-0.5 text-[0.6875rem] font-medium text-success">
                 Done
               </span>
             ) : null}
           </div>
           <p
-            className={`${compact ? "text-sm leading-5" : "mt-1 text-[15px] leading-6"} whitespace-pre-wrap break-words text-foreground`}
+            className={`${compact ? "text-sm leading-5" : "mt-1 text-[0.9375rem] leading-6"} whitespace-pre-wrap break-words text-foreground`}
           >
             {message.body}
           </p>
@@ -264,7 +274,7 @@ function UrgentMessageCard({
                   <select
                     value={minutes}
                     onChange={(event) => setMinutes(Number(event.target.value))}
-                    className={`${compact ? "h-6 w-[4.75rem] min-w-0 px-1 text-[10px]" : "h-7 px-2 text-[11px]"} rounded-md border border-input bg-background`}
+                    className={`${compact ? "h-6 w-[4.75rem] min-w-0 px-1 text-[0.625rem]" : "h-7 px-2 text-[0.6875rem]"} rounded-md border border-input bg-background`}
                   >
                     {snoozeOptions.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -286,18 +296,19 @@ function UrgentMessageCard({
                 </button>
               ) : null}
               {onDelete ? (
-                <button
-                  type="button"
-                  onClick={() => onDelete(message)}
-                  className="inline-flex items-center gap-1 rounded-md border border-destructive/30 px-2 py-1 text-[11px] font-semibold text-destructive hover:bg-destructive/10"
-                >
-                  <Trash2 className="size-3" aria-hidden="true" /> Delete
-                </button>
+                <DeleteConfirmation onConfirm={() => onDelete(message)}>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-md border border-destructive/30 px-2 py-1 text-[0.6875rem] font-semibold text-destructive hover:bg-destructive/10"
+                  >
+                    <Trash2 className="size-3" aria-hidden="true" /> Delete
+                  </button>
+                </DeleteConfirmation>
               ) : null}
             </div>
           ) : null}
           <p
-            className={`text-right text-muted-foreground ${compact ? "whitespace-nowrap text-[10px] leading-4" : "text-[11px]"}`}
+            className={`text-right text-muted-foreground ${compact ? "whitespace-nowrap text-[0.625rem] leading-4" : "text-[0.6875rem]"}`}
           >
             {formatUrgentDate(message.createdAt)}
             {message.expiresAt ? ` · ${formatUrgentDate(message.expiresAt)}` : ""}
@@ -659,6 +670,29 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
     : isSubAdmin
       ? "Send urgent messages to Editors and Admins in your assigned divisions."
       : "Admin messages sent to your account, division, or all users.";
+  const editingAudience = editingMessage
+    ? editingMessage.audience === "creator" ||
+      (isSubAdmin && editingMessage.audience === "all_users")
+      ? defaultAudience
+      : editingMessage.audience
+    : defaultAudience;
+  const messageDraftDirty =
+    createOpen &&
+    (editingMessage
+      ? body !== editingMessage.body ||
+        audience !== editingAudience ||
+        !sameIds(recipientUserIds, editingMessage.recipientUserIds) ||
+        !sameIds(recipientDivisionIds, editingMessage.recipientDivisionIds)
+      : Boolean(
+          body.trim() ||
+            audience !== defaultAudience ||
+            recipientUserIds.length ||
+            recipientDivisionIds.length,
+        ));
+  useUnsavedChanges(`urgent-message-editor:${kind}`, messageDraftDirty);
+  const confirmDiscardComposer = () =>
+    !messageDraftDirty ||
+    window.confirm("You have unsaved changes. Leave without saving?");
   const resetComposer = () => {
     setBody("");
     setAudience(defaultAudience);
@@ -669,9 +703,11 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
   };
   const startCreate = () => {
     if (createOpen && !editingMessage) {
+      if (!confirmDiscardComposer()) return;
       resetComposer();
       return;
     }
+    if (!confirmDiscardComposer()) return;
     setBody("");
     setAudience(defaultAudience);
     setRecipientUserIds([]);
@@ -680,6 +716,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
     setCreateOpen(true);
   };
   const startEdit = (message: UrgentMessage) => {
+    if (!confirmDiscardComposer()) return;
     setBody(message.body);
     setAudience(
       message.audience === "creator" || (isSubAdmin && message.audience === "all_users")
@@ -741,7 +778,6 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
     }
   };
   const remove = async (message: UrgentMessage) => {
-    if (!window.confirm("Delete this urgent message?")) return;
     await urgentRequest(`/api/urgent-messages/${message.id}`, { method: "DELETE" });
     await reload();
   };
@@ -757,7 +793,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
             <CircleAlert className="size-4 text-muted-foreground" />
             <h2 className="text-sm font-bold">{panelTitle}</h2>
             {panelMessages.length ? (
-              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[0.625rem] font-semibold text-muted-foreground">
                 {panelMessages.length} unresolved
               </span>
             ) : null}
@@ -828,7 +864,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
                     : "Write the message for recipients"
                 }
               />
-              <div className="mt-1 text-right text-[11px] text-muted-foreground">
+              <div className="mt-1 text-right text-[0.6875rem] text-muted-foreground">
                 {body.length}/100
               </div>
             </label>
@@ -846,7 +882,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
                     <option value="divisions">Selected divisions</option>
                   </select>
                   {isSubAdmin ? (
-                    <span className="mt-1 block text-[11px] text-muted-foreground">
+                    <span className="mt-1 block text-[0.6875rem] text-muted-foreground">
                       Only Editors and Admins in your assigned divisions can receive these messages.
                     </span>
                   ) : null}
@@ -887,7 +923,9 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
             <div className="flex justify-end gap-2">
               <button
                 type="button"
-                onClick={resetComposer}
+                onClick={() => {
+                  if (confirmDiscardComposer()) resetComposer();
+                }}
                 className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
               >
                 Cancel
@@ -918,7 +956,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
         </div>
       ) : null}
       {loading || snoozeId ? (
-        <p className="mt-2 text-[11px] text-muted-foreground">Updating urgent messages…</p>
+        <p className="mt-2 text-[0.6875rem] text-muted-foreground">Updating urgent messages…</p>
       ) : null}
       {error ? (
         <p role="alert" className="mt-2 text-xs text-destructive">

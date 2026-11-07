@@ -1477,6 +1477,33 @@ function getMmgSummaryValues(
     ),
   };
   const focusTargetsByKey: Record<string, Record<string, string[]>> = {
+    liveBids: fileFocusTargets(
+      nonCancelledFiles.filter(isCurrentTenderLive),
+      (file) => (isYes(file.refloat) ? "refloatTenderLive" : "tenderLive"),
+    ),
+    bidsToBeOpened: fileFocusTargets(
+      nonCancelledFiles.filter(isBidToBeOpened),
+      (file) => (isYes(file.refloat) ? "refloatBidOpeningDate" : "bidOpeningDate"),
+    ),
+    bidsOverdueToOpen: fileFocusTargets(
+      nonCancelledFiles.filter(isBidOverdueToOpen),
+      (file) => (isYes(file.refloat) ? "refloatBidOpeningDate" : "bidOpeningDate"),
+    ),
+    postTcecEvaluationInProgress: fileFocusTargets(
+      nonCancelledFiles.filter(
+        (file) =>
+          isYes(file.tcec) &&
+          hasFilledString(getEffectivePostTcecDate(file)) &&
+          !hasFilledString(getEffectivePostTcecMinutesDate(file)),
+      ),
+      (file) => (isYes(file.refloat) ? "refloatPostTcecDate" : "postTcecDate"),
+    ),
+    postTcecCompleted: fileFocusTargets(
+      nonCancelledFiles.filter((file) =>
+        isTcecComplete(file.tcec, getEffectivePostTcecMinutesDate(file)),
+      ),
+      (file) => (isYes(file.refloat) ? "refloatPostTcecMinutesDate" : "postTcecMinutesDate"),
+    ),
     committedCapital: entryFocusTargets(rawActiveOrders, "supplyorder", "any"),
     committedRevenue: entryFocusTargets(rawActiveOrders, "supplyorder", "any"),
     financialSanctionCompleted: entryFocusTargets(
@@ -1980,6 +2007,14 @@ function fileIds(files: FileRecord[]) {
   return Array.from(new Set(files.map((file) => file.id).filter(Boolean)));
 }
 
+function fileFocusTargets(files: FileRecord[], getTarget: (file: FileRecord) => string) {
+  return files.reduce<Record<string, string[]>>((targets, file) => {
+    if (!file.id) return targets;
+    targets[file.id] = [...(targets[file.id] ?? []), getTarget(file)];
+    return targets;
+  }, {});
+}
+
 function entryFileIds(entries: Array<{ file: FileRecord }>) {
   return fileIds(entries.map((entry) => entry.file));
 }
@@ -2275,11 +2310,14 @@ function isFileClosed(file: Pick<FileRecord, "completedMilestones">) {
 
 function isBidToBeOpened(file: FileRecord) {
   const openingDate = getEffectiveBidOpeningDate(file);
+  const refloat = isYes(file.refloat);
+  const opened = refloat
+    ? isYes(file.refloatBidOpened) || isYes(file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
   return (
     hasFilledString(openingDate) &&
     !isBeforeToday(openingDate) &&
-    !isYes(file.bidOpened) &&
-    !isYes(file.biddingStageOver)
+    !opened
   );
 }
 
@@ -2298,11 +2336,14 @@ function isCurrentTenderLive(file: FileRecord) {
 
 function isBidOverdueToOpen(file: FileRecord) {
   const openingDate = getEffectiveBidOpeningDate(file);
+  const refloat = isYes(file.refloat);
+  const opened = refloat
+    ? isYes(file.refloatBidOpened) || isYes(file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
   return (
     hasFilledString(openingDate) &&
     isBeforeToday(openingDate) &&
-    !isYes(file.bidOpened) &&
-    !isYes(file.biddingStageOver)
+    !opened
   );
 }
 
@@ -2391,7 +2432,9 @@ function isFinancialSanctionPending(file: FileRecord, order: SupplyOrderDetail) 
 
 function isFinancialSanctionReached(file: FileRecord) {
   return (
-    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
+    (isBiddingApplicableForFile(file)
+      ? isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
+      : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }

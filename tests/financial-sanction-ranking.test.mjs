@@ -221,7 +221,7 @@ test("Non-TCEC Refloat does not substitute Financial Sanction for a missing reco
   );
 });
 
-test("CNC ranking starts at Post-TCEC approval even when a refloat Post-TCEC stage is later", () => {
+test("CNC ranking starts at the active cycle's Post-TCEC approval for a refloat", () => {
   const summary = buildDashboardSummary({
     files: [
       {
@@ -242,7 +242,7 @@ test("CNC ranking starts at Post-TCEC approval even when a refloat Post-TCEC sta
 
   const row = summary.analytics.milestoneClearingRanking.find((item) => item.name === "CNC");
   assert.ok(row);
-  assert.equal(row.averageDays, 15);
+  assert.equal(row.averageDays, 5);
 });
 
 test("TCEC Supply Order ranking excludes orders until CNC Approval Date is recorded", () => {

@@ -33,6 +33,7 @@ import {
   fetchPreSoCashOutgoPlan,
   fetchReportPreferences,
   saveMerCashOutgo,
+  savePreSoCashOutgoFilePlan,
   savePreSoCashOutgoPlan,
   saveReportPreferences,
   store,
@@ -48,6 +49,7 @@ import {
   useAccessibleDivisions,
   useSettings,
 } from "@/lib/files-store";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -96,6 +98,7 @@ import {
   fileSupplyOrders as normalizedFileSupplyOrders,
   getParentStagePaymentDate,
   isParentStagePaymentOrder,
+  isSupplyOrderAtPreviousStage,
   getEffectiveSupplyOrderCurrentMilestone as getCanonicalSupplyOrderCurrentMilestone,
   getActualPaymentCapital,
   getActualPaymentRevenue,
@@ -237,6 +240,10 @@ const ExportPlotContext = createContext<ExportPlot | undefined>(undefined);
 const DEFAULT_BILL_PAYMENT_OFFSET_DAYS = 5;
 const DEFAULT_BILL_SUBMISSION_OFFSET_DAYS = 5;
 const DEFAULT_DP_OFFSET_DAYS = 10;
+// Keep report date fields wide enough for DD-MM-YYYY plus the calendar/clear
+// controls at every centralized font scale.
+const REPORT_DATE_INPUT_WIDTH_CLASS = "w-[14rem] min-w-[14rem] max-w-[14rem]";
+const REPORT_TABLE_DATE_INPUT_WIDTH_CLASS = "w-full min-w-0 max-w-full";
 const REPORT_CALCULATION_TIMEOUT_MS = 45_000;
 
 type ReportsSummaryPayload = {
@@ -269,6 +276,7 @@ type ReportsSummaryPayload = {
   monthWiseCompletedDeliveries: MonthCountRow[];
   monthWiseBgExpiry: MonthWiseBgExpiryRow[];
   bgReceiptDelayRows: BgReceiptDelayRow[];
+  bgCustodyCounts: { psb: number; pwb: number; psbpwb: number };
   warrantyBgMismatchRows: WarrantyBgMismatchRow[];
   delayRows: DelayStatusRow[];
   delaySummary: {
@@ -421,9 +429,6 @@ function buildMmgSourceOverridesFromDashboard(
   const cfa = status("cfa");
   set("cfaApprovalDone", numberFrom(cfa, "cleared"), "milestoneCleared:cfa");
   set("cfaApprovalRemaining", numberFrom(cfa, "pending"), "milestonePending:cfa");
-  const bidding = status("bidding");
-  set("liveBids", numberFrom(bidding, "liveBids"), "liveBids");
-  set("bidsOverdueToOpen", numberFrom(bidding, "overdueBids"), "bidOverdue");
   const preBidMeeting = status("preBidMeeting");
   set("preBidMeetingDue", numberFrom(preBidMeeting, "preBidDue"), "preBidMeeting:due");
   set(
@@ -441,9 +446,6 @@ function buildMmgSourceOverridesFromDashboard(
     numberFrom(preBidMeeting, "refloatPreBidCompleted"),
     "refloatPreBidMeeting:completed",
   );
-  const postTcec = status("postTcec");
-  set("postTcecEvaluationInProgress", numberFrom(postTcec, "active"), "milestoneActive:postTcec");
-  set("postTcecCompleted", numberFrom(postTcec, "cleared"), "milestoneCleared:postTcec");
   const cnc = status("cnc");
   set("cncInProgress", numberFrom(cnc, "active"), "milestoneActive:cnc");
   set("cncCompleted", numberFrom(cnc, "cleared"), "milestoneCleared:cnc");
@@ -667,15 +669,15 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
   ifaApprovalDone: "Source: Status-1 IFA completed.",
   cfaApprovalDone: "Source: Status-1 CFA completed.",
   cfaApprovalRemaining: "Source: Status-1 CFA pending.",
-  liveBids: "Source: Status-1 Bidding live.",
-  bidsToBeOpened: "Source: MMG Summary calculation for bids due to be opened.",
-  bidsOverdueToOpen: "Source: Status-1 Bidding opening overdue.",
+  liveBids: "Uses the active Normal or Refloat bidding cycle.",
+  bidsToBeOpened: "Uses the active cycle's bid-opening date.",
+  bidsOverdueToOpen: "Uses the active cycle's bid-opening date.",
   preBidMeetingDue: "Source: Status-1 Pre-Bid Meeting due.",
   preBidMeetingCompleted: "Source: Status-1 Pre-Bid Meeting completed.",
   refloatPreBidMeetingDue: "Source: Status-1 Refloat Pre-Bid Meeting due.",
   refloatPreBidMeetingCompleted: "Source: Status-1 Refloat Pre-Bid Meeting completed.",
-  postTcecEvaluationInProgress: "Source: Status-1 Post-TCEC in process.",
-  postTcecCompleted: "Source: Status-1 Post-TCEC completed.",
+  postTcecEvaluationInProgress: "Uses the active Normal or Refloat Post-TCEC dates.",
+  postTcecCompleted: "Uses the active Normal or Refloat Post-TCEC minutes date.",
   cncInProgress: "Source: Status-1 CNC in process.",
   cncCompleted: "Source: Status-1 CNC completed.",
   financialSanctionCompleted: "Source: Status-1 completed Financial Sanction cases.",
@@ -876,6 +878,15 @@ type CashOutGoPlanRowTarget = {
   sequence: number;
 };
 
+type CashOutGoPlanAutoSaveMove = {
+  sequence: number;
+  rowKey: string;
+  identifier: string;
+  section: CashOutGoPlanSearchSectionKey;
+  sectionTitle: string;
+  status: "saving" | "saved" | "error";
+};
+
 type CashOutGoPlanIdentifier = "uniqueCode" | "controlNo" | "soNo" | "fileNo";
 type CashOutGoPlanIdentifierSelections = Partial<
   Record<CashOutGoPlanDetailSectionKey, CashOutGoPlanIdentifier>
@@ -987,6 +998,7 @@ type PreSoFileDraft = {
   tentativeSoDate: string;
   tentativePaymentDate: string;
 };
+type PreSoFileAutoSaveStatus = "saving" | "saved" | "error";
 type PreSoStageOption = {
   key: string;
   label: string;
@@ -1172,6 +1184,47 @@ async function saveCashOutGoPlan(plan: CashOutGoPlanPayload) {
   }
 }
 
+async function saveCashOutGoPlanRow(row: CashOutGoPlanDetailRow) {
+  const isAdvance = row.section === "advance";
+  const orderIndex = Number(row.sourceFocusTarget.split(":").at(-1));
+  if (isAdvance && !Number.isInteger(orderIndex)) {
+    throw new Error("The advance-payment row could not be identified for saving.");
+  }
+  const response = await fetch(`${API_BASE_URL}/api/reports/cash-out-go-plan`, {
+    method: "PUT",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      saveSettings: false,
+      rows: isAdvance
+        ? []
+        : [
+            {
+              rowKey: row.rowKey,
+              expectedSentDate: row.expectedSentDateOverride,
+              expectedPaymentDate: row.manualExpectedPaymentDate,
+              billOffsetOverride: row.billOffsetOverride || "",
+            },
+          ],
+      advancePaymentDateUpdates:
+        isAdvance && Number.isInteger(orderIndex)
+          ? [
+              {
+                rowKey: row.rowKey,
+                fileId: row.fileId,
+                orderIndex,
+                expectedPaymentDate: row.manualExpectedPaymentDate,
+              },
+            ]
+          : [],
+    }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => undefined)) as { error?: string } | undefined;
+    throw new Error(body?.error ?? `Cash Out Go Plan row save failed: ${response.status}`);
+  }
+}
+
 function ReportsPage({
   embeddedMode,
   embeddedFilters,
@@ -1224,7 +1277,8 @@ function ReportsPage({
   const [selectedDivision, setSelectedDivision] = useState("all");
   const [reportMode, setReportMode] = useState<ReportMode>(
     () =>
-      embeddedMode ?? (isReportMode(locationSearch.mode) ? locationSearch.mode : "monthlyFileInflow"),
+      embeddedMode ??
+      (isReportMode(locationSearch.mode) ? locationSearch.mode : "monthlyFileInflow"),
   );
   const [firmReportSortKey, setFirmReportSortKey] = useState<FirmDatabaseSortKey>("firmName");
   const [firmReportSortDirection, setFirmReportSortDirection] =
@@ -1306,6 +1360,7 @@ function ReportsPage({
   const [selectedCashOutgoMonth, setSelectedCashOutgoMonth] = useState(() => getCurrentMonthKey());
   const [merRows, setMerRows] = useState<MerCashOutgoRow[]>([]);
   const [merDraftRows, setMerDraftRows] = useState<MerCashOutgoDraftRow[]>([]);
+  const [merDataReady, setMerDataReady] = useState(false);
   const [merEditing, setMerEditing] = useState(false);
   const [merLoading, setMerLoading] = useState(false);
   const [merSaving, setMerSaving] = useState(false);
@@ -1316,6 +1371,13 @@ function ReportsPage({
   const [cashOutGoPlanSupplementLoading, setCashOutGoPlanSupplementLoading] = useState(false);
   const [cashOutGoPlanSaving, setCashOutGoPlanSaving] = useState(false);
   const [cashOutGoPlanError, setCashOutGoPlanError] = useState<string | undefined>();
+  const [cashOutGoPlanAutoSaveMove, setCashOutGoPlanAutoSaveMove] =
+    useState<CashOutGoPlanAutoSaveMove>();
+  const cashOutGoPlanAutoSaveQueueRef = useRef(
+    new Map<string, { row: CashOutGoPlanDetailRow; move: CashOutGoPlanAutoSaveMove }>(),
+  );
+  const cashOutGoPlanAutoSaveRunningRef = useRef(new Set<string>());
+  const cashOutGoPlanAutoSaveSequenceRef = useRef(0);
   const [cashOutGoPlanIncludePreviousFy, setCashOutGoPlanIncludePreviousFy] = useState(true);
   const [soPaymentMatrixFields, setSoPaymentMatrixFields] = useState<SoPaymentMatrixFieldKey[]>([
     ...soPaymentMatrixDefaultFields,
@@ -1332,6 +1394,11 @@ function ReportsPage({
   const [preSoSelectedStageKeys, setPreSoSelectedStageKeys] = useState<string[]>([]);
   const [preSoStageOffsets, setPreSoStageOffsets] = useState<Record<string, PreSoStageOffset>>({});
   const [preSoFileDrafts, setPreSoFileDrafts] = useState<Record<string, PreSoFileDraft>>({});
+  const [preSoFileAutoSaveStatuses, setPreSoFileAutoSaveStatuses] = useState<
+    Record<string, PreSoFileAutoSaveStatus>
+  >({});
+  const preSoFileAutoSaveQueueRef = useRef(new Map<string, PreSoFileDraft>());
+  const preSoFileAutoSaveRunningRef = useRef(new Set<string>());
   const [preSoMonthwiseGrouping, setPreSoMonthwiseGrouping] =
     useState<PreSoMonthwiseGrouping>("month");
   const [preSoPlanLoading, setPreSoPlanLoading] = useState(false);
@@ -1340,6 +1407,7 @@ function ReportsPage({
   const [preSoPlanCanSave, setPreSoPlanCanSave] = useState(false);
   const [preSoPlanCanSaveStageOffsets, setPreSoPlanCanSaveStageOffsets] = useState(false);
   const [preSoSavedSnapshot, setPreSoSavedSnapshot] = useState("");
+  const [preSoPlanReady, setPreSoPlanReady] = useState(false);
   const [selectedFileCategories, setSelectedFileCategories] =
     useState<FileCategoryKey[]>(allFileCategoryKeys);
   const [fileCategoryFilterTouched, setFileCategoryFilterTouched] = useState(false);
@@ -2265,9 +2333,7 @@ function ReportsPage({
         activeRequest.reason = "timeout";
         controller.abort();
         setReportsLoading(false);
-        setReportsError(
-          "Report calculation exceeded 45 seconds. Click Refresh to retry.",
-        );
+        setReportsError("Report calculation exceeded 45 seconds. Click Refresh to retry.");
       }, REPORT_CALCULATION_TIMEOUT_MS);
       fetchReportsSummary(reportsQuery, controller.signal)
         .then((payload) => {
@@ -2638,6 +2704,7 @@ function ReportsPage({
     if (!needsMerRows) {
       setMerRows([]);
       setMerDraftRows(buildMerDraftRows(effectiveFinancialYear, []));
+      setMerDataReady(true);
       setMerError(undefined);
       setMerLoading(false);
       setMerEditing(false);
@@ -2646,6 +2713,7 @@ function ReportsPage({
     let active = true;
     const controller = new AbortController();
     const untrackController = trackReportController(controller);
+    setMerDataReady(false);
     setMerLoading(true);
     setMerError(undefined);
     fetchMerCashOutgo(effectiveFinancialYear, controller.signal)
@@ -2653,12 +2721,14 @@ function ReportsPage({
         if (!active) return;
         setMerRows(rows);
         setMerDraftRows(buildMerDraftRows(effectiveFinancialYear, rows));
+        setMerDataReady(true);
         setMerEditing(false);
       })
       .catch((error: unknown) => {
         if (!active || controller.signal.aborted) return;
         setMerRows([]);
         setMerDraftRows(buildMerDraftRows(effectiveFinancialYear, []));
+        setMerDataReady(true);
         setMerError(error instanceof Error ? error.message : "MER data could not be loaded.");
       })
       .finally(() => {
@@ -2736,7 +2806,10 @@ function ReportsPage({
     preSoFileDrafts,
     preSoDefaultStageOffset,
   );
-  const preSoPlanDirty = preSoCurrentSnapshot !== preSoSavedSnapshot;
+  const preSoPlanDirty = preSoPlanReady && preSoCurrentSnapshot !== preSoSavedSnapshot;
+  const preSoFileAutoSaveInProgress = Object.values(preSoFileAutoSaveStatuses).some(
+    (status) => status === "saving",
+  );
   const updatePreSoStageOffset = (
     stageKey: string,
     field: keyof PreSoStageOffset,
@@ -2768,11 +2841,51 @@ function ReportsPage({
       },
     }));
   };
+  const updateAndAutoSavePreSoFileDraft = (fileId: string, draft: PreSoFileDraft) => {
+    setPreSoFileDrafts((current) => ({ ...current, [fileId]: draft }));
+    if (!preSoPlanCanSave) return;
+
+    preSoFileAutoSaveQueueRef.current.set(fileId, draft);
+    setPreSoFileAutoSaveStatuses((current) => ({ ...current, [fileId]: "saving" }));
+    if (preSoFileAutoSaveRunningRef.current.has(fileId)) return;
+
+    preSoFileAutoSaveRunningRef.current.add(fileId);
+    const flushFilePlan = async () => {
+      let failed = false;
+      try {
+        while (preSoFileAutoSaveQueueRef.current.has(fileId)) {
+          const nextDraft = preSoFileAutoSaveQueueRef.current.get(fileId)!;
+          preSoFileAutoSaveQueueRef.current.delete(fileId);
+          try {
+            await savePreSoCashOutgoFilePlan({
+              fileId,
+              ...nextDraft,
+            });
+            setPreSoSavedSnapshot((snapshot) =>
+              patchPreSoPlanSnapshotFile(snapshot, fileId, nextDraft),
+            );
+          } catch (error) {
+            console.error(error);
+            if (preSoFileAutoSaveQueueRef.current.has(fileId)) continue;
+            failed = true;
+            setPreSoFileAutoSaveStatuses((current) => ({ ...current, [fileId]: "error" }));
+          }
+        }
+      } finally {
+        preSoFileAutoSaveRunningRef.current.delete(fileId);
+        if (!failed && !preSoFileAutoSaveQueueRef.current.has(fileId)) {
+          setPreSoFileAutoSaveStatuses((current) => ({ ...current, [fileId]: "saved" }));
+        }
+      }
+    };
+    void flushFilePlan();
+  };
   useEffect(() => {
     if (!isPreSoExpectedCashOutgoReport) return;
     let cancelled = false;
     const controller = new AbortController();
     const untrackController = trackReportController(controller);
+    setPreSoPlanReady(false);
     setPreSoPlanLoading(true);
     setPreSoPlanError(undefined);
     fetchPreSoCashOutgoPlan(controller.signal)
@@ -2817,6 +2930,7 @@ function ReportsPage({
             }),
           ),
         );
+        setPreSoPlanReady(true);
       })
       .catch((error) => {
         if (cancelled || controller.signal.aborted) return;
@@ -2941,7 +3055,15 @@ function ReportsPage({
     const categoryScopedFiles = fileCategoryFilterActive
       ? filterFilesByCategory(globallyScopedFiles, effectiveSelectedFileCategories)
       : globallyScopedFiles;
-    return categoryScopedFiles.filter((file) => !isYes(file.demandCancelled));
+    return categoryScopedFiles.filter(
+      (file) =>
+        !isYes(file.demandCancelled) &&
+        (selectedDemandPreset?.tcecScope === "yes"
+          ? isYes(file.tcec)
+          : selectedDemandPreset?.tcecScope === "no"
+            ? isNo(file.tcec)
+            : true),
+    );
   }, [
     activeDivision,
     activeFileInitiationDateRange,
@@ -2951,6 +3073,7 @@ function ReportsPage({
     fileYearFilterDisabled,
     mmgFiles,
     reportMode,
+    selectedDemandPreset?.tcecScope,
   ]);
   const demandProcessingFilterFields = useMemo(
     () =>
@@ -3245,13 +3368,20 @@ function ReportsPage({
     setMerEditing(false);
     setMerError(undefined);
   };
-  const merDataDirty = !isReportDirtyValueEqual(
-    getMerDraftDirtyRows(merDraftRows),
-    getMerDraftDirtyRows(buildMerDraftRows(effectiveFinancialYear, merRows)),
-  );
+  const merDataDirty =
+    needsMerRows &&
+    merDataReady &&
+    !isReportDirtyValueEqual(
+      getMerDraftDirtyRows(merDraftRows),
+      getMerDraftDirtyRows(buildMerDraftRows(effectiveFinancialYear, merRows)),
+    );
   const cashOutGoPlanDirty = cashOutGoPlan
     ? getCashOutGoPlanDirtySnapshot(cashOutGoPlan) !== cashOutGoPlanSavedSnapshot
     : false;
+  useUnsavedChanges(
+    "reports-editable-plans",
+    preSoPlanDirty || merDataDirty || cashOutGoPlanDirty,
+  );
   const saveMerRows = () => {
     if (!canEditMerData || !merDataDirty) return;
     setMerSaving(true);
@@ -3365,70 +3495,141 @@ function ReportsPage({
         : plan,
     );
   };
+  const queueCashOutGoPlanMovedRowAutoSave = (
+    row: CashOutGoPlanDetailRow,
+    destination: {
+      key: CashOutGoPlanSearchSectionKey;
+      title: string;
+    },
+  ) => {
+    const move: CashOutGoPlanAutoSaveMove = {
+      sequence: ++cashOutGoPlanAutoSaveSequenceRef.current,
+      rowKey: row.rowKey,
+      identifier: row.uniqueCode || row.fileRef || row.soNo || row.fileNo || "Payment row",
+      section: destination.key,
+      sectionTitle: destination.title,
+      status: "saving",
+    };
+    cashOutGoPlanAutoSaveQueueRef.current.set(row.rowKey, { row, move });
+    setCashOutGoPlanAutoSaveMove(move);
+    setCashOutGoPlanError(undefined);
+    setCashOutGoPlanSaving(true);
+    if (cashOutGoPlanAutoSaveRunningRef.current.has(row.rowKey)) return;
+
+    cashOutGoPlanAutoSaveRunningRef.current.add(row.rowKey);
+    const flushRow = async () => {
+      try {
+        while (cashOutGoPlanAutoSaveQueueRef.current.has(row.rowKey)) {
+          const queued = cashOutGoPlanAutoSaveQueueRef.current.get(row.rowKey)!;
+          cashOutGoPlanAutoSaveQueueRef.current.delete(row.rowKey);
+          try {
+            await saveCashOutGoPlanRow(queued.row);
+            setCashOutGoPlanSavedSnapshot((snapshot) =>
+              patchCashOutGoPlanSnapshotRow(snapshot, queued.row),
+            );
+            if (!cashOutGoPlanAutoSaveQueueRef.current.has(row.rowKey)) {
+              setCashOutGoPlanAutoSaveMove((current) =>
+                current?.sequence === queued.move.sequence ? { ...current, status: "saved" } : current,
+              );
+            }
+          } catch (error) {
+            if (cashOutGoPlanAutoSaveQueueRef.current.has(row.rowKey)) continue;
+            const message = error instanceof Error ? error.message : "Save failed.";
+            setCashOutGoPlanError(
+              `Auto-save failed for ${queued.move.identifier} after it moved to ${queued.move.sectionTitle}: ${message} Use Save plan to retry.`,
+            );
+            setCashOutGoPlanAutoSaveMove((current) =>
+              current?.sequence === queued.move.sequence ? { ...current, status: "error" } : current,
+            );
+          }
+        }
+      } finally {
+        cashOutGoPlanAutoSaveRunningRef.current.delete(row.rowKey);
+        setCashOutGoPlanSaving(cashOutGoPlanAutoSaveRunningRef.current.size > 0);
+      }
+    };
+    void flushRow();
+  };
   const updateCashOutGoPlanRow = (
     rowKey: string,
     field: "expectedSentDate" | "manualExpectedPaymentDate",
     value: string,
   ) => {
-    setCashOutGoPlan((plan) => {
-      if (!plan) return plan;
-      const updateRows = (rows: CashOutGoPlanDetailRow[]) =>
-        rows.map((row) =>
-          row.rowKey === rowKey
-            ? {
-                ...row,
-                [field]: value,
-                expectedSentDateOverride:
-                  field === "expectedSentDate" ? value : row.expectedSentDateOverride,
-                ...(field === "expectedSentDate" ? { manualExpectedPaymentDate: "" } : {}),
-              }
-            : row,
-        );
-      return recalculateCashOutGoPlan(
-        {
-          ...plan,
-          chequeslipsNotReceived: updateRows(plan.chequeslipsNotReceived ?? []),
-          billsSubmitted: updateRows(plan.billsSubmitted),
-          expectedPaymentInLaterFys: updateRows(plan.expectedPaymentInLaterFys ?? []),
-          expectedPaymentDateInPast: updateRows(plan.expectedPaymentDateInPast ?? []),
-          billsAtHand: updateRows(plan.billsAtHand),
-          deliveredBillsPending: updateRows(plan.deliveredBillsPending),
-          dpBasedForecast: updateRows(plan.dpBasedForecast ?? []),
-          dpExpired: updateRows(plan.dpExpired ?? []),
-        },
-        { preserveExpectedSentDate: field !== "expectedSentDate" },
+    if (!cashOutGoPlan) return;
+    const previousSection = getCashOutGoPlanDisplaySection(cashOutGoPlan, rowKey);
+    const updateRows = (rows: CashOutGoPlanDetailRow[]) =>
+      rows.map((row) =>
+        row.rowKey === rowKey
+          ? {
+              ...row,
+              [field]: value,
+              expectedSentDateOverride:
+                field === "expectedSentDate" ? value : row.expectedSentDateOverride,
+              ...(field === "expectedSentDate" ? { manualExpectedPaymentDate: "" } : {}),
+            }
+          : row,
       );
-    });
+    const nextPlan = recalculateCashOutGoPlan(
+      {
+        ...cashOutGoPlan,
+        chequeslipsNotReceived: updateRows(cashOutGoPlan.chequeslipsNotReceived ?? []),
+        billsSubmitted: updateRows(cashOutGoPlan.billsSubmitted),
+        expectedPaymentInLaterFys: updateRows(cashOutGoPlan.expectedPaymentInLaterFys ?? []),
+        expectedPaymentDateInPast: updateRows(cashOutGoPlan.expectedPaymentDateInPast ?? []),
+        billsAtHand: updateRows(cashOutGoPlan.billsAtHand),
+        deliveredBillsPending: updateRows(cashOutGoPlan.deliveredBillsPending),
+        dpBasedForecast: updateRows(cashOutGoPlan.dpBasedForecast ?? []),
+        dpExpired: updateRows(cashOutGoPlan.dpExpired ?? []),
+      },
+      { preserveExpectedSentDate: field !== "expectedSentDate" },
+    );
+    setCashOutGoPlan(nextPlan);
+    const nextSection = getCashOutGoPlanDisplaySection(nextPlan, rowKey);
+    if (previousSection && nextSection && previousSection.key !== nextSection.key) {
+      queueCashOutGoPlanMovedRowAutoSave(nextSection.row, nextSection);
+    }
   };
   const resetCashOutGoPlanExpectedSentDate = (rowKey: string) => {
-    setCashOutGoPlan((plan) => {
-      if (!plan) return plan;
-      const resetRows = (rows: CashOutGoPlanDetailRow[]) =>
-        rows.map((row) =>
-          row.rowKey === rowKey
-            ? {
-                ...row,
-                expectedSentDate: "",
-                expectedSentDateOverride: "",
-                manualExpectedPaymentDate: "",
-              }
-            : row,
-        );
-      return recalculateCashOutGoPlan({
-        ...plan,
-        chequeslipsNotReceived: resetRows(plan.chequeslipsNotReceived ?? []),
-        billsSubmitted: resetRows(plan.billsSubmitted),
-        expectedPaymentInLaterFys: resetRows(plan.expectedPaymentInLaterFys ?? []),
-        expectedPaymentDateInPast: resetRows(plan.expectedPaymentDateInPast ?? []),
-        billsAtHand: resetRows(plan.billsAtHand),
-        deliveredBillsPending: resetRows(plan.deliveredBillsPending),
-        dpBasedForecast: resetRows(plan.dpBasedForecast ?? []),
-        dpExpired: resetRows(plan.dpExpired ?? []),
-      });
+    if (!cashOutGoPlan) return;
+    const previousSection = getCashOutGoPlanDisplaySection(cashOutGoPlan, rowKey);
+    const resetRows = (rows: CashOutGoPlanDetailRow[]) =>
+      rows.map((row) =>
+        row.rowKey === rowKey
+          ? {
+              ...row,
+              expectedSentDate: "",
+              expectedSentDateOverride: "",
+              manualExpectedPaymentDate: "",
+            }
+          : row,
+      );
+    const nextPlan = recalculateCashOutGoPlan({
+      ...cashOutGoPlan,
+      chequeslipsNotReceived: resetRows(cashOutGoPlan.chequeslipsNotReceived ?? []),
+      billsSubmitted: resetRows(cashOutGoPlan.billsSubmitted),
+      expectedPaymentInLaterFys: resetRows(cashOutGoPlan.expectedPaymentInLaterFys ?? []),
+      expectedPaymentDateInPast: resetRows(cashOutGoPlan.expectedPaymentDateInPast ?? []),
+      billsAtHand: resetRows(cashOutGoPlan.billsAtHand),
+      deliveredBillsPending: resetRows(cashOutGoPlan.deliveredBillsPending),
+      dpBasedForecast: resetRows(cashOutGoPlan.dpBasedForecast ?? []),
+      dpExpired: resetRows(cashOutGoPlan.dpExpired ?? []),
     });
+    setCashOutGoPlan(nextPlan);
+    const nextSection = getCashOutGoPlanDisplaySection(nextPlan, rowKey);
+    if (previousSection && nextSection && previousSection.key !== nextSection.key) {
+      queueCashOutGoPlanMovedRowAutoSave(nextSection.row, nextSection);
+    }
   };
   const persistCashOutGoPlan = () => {
-    if (!canEditCashOutGoPlan || !cashOutGoPlan || !cashOutGoPlanDirty) return;
+    if (
+      !canEditCashOutGoPlan ||
+      !cashOutGoPlan ||
+      !cashOutGoPlanDirty ||
+      cashOutGoPlanSaving ||
+      cashOutGoPlanAutoSaveRunningRef.current.size > 0
+    ) {
+      return;
+    }
     setCashOutGoPlanSaving(true);
     setCashOutGoPlanError(undefined);
     saveCashOutGoPlan(cashOutGoPlan)
@@ -3441,6 +3642,7 @@ function ReportsPage({
           const exclusivePlan = enforceExclusiveCashOutGoPlanRows(plan);
           setCashOutGoPlan(exclusivePlan);
           setCashOutGoPlanSavedSnapshot(getCashOutGoPlanDirtySnapshot(exclusivePlan));
+          setCashOutGoPlanAutoSaveMove(undefined);
         }),
       )
       .catch((error: unknown) => {
@@ -4479,7 +4681,7 @@ function ReportsPage({
               <button
                 type="button"
                 onClick={() => setReportsSidePanelHooked(false)}
-                className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="rounded-md border border-border bg-background px-2 py-1 text-[0.6875rem] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
                 title="Unhook side panel"
               >
                 Unhook
@@ -4511,14 +4713,14 @@ function ReportsPage({
                 sections={cashOutgoReportGroups}
                 footer={
                   <div className="space-y-1.5 border-t border-border p-1.5">
-                    <div className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                    <div className="text-[0.625rem] font-bold uppercase tracking-wide text-muted-foreground">
                       Export all {combinedCashOutgoExportModes.length} reports
                     </div>
                     <div className="grid grid-cols-2 gap-1.5">
                       <button
                         type="button"
                         onClick={exportAllCashOutgoPdf}
-                        className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-foreground transition hover:bg-accent"
+                        className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.6875rem] font-semibold text-foreground transition hover:bg-accent"
                       >
                         <FileText className="size-3.5 shrink-0" aria-hidden="true" />
                         <span>PDF</span>
@@ -4526,7 +4728,7 @@ function ReportsPage({
                       <button
                         type="button"
                         onClick={exportAllCashOutgoExcel}
-                        className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-foreground transition hover:bg-accent"
+                        className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.6875rem] font-semibold text-foreground transition hover:bg-accent"
                       >
                         <FileSpreadsheet className="size-3.5 shrink-0" aria-hidden="true" />
                         <span>Excel</span>
@@ -4555,7 +4757,7 @@ function ReportsPage({
             <button
               type="button"
               onClick={() => setReportsSidePanelHooked(true)}
-              className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-sm font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
               title="Hook side panel"
               aria-label="Hook side panel"
             >
@@ -4566,7 +4768,7 @@ function ReportsPage({
         <div className="min-w-0 space-y-4">
           {!embeddedMode ? (
             <div className="section-accent-border rounded-md border border-border bg-secondary/35 p-3 shadow-[var(--shadow-card)]">
-              <div className="flex min-w-0 flex-wrap items-end gap-3">
+              <div className="flex min-w-0 flex-wrap items-end gap-2">
                 {reportMode !== "merData" ? (
                   <DivisionFilter
                     divisions={divisions}
@@ -4601,7 +4803,9 @@ function ReportsPage({
                     onChange={(event) => setIncludeArchivedYears(event.target.checked)}
                     className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
                   />
-                  <span className="whitespace-nowrap">Include active files from archived years</span>
+                  <span className="whitespace-nowrap">
+                    Include active files from archived years
+                  </span>
                   <TooltipProvider delayDuration={150}>
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -4865,6 +5069,8 @@ function ReportsPage({
             />
           ) : selectedMonthlyReport ? (
             <MonthlyOperationalReport
+              key={reportMode}
+              reportMode={reportMode}
               title={selectedReportTitle}
               description={selectedMonthlyReport.description}
               columns={selectedMonthlyReportColumns ?? selectedMonthlyReport.columns}
@@ -5023,6 +5229,7 @@ function ReportsPage({
               loading={cashOutGoPlanLoading}
               supplementLoading={cashOutGoPlanSupplementLoading}
               saving={cashOutGoPlanSaving}
+              autoSaveMove={cashOutGoPlanAutoSaveMove}
               dirty={cashOutGoPlanDirty}
               error={cashOutGoPlanError}
               includePreviousFy={cashOutGoPlanIncludePreviousFy}
@@ -5086,14 +5293,17 @@ function ReportsPage({
               exportContextDescription={reportExportContextDescription}
               defaultOffset={preSoDefaultStageOffset}
               loading={preSoPlanLoading}
-              saving={preSoPlanSaving}
+              saving={preSoPlanSaving || preSoFileAutoSaveInProgress}
+              planSaving={preSoPlanSaving}
               dirty={preSoPlanDirty}
               canSave={preSoPlanCanSave}
               canSaveStageOffsets={preSoPlanCanSaveStageOffsets}
+              fileAutoSaveStatuses={preSoFileAutoSaveStatuses}
               error={preSoPlanError}
               onSave={savePreSoPlan}
               currentYearContext={preSoCurrentYearContext}
               onFileDraftChange={updatePreSoFileDraft}
+              onFileDateChange={updateAndAutoSavePreSoFileDraft}
               onOpenFile={openPreSoFileInSearch}
             />
           ) : reportMode === "soPaymentMatrix" ? (
@@ -5101,12 +5311,6 @@ function ReportsPage({
               title={selectedReportTitle}
               titleHelper={getSoPaymentMatrixHelperText(expectedCashOutgoOffsetDays)}
               description="Expected unpaid regular, stage, advance, and supplementary payments are grouped by month for files matching the current filters."
-              monthAmountHelper={[
-                "The amount due is totalled under the month of its expected payment date.",
-                "Regular, stage, advance, and each submitted/resubmitted supplementary bill are counted as separate payment items.",
-                "Supplementary bills are forecast from their latest active submission date plus the payment offset.",
-                "Click a non-zero amount to open the contributing file in Search.",
-              ]}
               rows={soPaymentMatrixRows}
               selectedFields={soPaymentMatrixFields}
               fieldsLocked={soPaymentMatrixLocked}
@@ -5143,12 +5347,6 @@ function ReportsPage({
               title={selectedReportTitle}
               titleHelper={reportModeHelperText.paymentCompletedMatrix}
               description="Completed regular, stage, advance, and supplementary payments are grouped by month for files matching the current filters."
-              monthAmountHelper={[
-                "The amount paid is totalled under the month of its payment date.",
-                "Regular, stage, advance, and each supplementary bill are counted as separate payment items.",
-                "For supplementary bills, recorded paid amount is used; if blank, the bill amount is used.",
-                "Click a non-zero amount to open the contributing file in Search.",
-              ]}
               rows={paymentCompletedMatrixRows}
               selectedFields={paymentCompletedMatrixFields}
               fieldsLocked={paymentCompletedMatrixLocked}
@@ -5596,6 +5794,7 @@ type ReportMode =
   | "monthWiseSupplyOrder"
   | "monthWiseDeliverySchedule"
   | "monthWiseBgExpiry"
+  | "bgCustody"
   | "bgReceiptDelay"
   | "warrantyBgMismatch"
   | "delayStatus";
@@ -5660,6 +5859,7 @@ const reportModes = [
   { key: "monthWiseSupplyOrder", label: "Month-wise Supply Order" },
   { key: "monthWiseDeliverySchedule", label: "Month-wise Delivery / Contract Period Schedule" },
   { key: "monthWiseBgExpiry", label: "BG Expiry" },
+  { key: "bgCustody", label: "BGs in custody" },
   { key: "bgReceiptDelay", label: "BG receipt delay" },
   { key: "warrantyBgMismatch", label: "Warranty / BG mismatch" },
   { key: "delayStatus", label: "Delay Status" },
@@ -5728,7 +5928,9 @@ function getReportSummarySections(mode: ReportMode): ReportSummarySection[] | un
     ];
   }
   if (mode === "delayStatus") return ["delay"];
-  if (mode === "bgReceiptDelay" || mode === "warrantyBgMismatch") return ["bg"];
+  if (mode === "bgCustody" || mode === "bgReceiptDelay" || mode === "warrantyBgMismatch") {
+    return ["bg"];
+  }
   if (mode === "monthWiseBgExpiry") return ["bgExpiry"];
   if (mode === "monthWiseDeliverySchedule") {
     return ["deliverySchedule"];
@@ -5888,6 +6090,11 @@ const reportModeHelperText = {
     "Example table: Return history | Latest resubmission | Payment date | Report group",
     "Example row: Returned 12 May | 15 May | 20 May | Returned bill paid.",
     "Example row: Returned 12 May | Blank | 20 May | Not counted as returned-and-paid; latest return remains open and should be surfaced by anomaly logic.",
+  ],
+  bgCustody: [
+    "Counts applicable PSB, PWB, and PSB+PWB guarantees received by MMG and not yet returned.",
+    "Each guarantee instrument counts once. A combined PSB+PWB instrument is counted under PSB+PWB only.",
+    "Click a count to view the files with matching guarantees in custody.",
   ],
   paymentCompletedMatrix: [
     "Regular, stage, advance, and supplementary payments are placed in the month they were paid.",
@@ -6074,6 +6281,7 @@ const supplyOrderDeliveryReportModes = getReportModeOptions([
 ]);
 const bgTrackingReportModes = getReportModeOptions([
   "monthWiseBgExpiry",
+  "bgCustody",
   "bgReceiptDelay",
   "warrantyBgMismatch",
 ]);
@@ -6775,12 +6983,18 @@ function getReportModeButtonHelperContent(
       "Threshold: A row is included only when pending age is strictly greater than the selected Days value. A case at exactly the threshold is not included.",
       "Calculation: A completed task runs from its applicable start date to its recorded completion date. A pending task runs from its applicable start date through today.",
       "Current status: Delay Status shows only work that is still pending. A completed milestone is not shown as a live delay, even if it took longer than the selected threshold.",
+      "RFP Vetting: Normal and Refloat RFP Vetting use their own cycle's applicability, initiation date, and approval date. Once initiated, an unapproved RFP Vetting delay remains visible even if the current milestone advances or Bidding Stage Over becomes Yes.",
       "Count unit: File-level milestones count files; Financial Sanction, Supply Order, BG, delivery, bill, and payment rows count the applicable S.O., stage, BG, bill, or payment case. One file can therefore produce more than one row.",
+      "Sequential workflow and BG obligations are tracked independently: each S.O. contributes only its current sequential stage, while applicable unreceived PSB, PWB, or PSB+PWB can appear alongside it. A pending BG does not hide IR, bill, or payment delays.",
+      "PWB delay starts from IR Receipt Date for Goods & Services with IR = Yes. Otherwise, it uses the applicable Material Receipt or Job Completion date; contract files use the S.O. date.",
+      "Example: With IR = Yes, a blank IR Receipt Date means no PWB delay age is calculated yet.",
       "Scope: Cancelled files are excluded. Cancelled S.O.s, demand-cancelled files, and no-further-action payment cases are excluded from applicable S.O. and payment delay rows.",
-      "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Other file-level milestones start from the latest applicable earlier completed predecessor and remain open through today.",
+      "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Most file-level milestones use the latest applicable earlier completed predecessor; TCEC Pre Post-TCEC and Post-TCEC use their explicit cycle dates below.",
       "Bidding: Normal bidding starts from CFA Approval Date and ends when Bid Date is recorded. For a Non-TCEC Refloat, after Refloat recommendation and Bidding Stage Over = Yes, the common Bidding delay restarts from Refloat recommendation and ends when Refloat bidding date is recorded.",
-      "GeM Undertaking: For normal applicable GeM files other than GeM Comparison, starts at CFA Approval Date and ends at GeM Undertaking Date. For a Non-TCEC Refloat + GeM, the common status starts at Refloat recommendation and ends at Refloat GeM undertaking. If the required start date is blank, no fallback, zero-day value, or average sample is created.",
-      "Non-TCEC Technical Evaluation: The recorded Bid closing date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid closing to the first Financial Sanction. If Refloat = Yes before Refloat bid closing is recorded, it runs from Bid closing to Refloat recommendation. After Refloat bid closing, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat bid closing to Financial Sanction.",
+      "GeM Undertaking: Delay Status selects one active cycle. Normal uses CFA Approval Date → GeM Undertaking Date and normal GeM mode. Refloat uses Post-TCEC Date (TCEC) or Refloat recommendation (Non-TCEC) → Refloat GeM undertaking and Refloat GeM mode. Comparison excludes that cycle. Milestone Clearing may count separate normal and Refloat samples. A blank start date produces no delay sample.",
+        "Non-TCEC Technical Evaluation: The recorded Bid Opening Date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid Opening Date to the first Financial Sanction. If Refloat = Yes before Refloat Bid Opening Date is recorded, it runs from Bid Opening Date to Refloat recommendation. After Refloat Bid Opening Date, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat Bid Opening Date to Financial Sanction.",
+      "Pre Post-TCEC: Normal uses Bid Opening Date → Post-TCEC Date and requires Bidding Stage Over = Yes. Refloat uses Refloat Bid Opening Date → Refloat Post-TCEC Date and requires Refloat Bidding Stage Over = Yes. Each cycle uses its own GeM Bidding Mode for applicability. The delay remains visible if the current milestone advances.",
+      "Post-TCEC: Once its Post-TCEC Date is recorded, the pending clock starts on that date and ends at the corresponding Post-TCEC Minutes Date. Normal and Refloat cycles use their own dates and Bidding Stage Over flags; an outstanding delay remains visible if the current milestone advances.",
       "Order workflow: Financial Sanction, Supply Order, PSB, PWB, PSB+PWB, Delivery, Job Completion, IR, Bill preparation, Bill sent for payment, and open bill returns use their own applicable S.O. or stage dates.",
       "Job Completion and payment are independent delay items. An overdue payment does not suppress Job Completion, and a pending Job Completion does not create or replace a payment delay.",
       "Payment cycle (ASL, bill trigger to bill submission): Counts included regular or stage payment cases without a first Bill Sent for Payment date. Group A with IR = Yes starts at IR Receipt Date; Group A with IR = No and Group B start at Job Completion Received Date. Common staged payment starts at the last applicable stage date. Returned payment cases, advances, and supplementary bills are excluded.",
@@ -6791,9 +7005,12 @@ function getReportModeButtonHelperContent(
       "Example row: Threshold 30 days; Scrutiny pending | Demand Received: 1 Sep; completion blank; as of 23 Oct | 52 pending days; included because 52 > 30.",
       "Example row: Threshold 52 days; same Scrutiny case | Pending age: 52 days | Excluded because the rule is strictly greater than the threshold.",
       "Example row: Scrutiny completed | Demand Received: 1 Sep; Scrutiny Completion: 20 Sep | Not a live delay; completed duration is not reported here.",
-      "Example row: Non-TCEC Technical Evaluation | Bidding Stage Over: Yes; Bid closing: 10 Aug; first Financial Sanction: blank; as of 23 Aug | One file-level row aged 13 days.",
-      "Example row: Refloat Non-TCEC Technical Evaluation | Bidding Stage Over: Yes; Bid closing: 10 Aug; Refloat bid closing: blank; Refloat recommendation: blank; Financial Sanction: blank; as of 23 Aug | One file-level row aged 13 days; it ends when Refloat recommendation is recorded.",
-      "Example row: Refloat second-cycle Technical Evaluation | Refloat Bidding Stage Over: Yes; Refloat bid closing: 10 Aug; Financial Sanction: blank; as of 23 Aug | One file-level row aged 13 days; it ends when Financial Sanction is recorded.",
+      "Example row: Non-TCEC Technical Evaluation | Bidding Stage Over: Yes; Bid Opening Date: 10 Aug; first Financial Sanction: blank; as of 23 Aug | One file-level row aged 13 days.",
+      "Example row: Refloat Non-TCEC Technical Evaluation | Bidding Stage Over: Yes; Bid Opening Date: 10 Aug; Refloat Bid Opening Date: blank; Refloat recommendation: blank; Financial Sanction: blank; as of 23 Aug | One file-level row aged 13 days; it ends when Refloat recommendation is recorded.",
+      "Example row: Refloat second-cycle Technical Evaluation | Refloat Bidding Stage Over: Yes; Refloat Bid Opening Date: 10 Aug; Financial Sanction: blank; as of 23 Aug | One file-level row aged 13 days; it ends when Financial Sanction is recorded.",
+      "Example row: Pre Post-TCEC, normal TCEC | Current Milestone: Post-TCEC; Bidding Stage Over: Yes; Bid Opening: 1 Aug; Post-TCEC Date: blank; as of 23 Aug | Pre Post-TCEC is pending for 22 days.",
+      "Example row: Pre Post-TCEC, TCEC Refloat | Current Milestone: Refloat Post-TCEC; Refloat Bidding Stage Over: Yes; Refloat Bid Opening: 1 Aug; Refloat Post-TCEC Date: blank; as of 23 Aug | Pre Post-TCEC is pending for 22 days; normal-cycle fields are not used.",
+      "Example row: Post-TCEC date recorded | Current Milestone: Post-TCEC; Post-TCEC Date: 20 Aug; Post-TCEC Minutes: blank; as of 23 Aug | The Pre Post-TCEC clock ends; Post-TCEC is pending for 3 days from 20 Aug.",
       "Example row: Group A, IR = Yes, payment not submitted | IR Receipt: 1 May; Bill Sent for Payment: blank; as of 23 May | Payment cycle (ASL) runs 22 days from IR Receipt.",
       "Example row: Group B, payment not submitted | Job Completion Received: 1 May; Bill Sent for Payment: blank; as of 23 May | Payment cycle (ASL) runs 22 days from Job Completion Received Date; D.P. is not used as the payment-cycle start.",
       "Example row: Submitted but unpaid payment | Bill Sent for Payment: 1 May; Payment Date: blank; no return history; as of 23 May | Payment cycle (PCDA) runs 22 days.",
@@ -6876,7 +7093,7 @@ function CollapsibleReportGroup({
                           aria-hidden="true"
                         />
                         <span
-                          className={`text-[10px] font-bold uppercase tracking-wide ${headingTone}`}
+                          className={`text-xs font-bold uppercase tracking-wide ${headingTone}`}
                         >
                           {section.title}
                         </span>
@@ -7230,6 +7447,7 @@ function getEightReportTitle(
   if (mode === "monthWiseSupplyOrder") return "Month-wise Supply Order";
   if (mode === "monthWiseDeliverySchedule") return "Month-wise Delivery / Contract Period Schedule";
   if (mode === "monthWiseBgExpiry") return "BG Expiry";
+  if (mode === "bgCustody") return "BGs in custody";
   if (mode === "bgReceiptDelay") return "BG receipt delay";
   if (mode === "warrantyBgMismatch") return "Warranty / BG mismatch";
   if (mode === "delayStatus") return "Delay Status";
@@ -7650,7 +7868,7 @@ function getMonthlyReportConfig(
         align: "center",
         color: "green",
         helper:
-          "Completion is dated by Material Receipt Date for inspection workflows and Work Completion Date otherwise.",
+          "Completion is dated by Material Receipt Date for inspection workflows and Job Completion Date otherwise.",
         getFilter: (row) => `completedDeliveryMonth:${row.monthKey}`,
         getTotalFilter: (_rows, context) =>
           getYearDashboardFilter("completedDeliveryYear", "count", context.breakupYear ?? "all"),
@@ -7661,7 +7879,7 @@ function getMonthlyReportConfig(
         align: "center",
         color: "red",
         helper:
-          "Counts non-cancelled S.O./stage records whose effective D.P. (Revised D.P. when present) or contract-period date is before today, with no Material Receipt Date (inspection workflow) or Work Completion Date (non-inspection workflow).",
+          "Counts non-cancelled S.O./stage records whose effective D.P. (Revised D.P. when present) or contract-period date is before today, with no Material Receipt Date (inspection workflow) or Job Completion Date (non-inspection workflow).",
         getFilter: (row) => `deliverySchedule:net:${row.monthKey}`,
         getTotalFilter: (_rows, context) =>
           getYearDashboardFilter("deliveryScheduleYear", "netCount", context.breakupYear ?? "all"),
@@ -7721,6 +7939,38 @@ function getMonthlyReportConfig(
       ...getFiscalYearDrilldownConfig(rows, columns, "bgExpiryYear"),
     };
   }
+  if (mode === "bgCustody") {
+    return {
+      description:
+        "Counts guarantee instruments received by MMG and not yet returned. A combined PSB+PWB instrument is counted once under PSB+PWB.",
+      columns: [
+        { key: "label", label: "Guarantee type", align: "left" },
+        {
+          key: "count",
+          label: "BGs in custody",
+          align: "right",
+          getFilter: (row) => `bgCustody:${row.category}`,
+        },
+      ],
+      rows: [
+        {
+          category: "psb",
+          label: "PSB",
+          count: summary.bgCustodyCounts.psb,
+        },
+        {
+          category: "pwb",
+          label: "PWB",
+          count: summary.bgCustodyCounts.pwb,
+        },
+        {
+          category: "psbpwb",
+          label: "PSB+PWB",
+          count: summary.bgCustodyCounts.psbpwb,
+        },
+      ],
+    };
+  }
   if (mode === "bgReceiptDelay") {
     const getDelayFilter = (category: string, row: Record<string, string | number>) =>
       `bgReceiptDelay:${category}:${row.thresholdDays}:${row.nextThresholdDays ?? ""}`;
@@ -7728,7 +7978,7 @@ function getMonthlyReportConfig(
       description: [
         "- Counts applicable BG rows not received after configured days.",
         "- PSB and PSB+PWB: use S.O. date.",
-        "- PWB for Goods & Services: use IR Receipt Date when IR = Yes, or Job Completion Date when IR = No.",
+        "- PWB for Goods & Services with IR = Yes: use IR Receipt Date. With IR = No: use the applicable Job Completion Date.",
         "- Group B warranty BGs: use S.O. date.",
       ].join("\n"),
       columns: [
@@ -7750,7 +8000,7 @@ function getMonthlyReportConfig(
           label: "PWB",
           align: "right",
           helper: [
-            "PWB delay starts from the S.O.-level IR Receipt Date for Goods & Services with IR = Yes, or Job Completion Date for Goods & Services with IR = No. AMC/MPC/OM uses the S.O. date.",
+            "PWB uses IR Receipt Date for Goods & Services with IR = Yes, and the applicable Job Completion Date with IR = No. Other workflows use the applicable Material Receipt or Job Completion date; contract files use the S.O. date.",
             "For staged Goods & Services with IR = No, stagewise payments use the earliest recorded stage Job Completion Date. Without stagewise payments, every stage must have that date and the latest date is used.",
             "For Goods & Services with IR = Yes, stage dates are not used. Rows without the S.O.-level IR Receipt Date are omitted.",
           ],
@@ -8009,6 +8259,10 @@ const demandProcessingFieldOrderRank = new Map<string, number>([
   ["file.rfpVettingApprovalDate", 180],
   ["file.bidDate", 190],
   ["file.bidOpeningDate", 200],
+  ["file.refloatRfpVettingInitiationDate", 201],
+  ["file.refloatRfpVettingApprovalDate", 202],
+  ["file.refloatPreBidMeetingDate", 203],
+  ["file.refloatRecommendationDate", 204],
   ["file.refloatBiddingDate", 210],
   ["file.refloatBidOpeningDate", 220],
   ["file.preTcecDate", 230],
@@ -8645,12 +8899,12 @@ function DemandProcessingAnalysisReport({
                 <DialogTitle className="text-lg">
                   How Demand Processing Analysis counts dates
                 </DialogTitle>
-                <DialogDescription className="mt-1 text-[13px] leading-6">
+                <DialogDescription className="mt-1 text-[0.8125rem] leading-6">
                   The selected date pair determines the observation being measured. Both dates must
                   be present.
                 </DialogDescription>
               </DialogHeader>
-              <div className="max-h-[calc(88vh-6rem)] space-y-3 overflow-y-auto px-5 py-4 text-[13px] leading-6 text-foreground">
+              <div className="max-h-[calc(88vh-6rem)] space-y-3 overflow-y-auto px-5 py-4 text-[0.8125rem] leading-6 text-foreground">
                 <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
                   <h3 className="font-semibold">Choose the comparison</h3>
                   <p>
@@ -8673,6 +8927,22 @@ function DemandProcessingAnalysisReport({
                     Unified payment uses the recorded payment date. Payment mode filters these
                     payment observations by Online or Offline.
                   </p>
+                  <ul className="mt-2 list-disc space-y-1 pl-5">
+                    <li>
+                      No return: sent 1 May and paid 12 May gives Unified submission = 1 May and
+                      Unified payment = 12 May (11 days).
+                    </li>
+                    <li>
+                      Returned and resubmitted: sent 1 May, returned 5 May, resubmitted 8 May,
+                      returned 12 May, resubmitted 15 May, and paid 20 May gives Unified submission
+                      = 15 May, Unified return = 12 May, and Unified payment = 20 May. The final
+                      submission-to-payment interval is counted once (5 days).
+                    </li>
+                    <li>
+                      One regular S.O. bill, two stage bills, one advance, and one supplementary
+                      bill are five separate observations; the file count remains one.
+                    </li>
+                  </ul>
                 </section>
                 <section className="rounded-md border border-primary/15 bg-primary/5 p-4">
                   <h3 className="font-semibold">Payment timing</h3>
@@ -8864,7 +9134,7 @@ function DemandProcessingAnalysisReport({
             label="Negative-result observations"
             value={stats.negative}
             helperContent={
-              <div className="pr-1 text-[13px] leading-relaxed">
+              <div className="pr-1 text-[0.8125rem] leading-relaxed">
                 <div className="flex flex-col gap-3">
                   <section className="min-w-0 rounded-md border border-primary/15 bg-primary/5 p-3">
                     <h3 className="mb-1.5 text-base font-semibold text-foreground">
@@ -9049,7 +9319,7 @@ function DemandDateFieldSelector({
           </button>
         </div>
         {hiddenByCompatibilityCount ? (
-          <div className="mt-1 text-[11px] font-normal text-amber-700">
+          <div className="mt-1 text-[0.6875rem] font-normal text-amber-700">
             {hiddenByCompatibilityCount} incompatible reverse/ambiguous field
             {hiddenByCompatibilityCount === 1 ? "" : "s"} hidden.
           </div>
@@ -9064,11 +9334,13 @@ function DemandDateFieldSelector({
                 {group.title === "Bill / Payment" ? (
                   <FloatingHelper
                     text={[
-                      "Unified payment is an analysis view, not a new payment type or stored field. It applies consistent date labels to each separate regular S.O. bill, stage bill, advance, and supplementary bill observation.",
-                      "Unified submission uses the original bill-sent date if there is no return history; otherwise it uses the latest resubmission before payment. Unified return uses the latest return before payment; Unified payment uses the recorded payment date.",
-                      "Each bill/payment item remains separate. Supplementary bills are included even though they do not have a bill preparation date.",
+                      "Unified dates are an analysis view, not a new payment type or stored field. Each regular S.O. bill, stage bill, advance, and supplementary bill is evaluated separately.",
+                      "No return: bill sent 1 May and paid 12 May → Unified submission = 1 May; Unified payment = 12 May; submission-to-payment = 11 days.",
+                      "Returned bill: sent 1 May, returned 5 May, resubmitted 8 May, returned 12 May, resubmitted 15 May, paid 20 May → Unified submission = 15 May; Unified return = 12 May; Unified payment = 20 May. Submission-to-payment = 5 days, counted once.",
+                      "Separate items stay separate: one regular S.O. bill, two stage bills, one advance, and one supplementary bill can produce up to five observations for a file. The file count still counts that file once.",
+                      "Supplementary bills are included even though they do not have a bill preparation date. Payment mode filters these observations by Online or Offline.",
                     ]}
-                    label="Unified payment fields help"
+                    label="Unified bill and payment date help"
                     side="bottom"
                     align="start"
                     className="size-5 border-0 bg-transparent shadow-none normal-case"
@@ -9514,7 +9786,8 @@ function DemandProcessingFilterValueInput({
           value={value}
           disabled={disabled}
           onChange={(nextValue) => onUpdate({ [valueKey]: nextValue })}
-          className={`${commonClass} w-[160px] min-w-[160px]`}
+          widthClass={REPORT_DATE_INPUT_WIDTH_CLASS}
+          className={commonClass}
         />
       ) : (
         <input
@@ -10021,7 +10294,7 @@ function AsOnDateControl({
     <label
       className={filterLabelClass(
         active,
-        "flex w-[160px] min-w-[160px] flex-col gap-1 text-xs text-muted-foreground",
+        `flex ${REPORT_DATE_INPUT_WIDTH_CLASS} flex-col gap-1 text-xs text-muted-foreground`,
       )}
     >
       <span>As on date</span>
@@ -10030,9 +10303,10 @@ function AsOnDateControl({
         onChange={(value) => {
           if (value) onDateChange(value);
         }}
+        widthClass={REPORT_DATE_INPUT_WIDTH_CLASS}
         className={filterControlClass(
           active,
-          "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+          "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
         )}
       />
     </label>
@@ -10072,7 +10346,7 @@ function HistoricalDateRangeControls({
           />
           {label}
           {!optionalMode ? (
-            <span className="text-[11px] font-normal text-muted-foreground">(always on)</span>
+            <span className="text-[0.6875rem] font-normal text-muted-foreground">(always on)</span>
           ) : null}
           {helperText ? (
             <FloatingHelper
@@ -10089,8 +10363,8 @@ function HistoricalDateRangeControls({
         className={filterLabelClass(
           active,
           inlineLabels
-            ? "flex w-[208px] min-w-[208px] items-center gap-2 text-xs text-muted-foreground"
-            : "flex w-[160px] min-w-[160px] flex-col gap-1 text-xs text-muted-foreground",
+            ? "flex w-[17rem] min-w-[17rem] shrink-0 items-center gap-2 text-xs text-muted-foreground"
+            : `flex ${REPORT_DATE_INPUT_WIDTH_CLASS} shrink-0 flex-col gap-1 text-xs text-muted-foreground`,
         )}
       >
         <span className={`inline-flex items-center gap-1${inlineLabels ? " w-8 shrink-0" : ""}`}>
@@ -10109,12 +10383,13 @@ function HistoricalDateRangeControls({
           value={fromDate}
           max={toDate}
           disabled={inputsDisabled}
+          widthClass={REPORT_DATE_INPUT_WIDTH_CLASS}
           onChange={(value) => {
             if (value) onFromDateChange(value);
           }}
           className={filterControlClass(
             active,
-            "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+            "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
           )}
         />
       </label>
@@ -10122,8 +10397,8 @@ function HistoricalDateRangeControls({
         className={filterLabelClass(
           active,
           inlineLabels
-            ? "flex w-[208px] min-w-[208px] items-center gap-2 text-xs text-muted-foreground"
-            : "flex w-[160px] min-w-[160px] flex-col gap-1 text-xs text-muted-foreground",
+            ? "flex w-[17rem] min-w-[17rem] shrink-0 items-center gap-2 text-xs text-muted-foreground"
+            : `flex ${REPORT_DATE_INPUT_WIDTH_CLASS} shrink-0 flex-col gap-1 text-xs text-muted-foreground`,
         )}
       >
         <span className={inlineLabels ? "w-8 shrink-0" : undefined}>To</span>
@@ -10131,12 +10406,13 @@ function HistoricalDateRangeControls({
           value={toDate}
           min={fromDate}
           disabled={inputsDisabled}
+          widthClass={REPORT_DATE_INPUT_WIDTH_CLASS}
           onChange={(value) => {
             if (value) onToDateChange(value);
           }}
           className={filterControlClass(
             active,
-            "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
+            "h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
           )}
         />
       </label>
@@ -10147,7 +10423,7 @@ function HistoricalDateRangeControls({
         aria-label="Reset date range to the default FY start through today"
         className={filterControlClass(
           active,
-          "inline-flex h-9 items-center gap-1.5 rounded-md border border-border bg-secondary/40 px-2.5 text-xs font-medium text-foreground transition hover:bg-secondary",
+          "inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-secondary/40 px-2.5 text-xs font-medium text-foreground transition hover:bg-secondary",
         )}
       >
         <RotateCcw className="size-3.5" />
@@ -10359,7 +10635,7 @@ function PendingLiabilityBasis({ date }: { date: string }) {
   return (
     <div className="mt-2 space-y-2">
       <div className="rounded-md border border-sky-200 bg-sky-50/70 px-3 py-2 dark:border-sky-900 dark:bg-sky-950/20">
-        <span className="mr-2 text-[11px] font-bold uppercase text-sky-800 dark:text-sky-300">
+        <span className="mr-2 text-[0.6875rem] font-bold uppercase text-sky-800 dark:text-sky-300">
           Analysis basis
         </span>
         <span className="text-xs text-foreground">
@@ -10412,6 +10688,7 @@ function PendingLiabilityBasis({ date }: { date: string }) {
 }
 
 function MonthlyOperationalReport({
+  reportMode,
   title,
   description,
   descriptionContent,
@@ -10430,6 +10707,7 @@ function MonthlyOperationalReport({
   onPdf,
   onExcel,
 }: {
+  reportMode: ReportMode;
   title: string;
   description: string;
   descriptionContent?: ReactNode;
@@ -10520,7 +10798,7 @@ function MonthlyOperationalReport({
         ? chartGroups.map((group) => {
             const fyTitle = group.year ? `${formatFiscalYearChartTitle(group.year)} · ` : "";
             return {
-              kind: resultView === "line" ? "line" : "bar",
+              kind: resultView === "line" ? "line" : resultView === "pie" ? "pie" : "bar",
               title: `${fyTitle}${title} · ${selectedChartColumn.label}`,
               measure: selectedChartColumn.label,
               unit: chartUsesLakhs ? "Lakhs" : (unitNote ?? (chartIsCount ? "Count" : "")),
@@ -10567,7 +10845,7 @@ function MonthlyOperationalReport({
               value={resultView}
               onChange={setResultView}
               label={`${title} view`}
-              views={["table", "bar", "line"]}
+              views={reportMode === "bgCustody" ? ["table", "bar", "pie"] : ["table", "bar", "line"]}
             />
           ) : null}
           <button
@@ -10608,7 +10886,9 @@ function MonthlyOperationalReport({
         <div className="mb-4 space-y-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-muted-foreground">
-              Each expanded FY is plotted separately. Select a bar to open its matching files.
+              {reportMode === "bgCustody"
+                ? "Select a pie slice or bar to open its matching files."
+                : "Each expanded FY is plotted separately. Select a chart item to open its matching files."}
             </p>
             {!(isBgExpiryReport && (resultView === "bar" || resultView === "column")) ? (
               <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -10684,7 +10964,13 @@ function MonthlyOperationalReport({
                         rows={chartRows}
                         series={chartSeries}
                         kind={
-                          resultView === "line" ? "line" : resultView === "bar" ? "bar" : "column"
+                          resultView === "pie"
+                            ? "pie"
+                            : resultView === "line"
+                              ? "line"
+                              : resultView === "bar"
+                                ? "bar"
+                                : "column"
                         }
                         valueLabel={isBgExpiryReport ? "Count" : chartAxisTitle}
                         height={440}
@@ -11088,8 +11374,20 @@ function FileCategoryFilter({
         "flex shrink-0 flex-col gap-1 text-xs font-medium text-foreground",
       )}
     >
-      <span>File Type</span>
-      <div className="flex items-start gap-1.5">
+      <div className="flex items-center justify-between">
+        <span>File Type</span>
+        <FloatingHelper
+          text={
+            browserOnly
+              ? "Lock saves these File Type choices in this browser for the shared viewer. Unlock to change them."
+              : "Lock saves these File Type choices to the account. They return after the next sign-in. Unlock to change them."
+          }
+          label="File Type lock help"
+          className="size-4 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
+      </div>
+      <div className="flex items-end gap-1.5">
         <Popover open={open} onOpenChange={setOpen}>
           <PopoverTrigger asChild>
             <button
@@ -11153,16 +11451,6 @@ function FileCategoryFilter({
         >
           {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
         </button>
-        <FloatingHelper
-          text={
-            browserOnly
-              ? "Lock saves these File Type choices in this browser for the shared viewer. Unlock to change them."
-              : "Lock saves these File Type choices to the account. They return after the next sign-in. Unlock to change them."
-          }
-          label="File Type lock help"
-          className="size-8 border-0 bg-transparent shadow-none"
-          iconClassName="size-3"
-        />
       </div>
     </div>
   );
@@ -11203,14 +11491,15 @@ function FileInitiationDateRangeFilter({
           iconClassName="size-3"
         />
       </span>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <DateInput
           value={fromDate}
           onChange={onFromDateChange}
           disabled={disabled}
+          widthClass={REPORT_DATE_INPUT_WIDTH_CLASS}
           className={filterControlClass(
             active,
-            "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+            "h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
           )}
         />
         <span className="text-xs text-muted-foreground">to</span>
@@ -11218,9 +11507,10 @@ function FileInitiationDateRangeFilter({
           value={toDate}
           onChange={onToDateChange}
           disabled={disabled}
+          widthClass={REPORT_DATE_INPUT_WIDTH_CLASS}
           className={filterControlClass(
             active,
-            "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+            "h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
           )}
         />
         {hasRange ? (
@@ -11306,38 +11596,40 @@ function FileYearFilter({
           )}
         />
       </label>
-      <button
-        type="button"
-        onClick={onLockToggle}
-        disabled={disabled}
-        className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
-        title={
-          disabled
-            ? "File initiation year is not applied"
-            : locked
-              ? "Unlock file initiation year"
-              : "Lock file initiation year"
-        }
-        aria-label={
-          disabled
-            ? "File initiation year is not applied"
-            : locked
-              ? "Unlock file initiation year"
-              : "Lock file initiation year"
-        }
-      >
-        {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
-      </button>
-      <FloatingHelper
-        text={[
-          "Lock lasts only for the current browser session or tab.",
-          "Lock keeps the File Initiation Year selection fixed on Dashboard and Reports until unlocked or the session resets.",
-          "Unlock allows the File Initiation Year subfilter to follow changes again.",
-        ]}
-        label="File initiation year lock help"
-        className="size-5 border-0 bg-transparent shadow-none"
-        iconClassName="size-3"
-      />
+      <div className="flex shrink-0 flex-col items-center gap-0.5">
+        <FloatingHelper
+          text={[
+            "Lock lasts only for the current browser session or tab.",
+            "Lock keeps the File Initiation Year selection fixed on Dashboard and Reports until unlocked or the session resets.",
+            "Unlock allows the File Initiation Year subfilter to follow changes again.",
+          ]}
+          label="File initiation year lock help"
+          className="size-4 border-0 bg-transparent shadow-none"
+          iconClassName="size-3"
+        />
+        <button
+          type="button"
+          onClick={onLockToggle}
+          disabled={disabled}
+          className="inline-flex size-9 shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-accent disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground disabled:hover:bg-muted"
+          title={
+            disabled
+              ? "File initiation year is not applied"
+              : locked
+                ? "Unlock file initiation year"
+                : "Lock file initiation year"
+          }
+          aria-label={
+            disabled
+              ? "File initiation year is not applied"
+              : locked
+                ? "Unlock file initiation year"
+                : "Lock file initiation year"
+          }
+        >
+          {locked ? <Lock className="size-4" /> : <Unlock className="size-4" />}
+        </button>
+      </div>
     </div>
   );
 }
@@ -12561,12 +12853,12 @@ function CashOutGoPlanOffsetControl({
   onCustomDaysChange: (value: string) => void;
 }) {
   return (
-    <div className={filterLabelClass(active, "text-xs font-medium")}>
+    <div className={filterLabelClass(active, "inline-flex min-w-0 flex-col text-xs font-medium")}>
       <span className="mb-1 flex items-center gap-1.5 text-muted-foreground">
         {label}
-        <FloatingHelper text={helperText} />
+        <FloatingHelper text={helperText} side="top" />
       </span>
-      <span className="flex items-center gap-1.5">
+      <span className="inline-flex min-w-0 items-center gap-1.5">
         <span className="flex h-9 items-center rounded-md border border-border bg-secondary/20 px-2 text-xs text-muted-foreground">
           Default {defaultDays}d
         </span>
@@ -12582,22 +12874,27 @@ function CashOutGoPlanOffsetControl({
           disabled={disabled}
           aria-label={`${label} days`}
         />
-        <button
-          type="button"
-          className="btn-ghost h-9 w-9 p-0"
-          onClick={onReset}
-          disabled={disabled}
-          title={`Reset ${label} to default`}
-          aria-label={`Reset ${label} to default`}
-        >
-          <RotateCcw className="size-4" />
-        </button>
-        <FloatingHelper
-          text={`Reset restores ${label} to the shared default of ${defaultDays} days. Save the plan to keep the selected value for future visits; it remains in the permitted personal or shared plan until changed and saved again.`}
-          label={`${label} reset help`}
-          className="size-8 border-0 bg-transparent shadow-none"
-          iconClassName="size-3"
-        />
+        <span className="relative inline-flex shrink-0 items-center pr-6">
+          <button
+            type="button"
+            className="btn-ghost h-9 w-9 shrink-0 p-0"
+            onClick={onReset}
+            disabled={disabled}
+            title={`Reset ${label} to default`}
+            aria-label={`Reset ${label} to default`}
+          >
+            <RotateCcw className="size-4" />
+          </button>
+          <span className="absolute right-0 top-1/2 -translate-y-1/2">
+            <FloatingHelper
+              text={`Reset restores ${label} to the shared default of ${defaultDays} days. Save the plan to keep the selected value for future visits; it remains in the permitted personal or shared plan until changed and saved again.`}
+              label={`${label} reset help`}
+              side="top"
+              className="!size-5 border-0 bg-transparent p-0 shadow-none"
+              iconClassName="size-3"
+            />
+          </span>
+        </span>
       </span>
     </div>
   );
@@ -12821,6 +13118,7 @@ function CashOutGoPlanReport({
   loading,
   supplementLoading,
   saving,
+  autoSaveMove,
   dirty,
   error,
   includePreviousFy,
@@ -12844,6 +13142,7 @@ function CashOutGoPlanReport({
   loading: boolean;
   supplementLoading: boolean;
   saving: boolean;
+  autoSaveMove?: CashOutGoPlanAutoSaveMove;
   dirty: boolean;
   error?: string;
   includePreviousFy: boolean;
@@ -12885,6 +13184,7 @@ function CashOutGoPlanReport({
     useState<CashOutGoPlanIdentifierSelections>({});
   const [rowSearch, setRowSearch] = useState("");
   const [focusedPlanRow, setFocusedPlanRow] = useState<CashOutGoPlanRowTarget>();
+  const handledAutoSaveMoveSequenceRef = useRef<number | undefined>(undefined);
   const identifierFor = (section: CashOutGoPlanDetailSectionKey) =>
     identifierSelections[section] ?? "controlNo";
   const selectIdentifier = (
@@ -12970,6 +13270,18 @@ function CashOutGoPlanReport({
     setExpandedDetailSections((current) => ({ ...current, [section]: true }));
     setFocusedPlanRow((current) => ({ section, rowKey, sequence: (current?.sequence ?? 0) + 1 }));
   };
+  useEffect(() => {
+    if (!autoSaveMove || handledAutoSaveMoveSequenceRef.current === autoSaveMove.sequence) {
+      return;
+    }
+    handledAutoSaveMoveSequenceRef.current = autoSaveMove.sequence;
+    setExpandedDetailSections((current) => ({ ...current, [autoSaveMove.section]: true }));
+    setFocusedPlanRow((current) => ({
+      section: autoSaveMove.section,
+      rowKey: autoSaveMove.rowKey,
+      sequence: (current?.sequence ?? 0) + 1,
+    }));
+  }, [autoSaveMove]);
   if (noticeBoardSummary) {
     if (loading)
       return (
@@ -13021,6 +13333,8 @@ function CashOutGoPlanReport({
                   "Details: Division users/viewers can view permitted data but cannot save Cash Out Go Plan changes.",
                 ]}
                 label="Cash Out Go Plan access rules"
+                side="top"
+                align="start"
                 className="size-7"
                 iconClassName="size-3"
               />
@@ -13088,10 +13402,10 @@ function CashOutGoPlanReport({
           />
           {canEdit ? (
             <div className="flex flex-col items-start gap-1">
-              <div className="flex items-end gap-0.5">
+              <span className="relative inline-flex shrink-0 items-center pr-6">
                 <button
                   type="button"
-                  className="btn-ghost h-9 px-2 text-xs"
+                  className="btn-ghost h-9 shrink-0 px-2 text-xs"
                   onClick={onSave}
                   disabled={!plan || saving || !dirty}
                   title="Save permitted Cash Out Go Plan changes"
@@ -13099,40 +13413,47 @@ function CashOutGoPlanReport({
                   <Save className="size-3.5" />
                   {saving ? "Saving..." : dirty ? "Save plan" : "Saved"}
                 </button>
-                <FloatingHelper
-                  text={[
-                    "Save plan stores permitted Cash Out Go Plan changes beyond the current browser session.",
-                    "Saved offsets and row dates remain in the permitted personal or shared plan on future visits until changed and saved again.",
-                    "Admin/Sub-admin and Universal Viewer type 3 can save official top offsets and individual forecast dates.",
-                    "Editor can save official row dates only.",
-                    "Universal Viewer type 2 saves only that viewer's personal plan.",
-                  ]}
-                  label="Save settings help"
-                  className="size-8"
-                  iconClassName="size-3"
-                />
-              </div>
+                <span className="absolute right-0 top-1/2 -translate-y-1/2">
+                  <FloatingHelper
+                    text={[
+                      "Save plan stores permitted Cash Out Go Plan changes beyond the current browser session.",
+                      "Saved offsets and row dates remain in the permitted personal or shared plan on future visits until changed and saved again.",
+                      "Admin/Sub-admin and Universal Viewer type 3 can save official top offsets and individual forecast dates.",
+                      "Editor can save official row dates only.",
+                      "Universal Viewer type 2 saves only that viewer's personal plan.",
+                    ]}
+                    label="Save settings help"
+                    side="top"
+                    align="start"
+                    className="!size-5 border-0 bg-transparent p-0 shadow-none"
+                    iconClassName="size-3"
+                  />
+                </span>
+              </span>
               {saving ? (
-                <span className="text-[11px] font-medium text-muted-foreground">
+                <span className="text-[0.6875rem] font-medium text-muted-foreground">
                   Saving changes...
                 </span>
               ) : dirty ? (
-                <span className="text-[11px] font-medium text-amber-700">Unsaved changes</span>
+                <span className="text-[0.6875rem] font-medium text-amber-700">Unsaved changes</span>
               ) : null}
             </div>
           ) : null}
-          <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium">
+          <label className="inline-flex h-9 w-fit max-w-full items-center gap-2 rounded-md border border-border px-3 text-xs font-medium">
             <input
               type="checkbox"
               checked={includePreviousFy}
               onChange={(event) => onIncludePreviousFyChange(event.target.checked)}
+              className="shrink-0"
             />
-            Include previous FYs submitted bills
-            <PreviousFySubmittedBillsHelper
-              label="Previous FYs submitted bills help"
-              className="size-6 border-0 bg-transparent shadow-none"
-              iconClassName="size-3"
-            />
+            <span className="min-w-0">Include previous FYs submitted bills</span>
+            <span className="inline-flex shrink-0 items-center">
+              <PreviousFySubmittedBillsHelper
+                label="Previous FYs submitted bills help"
+                className="!size-5 border-0 bg-transparent p-0 shadow-none"
+                iconClassName="size-3"
+              />
+            </span>
           </label>
         </div>
 
@@ -13140,6 +13461,15 @@ function CashOutGoPlanReport({
           <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
             {error}
           </div>
+        ) : null}
+        {autoSaveMove ? (
+          <p className="mb-4 text-sm text-muted-foreground" role="status" aria-live="polite">
+            {autoSaveMove.status === "saving"
+              ? `Saving ${autoSaveMove.identifier} after it moved to ${autoSaveMove.sectionTitle}…`
+              : autoSaveMove.status === "saved"
+                ? `Saved automatically: ${autoSaveMove.identifier} is now in ${autoSaveMove.sectionTitle}.`
+                : `Automatic save failed for ${autoSaveMove.identifier}. Use Save plan to retry.`}
+          </p>
         ) : null}
         {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">
@@ -13916,13 +14246,16 @@ function PreSoExpectedCashOutgoReport({
   defaultOffset,
   loading,
   saving,
+  planSaving,
   dirty,
   canSave,
   canSaveStageOffsets,
+  fileAutoSaveStatuses,
   error,
   onSave,
   currentYearContext,
   onFileDraftChange,
+  onFileDateChange,
   onOpenFile,
 }: {
   activeTab: PreSoCashOutgoTab;
@@ -13948,9 +14281,11 @@ function PreSoExpectedCashOutgoReport({
   defaultOffset: PreSoStageOffset;
   loading: boolean;
   saving: boolean;
+  planSaving: boolean;
   dirty: boolean;
   canSave: boolean;
   canSaveStageOffsets: boolean;
+  fileAutoSaveStatuses: Record<string, PreSoFileAutoSaveStatus>;
   error?: string;
   onSave: () => void;
   currentYearContext: boolean;
@@ -13959,6 +14294,7 @@ function PreSoExpectedCashOutgoReport({
     patch: Partial<PreSoFileDraft>,
     defaults?: Partial<PreSoFileDraft>,
   ) => void;
+  onFileDateChange: (fileId: string, draft: PreSoFileDraft) => void;
   onOpenFile: (row: PreSoFileRow) => void;
 }) {
   const [monthwiseMeasure, setMonthwiseMeasure] = useState<PaymentMeasure>("total");
@@ -14063,7 +14399,7 @@ function PreSoExpectedCashOutgoReport({
               description={
                 "Planning report for demands where S.O. is not yet placed.\n" +
                 "Only checked files contribute to the totals and monthwise cash outgo.\n" +
-                "Save Plan locks the checked files and tentative dates for future use."
+                "Tentative dates auto-save per file; Save plan stores file selections and stage offsets."
               }
             />
           </div>
@@ -14081,8 +14417,8 @@ function PreSoExpectedCashOutgoReport({
                 </button>
                 <FloatingHelper
                   text={[
-                    "Save plan stores selected Pre-S.O. files, stage offsets, and tentative dates within the permitted scope.",
-                    "Saved offsets and dates remain available on future visits until changed and saved again.",
+                    "Save plan stores selected Pre-S.O. files and stage offsets within the permitted scope. Tentative dates auto-save for that file when edited.",
+                    "Saved file selections and offsets remain available on future visits. Edited tentative dates are saved automatically.",
                     "Editors can save file-level tentative dates globally, but cannot change stage-wise offset defaults.",
                     "Stage-wise offset defaults are controlled by Admin/Sub-admin and Universal Viewer with Global Cash Out Go permission.",
                   ]}
@@ -14245,6 +14581,12 @@ function PreSoExpectedCashOutgoReport({
             <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground shadow-[var(--shadow-card)]">
               Select stages first.
             </div>
+          ) : !groupedRowsByYear.length ? (
+            <div className="rounded-xl border border-border bg-card p-5 text-sm text-muted-foreground shadow-[var(--shadow-card)]">
+              No eligible files match the selected stages. This report lists open, non-cancelled
+              files that do not have an active S.O. date, grouped by their current milestone. Select
+              the file’s current stage to include it.
+            </div>
           ) : (
             groupedRowsByYear.map((yearGroup) => (
               <details
@@ -14301,19 +14643,19 @@ function PreSoExpectedCashOutgoReport({
                         </button>
                       </div>
                       <div className="mt-4 overflow-x-auto rounded-md border border-border">
-                        <table className="w-full min-w-[1600px] table-fixed text-sm">
+                        <table className="w-full min-w-[100rem] table-fixed text-sm">
                           <colgroup>
                             <col style={{ width: "4%" }} />
                             <col style={{ width: "4%" }} />
-                            <col style={{ width: "13%" }} />
-                            <col style={{ width: "21%" }} />
+                            <col style={{ width: "12%" }} />
+                            <col style={{ width: "17%" }} />
                             <col style={{ width: "7%" }} />
                             <col style={{ width: "6%" }} />
                             <col style={{ width: "6%" }} />
                             <col style={{ width: "6%" }} />
-                            <col style={{ width: "10%" }} />
-                            <col style={{ width: "12%" }} />
-                            <col style={{ width: "11%" }} />
+                            <col style={{ width: "8%" }} />
+                            <col style={{ width: "15%" }} />
+                            <col style={{ width: "15%" }} />
                           </colgroup>
                           <thead className="bg-secondary text-xs text-muted-foreground">
                             <tr>
@@ -14339,7 +14681,7 @@ function PreSoExpectedCashOutgoReport({
                                       "Auto date = today plus S.O. offset days for the file's current Pre-S.O. stage.",
                                       `The offset comes from the current stage's setting (default ${defaultOffset.soOffsetDays} days); a saved stage-specific value takes precedence.`,
                                       "Latest milestone date is shown for reference only; it is not currently used as the calculation base.",
-                                      "A manually entered date is used for this file and saved with Save plan.",
+                                      "A manually entered date is used for this file and auto-saved when the date is committed.",
                                     ]}
                                   />
                                 </span>
@@ -14352,7 +14694,7 @@ function PreSoExpectedCashOutgoReport({
                                     text={[
                                       "Auto date = tentative S.O. date plus payment offset days for the file's current Pre-S.O. stage.",
                                       "If Tentative S.O. is manually changed, tentative payment follows that changed S.O. date unless payment date is also manually edited.",
-                                      "A manually entered payment date is used for this file and saved with Save plan.",
+                                      "A manually entered payment date is used for this file and auto-saved when the date is committed.",
                                     ]}
                                   />
                                 </span>
@@ -14380,13 +14722,34 @@ function PreSoExpectedCashOutgoReport({
                                   />
                                 </td>
                                 <td className="px-3 py-2 font-medium">
-                                  <button
-                                    type="button"
-                                    onClick={() => onOpenFile(row)}
-                                    className="text-left font-semibold text-primary underline-offset-2 hover:underline"
-                                  >
-                                    {row.file.imms || "-"}
-                                  </button>
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => onOpenFile(row)}
+                                      className="text-left font-semibold text-primary underline-offset-2 hover:underline"
+                                    >
+                                      {row.file.imms || "-"}
+                                    </button>
+                                    {fileAutoSaveStatuses[row.file.id] ? (
+                                      <span
+                                        role="status"
+                                        className={
+                                          "text-xs font-medium " +
+                                          (fileAutoSaveStatuses[row.file.id] === "error"
+                                            ? "text-destructive"
+                                            : fileAutoSaveStatuses[row.file.id] === "saved"
+                                              ? "text-emerald-700"
+                                              : "text-muted-foreground")
+                                        }
+                                      >
+                                        {fileAutoSaveStatuses[row.file.id] === "saving"
+                                          ? "Saving date…"
+                                          : fileAutoSaveStatuses[row.file.id] === "saved"
+                                            ? "Saved"
+                                            : "Auto-save failed; use Save plan to retry"}
+                                      </span>
+                                    ) : null}
+                                  </div>
                                 </td>
                                 <td className="px-3 py-2">
                                   <CompactTableText
@@ -14409,9 +14772,13 @@ function PreSoExpectedCashOutgoReport({
                                   <DateInput
                                     value={row.draft.tentativeSoDate || row.calculatedSoDate}
                                     onChange={(value) =>
-                                      onFileDraftChange(row.file.id, { tentativeSoDate: value })
+                                      onFileDateChange(row.file.id, {
+                                        ...row.draft,
+                                        tentativeSoDate: value,
+                                      })
                                     }
-                                    disabled={!row.draft.included}
+                                    widthClass={REPORT_TABLE_DATE_INPUT_WIDTH_CLASS}
+                                    disabled={!row.draft.included || !canSave || planSaving}
                                     className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
                                   />
                                 </td>
@@ -14421,11 +14788,13 @@ function PreSoExpectedCashOutgoReport({
                                       row.draft.tentativePaymentDate || row.calculatedPaymentDate
                                     }
                                     onChange={(value) =>
-                                      onFileDraftChange(row.file.id, {
+                                      onFileDateChange(row.file.id, {
+                                        ...row.draft,
                                         tentativePaymentDate: value,
                                       })
                                     }
-                                    disabled={!row.draft.included}
+                                    widthClass={REPORT_TABLE_DATE_INPUT_WIDTH_CLASS}
+                                    disabled={!row.draft.included || !canSave || planSaving}
                                     className="h-9 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
                                   />
                                 </td>
@@ -14588,7 +14957,6 @@ function SoPaymentMatrixReport({
   title,
   titleHelper,
   description,
-  monthAmountHelper,
   rows,
   selectedFields,
   fieldsLocked,
@@ -14607,7 +14975,6 @@ function SoPaymentMatrixReport({
   title: string;
   titleHelper?: HelperText;
   description: string;
-  monthAmountHelper: HelperText;
   rows: SoPaymentMatrixRow[];
   selectedFields: SoPaymentMatrixFieldKey[];
   fieldsLocked: boolean;
@@ -14718,7 +15085,7 @@ function SoPaymentMatrixReport({
                       type="button"
                       onClick={onResetFields}
                       disabled={fieldsLocked || preferenceLoading || preferenceSaving}
-                      className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className="rounded-md border border-border bg-background px-2 py-1 text-[0.6875rem] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
                     >
                       Reset
                     </button>
@@ -14752,7 +15119,7 @@ function SoPaymentMatrixReport({
               type="button"
               onClick={onResetFields}
               disabled={fieldsLocked || preferenceLoading || preferenceSaving}
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="rounded-md border border-border bg-background px-2 py-1.5 text-[0.6875rem] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               Reset fields
             </button>
@@ -14760,7 +15127,7 @@ function SoPaymentMatrixReport({
               type="button"
               onClick={onLockToggle}
               disabled={preferenceLoading || preferenceSaving}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-[11px] font-semibold text-foreground hover:bg-accent disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2 py-1.5 text-[0.6875rem] font-semibold text-foreground hover:bg-accent disabled:opacity-50"
               title={
                 fieldsLocked
                   ? "Unlock this matrix's saved fields"
@@ -14837,7 +15204,6 @@ function SoPaymentMatrixReport({
               columns={columns}
               monthKeys={monthKeys}
               monthHeadersClickable={monthHeadersClickable}
-              monthAmountHelper={monthAmountHelper}
               onOpenRows={onOpenRows}
             />
           </div>
@@ -14871,7 +15237,6 @@ function SoPaymentMatrixMeasureTable({
   columns,
   monthKeys,
   monthHeadersClickable = false,
-  monthAmountHelper,
   onOpenRows,
 }: {
   measure: PaymentMeasure;
@@ -14879,7 +15244,6 @@ function SoPaymentMatrixMeasureTable({
   columns: SoPaymentMatrixColumnOption[];
   monthKeys: string[];
   monthHeadersClickable?: boolean;
-  monthAmountHelper: HelperText;
   onOpenRows: (rows: SoPaymentMatrixRow[], monthKey?: string) => void;
 }) {
   const [page, setPage] = useState(1);
@@ -14950,11 +15314,6 @@ function SoPaymentMatrixMeasureTable({
                     ) : (
                       formatSoPaymentMatrixMonthLabel(monthKey)
                     )}
-                    <FloatingHelper
-                      text={monthAmountHelper}
-                      label={`${label} ${formatSoPaymentMatrixMonthLabel(monthKey)} column help`}
-                      className="size-5"
-                    />
                   </span>
                 </th>
               ))}
@@ -15138,11 +15497,43 @@ function getPreSoPlanSnapshot(
   });
 }
 
+function patchPreSoPlanSnapshotFile(snapshot: string, fileId: string, draft: PreSoFileDraft) {
+  if (!snapshot) return snapshot;
+  try {
+    const savedPlan = JSON.parse(snapshot) as Record<string, unknown>;
+    const savedFileDrafts =
+      savedPlan.fileDrafts && typeof savedPlan.fileDrafts === "object"
+        ? { ...(savedPlan.fileDrafts as Record<string, PreSoFileDraft>) }
+        : {};
+    const normalizedDraft = {
+      included: Boolean(draft.included),
+      tentativeSoDate: draft.tentativeSoDate || "",
+      tentativePaymentDate: draft.tentativePaymentDate || "",
+    };
+    if (
+      normalizedDraft.included ||
+      normalizedDraft.tentativeSoDate ||
+      normalizedDraft.tentativePaymentDate
+    ) {
+      savedFileDrafts[fileId] = normalizedDraft;
+    } else {
+      delete savedFileDrafts[fileId];
+    }
+    return JSON.stringify({
+      ...savedPlan,
+      fileDrafts: Object.fromEntries(
+        Object.entries(savedFileDrafts).sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    });
+  } catch {
+    return snapshot;
+  }
+}
+
 function isPreSoExpectedCashOutgoEligibleFile(file: FileRecord) {
   if (isCancelledFile(file) || isFileClosed(file)) return false;
   return !(file.supplyOrders ?? []).some(
-    (order) =>
-      !isYes(order.soCancelled) && (hasFilledString(order.soDate) || hasFilledString(order.soNo)),
+    (order) => !isYes(order.soCancelled) && hasFilledString(order.soDate),
   );
 }
 
@@ -15164,7 +15555,6 @@ function getPreSoOrderDrivenStage(file: FileRecord): PreSoStageOption | undefine
       !isYes(order.shortclosure) &&
       !hasFilledString(order.financialSanctionDate) &&
       !hasFilledString(order.soDate) &&
-      !hasFilledString(order.soNo) &&
       normalizeMilestoneName(order.currentMilestone) === "financialsanction",
   );
   return financialSanctionActive
@@ -15659,6 +16049,51 @@ function enforceExclusiveCashOutGoPlanRows(plan: CashOutGoPlanPayload): CashOutG
   };
 }
 
+function getCashOutGoPlanDisplaySection(
+  plan: CashOutGoPlanPayload,
+  rowKey: string,
+): {
+  key: CashOutGoPlanSearchSectionKey;
+  title: string;
+  row: CashOutGoPlanDetailRow;
+} | undefined {
+  const sections: Array<{
+    key: CashOutGoPlanSearchSectionKey;
+    title: string;
+    rows: CashOutGoPlanDetailRow[];
+  }> = [
+    { key: "billsSubmitted", title: "Bills Submitted to PCDA", rows: plan.billsSubmitted },
+    {
+      key: "chequeslipsNotReceived",
+      title: "Cheque Slips Not Received",
+      rows: plan.chequeslipsNotReceived ?? [],
+    },
+    {
+      key: "expectedPaymentDateInPast",
+      title: "Expected Payment Date in Past",
+      rows: plan.expectedPaymentDateInPast ?? [],
+    },
+    { key: "billsAtHand", title: "Bills at Hand", rows: plan.billsAtHand },
+    {
+      key: "deliveredBillsPending",
+      title: "Items Delivered and Bills Yet to Be Prepared",
+      rows: plan.deliveredBillsPending,
+    },
+    { key: "dpBasedForecast", title: "Items Based on D.P.", rows: plan.dpBasedForecast ?? [] },
+    { key: "dpExpired", title: "D.P. Expired", rows: plan.dpExpired ?? [] },
+    {
+      key: "expectedPaymentInLaterFys",
+      title: "Expected Payment in later FYs",
+      rows: plan.expectedPaymentInLaterFys ?? [],
+    },
+  ];
+  for (const section of sections) {
+    const row = section.rows.find((item) => item.rowKey === rowKey);
+    if (row) return { key: section.key, title: section.title, row };
+  }
+  return undefined;
+}
+
 function recalculateCashOutGoPlan(
   plan: CashOutGoPlanPayload,
   options: { preserveExpectedSentDate?: boolean } = {},
@@ -16075,7 +16510,9 @@ function CashOutGoMonthTable({
       onToggle={(event) => onOpenChange(event.currentTarget.open)}
       className="space-y-3"
     >
-      <summary className="cursor-pointer text-base font-bold">{title}</summary>
+      <summary className="cursor-pointer text-base font-bold text-primary marker:text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {title}
+      </summary>
       {loading ? (
         <p className="rounded-md border border-border bg-secondary/20 px-3 py-3 text-sm text-muted-foreground">
           Calculating {title.toLocaleLowerCase()}…
@@ -16162,8 +16599,8 @@ function CashOutGoDetailTable({
   const totals = getCashOutGoSectionTotals(rows, currentFinancialYearEnd);
   const columnCount = showExpectedSentDate ? 10 : 9;
   const detailColumnWidths = showExpectedSentDate
-    ? ["4%", "10%", "18%", "15.5%", "8%", "7.5%", "11.5%", "11.5%", "7.5%", "7%"]
-    : ["4%", "10%", "19.5%", "17%", "8%", "7.5%", "14%", "10%", "10%"];
+    ? ["4%", "9%", "15%", "14%", "8%", "7%", "15%", "15%", "7%", "6%"]
+    : ["4%", "10%", "18%", "15%", "8%", "7.5%", "15%", "10%", "12.5%"];
   const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const pageStart = rows.length ? (safePage - 1) * pageSize : 0;
@@ -16321,28 +16758,28 @@ function CashOutGoDetailTable({
           {showSectionTotals ? (
             <>
               <span className="flex flex-col">
-                <span className="text-[11px] text-muted-foreground">Total</span>
+                <span className="text-[0.6875rem] text-muted-foreground">Total</span>
                 <span className="text-xs font-semibold">{formatLakhValue(totals.total)}</span>
               </span>
               <span className="flex flex-col">
-                <span className="text-[11px] text-muted-foreground">Capital</span>
+                <span className="text-[0.6875rem] text-muted-foreground">Capital</span>
                 <span className="text-xs font-semibold">{formatLakhValue(totals.capital)}</span>
               </span>
               <span className="flex flex-col">
-                <span className="text-[11px] text-muted-foreground">Revenue</span>
+                <span className="text-[0.6875rem] text-muted-foreground">Revenue</span>
                 <span className="text-xs font-semibold">{formatLakhValue(totals.revenue)}</span>
               </span>
             </>
           ) : null}
           <span className="flex flex-col">
-            <span className="text-[11px] text-muted-foreground">Rows</span>
+            <span className="text-[0.6875rem] text-muted-foreground">Rows</span>
             <span className="text-xs text-muted-foreground">{rows.length}</span>
           </span>
         </span>
       </summary>
       <div className="mb-3 mt-4">{renderPagination("top")}</div>
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[1600px] table-fixed border-collapse text-sm">
+        <table className="w-full min-w-[100rem] table-fixed border-collapse text-sm">
           <colgroup>
             {detailColumnWidths.map((width, index) => (
               <col key={index} style={{ width }} />
@@ -16355,7 +16792,8 @@ function CashOutGoDetailTable({
                 className="px-3 py-2 text-xs font-normal normal-case text-muted-foreground"
               >
                 <span className="inline-flex items-center gap-1.5">
-                  Edit forecast dates inline; save changes, or reset a date to its calculated value.
+                A date change that moves a row to another section saves automatically. Other edits
+                remain pending until Save plan.
                 </span>
               </th>
             </tr>
@@ -16459,13 +16897,13 @@ function CashOutGoDetailTable({
                       {row.baseDate ||
                         (row.section === "advance" ? (
                           <span
-                            className="block max-w-36 whitespace-normal text-[11px] leading-snug text-muted-foreground"
+                            className="block max-w-36 whitespace-normal text-[0.6875rem] leading-snug text-muted-foreground"
                             title="Advance payments use their own expected payment date, not a base delivery date."
                           >
                             Advance uses its own due date.
                           </span>
                         ) : (
-                          <span className="text-[11px] text-muted-foreground">
+                          <span className="text-[0.6875rem] text-muted-foreground">
                             No starting date is recorded for this row.
                           </span>
                         ))}
@@ -16474,7 +16912,7 @@ function CashOutGoDetailTable({
                       <td className="px-3 py-2">
                         {row.actualSentDate ? (
                           <span
-                            className="text-[11px] text-muted-foreground"
+                            className="text-[0.6875rem] text-muted-foreground"
                             title={`Recorded submission date: ${row.actualSentDate}`}
                           >
                             Submitted
@@ -16486,14 +16924,15 @@ function CashOutGoDetailTable({
                               onChange={(value) =>
                                 onRowChange(row.rowKey, "expectedSentDate", value)
                               }
+                              widthClass={REPORT_TABLE_DATE_INPUT_WIDTH_CLASS}
                               className={filterControlClass(
                                 Boolean(row.expectedSentDateOverride),
-                                "h-8 w-[160px] min-w-[160px] max-w-full rounded-md border border-input bg-background px-2 text-sm text-foreground",
+                                "h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground",
                               )}
-                              disabled={!expectedSentDateEditable}
+                              disabled={!expectedSentDateEditable || saving}
                             />
                             {!row.expectedSentDate ? (
-                              <span className="max-w-36 whitespace-normal text-[11px] leading-snug text-muted-foreground">
+                              <span className="max-w-36 whitespace-normal text-[0.6875rem] leading-snug text-muted-foreground">
                                 {row.section === "advance"
                                   ? "Not used for an advance; its own due date is shown under Expected payment."
                                   : "No submission date is planned yet."}
@@ -16505,7 +16944,7 @@ function CashOutGoDetailTable({
                                   type="button"
                                   onClick={onSave}
                                   disabled={saving || saveDisabled}
-                                  className="h-6 min-w-12 rounded border border-border px-2 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                                  className="h-6 min-w-12 rounded border border-border px-2 text-[0.6875rem] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                                 >
                                   {saving ? "Saving..." : "Save"}
                                 </button>
@@ -16532,11 +16971,12 @@ function CashOutGoDetailTable({
                           onChange={(value) =>
                             onRowChange(row.rowKey, "manualExpectedPaymentDate", value)
                           }
+                          widthClass={REPORT_TABLE_DATE_INPUT_WIDTH_CLASS}
                           className={filterControlClass(
                             row.section !== "advance" && Boolean(row.manualExpectedPaymentDate),
-                            "h-8 w-[160px] min-w-[160px] max-w-full rounded-md border border-input bg-background px-2 text-sm text-foreground",
+                            "h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground",
                           )}
-                          disabled={!editable}
+                          disabled={!editable || saving}
                         />
                         {onSave && editable ? (
                           <span className="flex items-center gap-1">
@@ -16544,7 +16984,7 @@ function CashOutGoDetailTable({
                               type="button"
                               onClick={onSave}
                               disabled={saving || saveDisabled}
-                              className="h-6 min-w-12 rounded border border-border px-2 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                              className="h-6 min-w-12 rounded border border-border px-2 text-[0.6875rem] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                             >
                               {saving ? "Saving..." : "Save"}
                             </button>
@@ -17221,7 +17661,7 @@ function DelayStatusReport({
                 iconClassName="size-3"
               />
             </span>
-      <span className="flex items-center gap-0.5">
+            <span className="flex items-center gap-0.5">
               <input
                 type="number"
                 min="0"
@@ -17318,7 +17758,7 @@ function DelayStatusReport({
             "paymentPostSubmission",
             "paymentCumulative",
           ].includes(selectedMilestoneKey) ? (
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-[0.6875rem] text-muted-foreground">
               Across {new Set(rows.map((row) => row.fileId)).size} files
             </div>
           ) : null}
@@ -18879,14 +19319,47 @@ function getCashOutGoPlanDirtySnapshot(plan: CashOutGoPlanPayload) {
       ...(plan.expectedPaymentInLaterFys ?? []),
       ...(plan.dpBasedForecast ?? []),
       ...(plan.dpExpired ?? []),
-    ].map((row) => ({
+    ]
+      .map((row) => ({
+        rowKey: row.rowKey,
+        expectedSentDate: row.expectedSentDate,
+        expectedSentDateOverride: row.expectedSentDateOverride,
+        manualExpectedPaymentDate: row.manualExpectedPaymentDate,
+        billOffsetOverride: row.billOffsetOverride,
+      }))
+      .sort((left, right) => left.rowKey.localeCompare(right.rowKey)),
+  });
+}
+
+function patchCashOutGoPlanSnapshotRow(
+  snapshot: string,
+  row: CashOutGoPlanDetailRow,
+) {
+  if (!snapshot) return snapshot;
+  try {
+    const savedPlan = JSON.parse(snapshot) as {
+      settings?: unknown;
+      rows?: Array<Record<string, unknown>>;
+      [key: string]: unknown;
+    };
+    const savedRows = [...(savedPlan.rows ?? [])];
+    const savedRow = {
       rowKey: row.rowKey,
       expectedSentDate: row.expectedSentDate,
       expectedSentDateOverride: row.expectedSentDateOverride,
       manualExpectedPaymentDate: row.manualExpectedPaymentDate,
       billOffsetOverride: row.billOffsetOverride,
-    })),
-  });
+    };
+    const existingIndex = savedRows.findIndex((item) => item.rowKey === row.rowKey);
+    if (existingIndex >= 0) savedRows[existingIndex] = savedRow;
+    else savedRows.push(savedRow);
+    savedRows.sort((left, right) =>
+      String(left.rowKey ?? "").localeCompare(String(right.rowKey ?? "")),
+    );
+    return JSON.stringify({ ...savedPlan, rows: savedRows });
+  } catch {
+    return snapshot;
+  }
 }
 
 function isReportDirtyValueEqual(left: unknown, right: unknown) {
@@ -20360,7 +20833,7 @@ const milestoneDefinitions = [
     label: "Bidding",
     totalLabel: "Total files",
     current: "biddingStageOver",
-    applies: (file) => isBiddingApplicableForFile(file),
+    applies: (file) => isBiddingApplicableForFile(file) && !isYes(file.refloat),
   },
   {
     key: "postTcec",
@@ -20376,7 +20849,7 @@ const milestoneDefinitions = [
     totalLabel: "Total cases",
     completedLabel: "Completed",
     pendingLabel: "In progress",
-    current: "biddingStageOver",
+    current: "refloatBiddingStageOver",
     applies: (file) => isYes(file.refloat),
   },
   {
@@ -20385,7 +20858,7 @@ const milestoneDefinitions = [
     totalLabel: "Total cases",
     reviewed: "refloatPostTcecDate",
     current: "refloatPostTcecMinutesDate",
-    applies: (file) => isYes(file.refloat) && isYes(file.tcec) && isYes(file.biddingStageOver),
+    applies: (file) => isYes(file.refloat) && isYes(file.tcec),
   },
   {
     key: "cnc",
@@ -20578,6 +21051,7 @@ function getStatusSummaryColumnsForRow(columns: StatusSummaryColumn[]): StatusSu
 
 function isCommonStatusRow(row: StatusSummaryTableRow & { columns: StatusSummaryColumn[] }) {
   return (
+    !["IFA", "Post-TCEC", "CNC"].includes(row.milestone) &&
     (row.columns.includes("Total files") || row.columns.includes("Total cases")) &&
     row.columns.includes("In process") &&
     row.columns.includes("Completed")
@@ -20796,7 +21270,10 @@ function getMilestoneStatusRows(
     return [
       base(
         "Live",
-        processFiles.filter((file) => isYes(file.refloat) && isFileTenderLive(file)).length,
+        processFiles.filter(
+          (file) =>
+            isCurrentRefloatBiddingMilestone(file) && isYes(file.refloat) && isFileTenderLive(file),
+        ).length,
       ),
       base(
         "In process",
@@ -20811,7 +21288,10 @@ function getMilestoneStatusRows(
 
   if (milestone.key === "refloatPostTcec") {
     const pendingRefloatPostTcec = processFiles.filter(
-      (file) => !hasFilledString(file.refloatPostTcecMinutesDate),
+      (file) =>
+        isCurrentRefloatPostTcecMilestone(file) &&
+        isYes(file.refloatBiddingStageOver) &&
+        !hasFilledString(file.refloatPostTcecMinutesDate),
     );
     const reviewedRefloatPostTcec = pendingRefloatPostTcec.filter((file) =>
       hasFilledString(file.refloatPostTcecDate),
@@ -20819,10 +21299,6 @@ function getMilestoneStatusRows(
     return [
       base(milestone.totalLabel ?? "Total", processFiles.length),
       base("Completed", clearedFiles.length),
-      base(
-        "At previous stage",
-        files.filter((file) => isYes(file.refloat) && !isYes(file.biddingStageOver)).length,
-      ),
       base("In process", pendingRefloatPostTcec.length),
       base("Reviewed", reviewedRefloatPostTcec.length),
       base("Pending", pendingRefloatPostTcec.length),
@@ -20836,10 +21312,13 @@ function getMilestoneStatusRows(
         "In process",
         activeFiles.filter((file) => !isFileTenderLive(file) && !isBidOverdue(file)).length,
       ),
-      base("Opening overdue", applicableFiles.filter(isBidOverdue).length),
+      base("Opening overdue", activeFiles.filter(isBidOverdue).length),
       base(
         "Live",
-        applicableFiles.filter((file) => !isYes(file.refloat) && isFileTenderLive(file)).length,
+        applicableFiles.filter(
+          (file) =>
+            isCurrentNormalBiddingMilestone(file) && !isYes(file.refloat) && isFileTenderLive(file),
+        ).length,
       ),
       base("At previous stages", countAtPreviousStageFiles(applicableFiles, milestone)),
     ];
@@ -20849,10 +21328,7 @@ function getMilestoneStatusRows(
     return [
       base("Placed", countCompletedOrderDrivenMilestoneStatuses(applicableFiles, "supplyorder")),
       base("Live", countLiveSupplyOrders(applicableFiles)),
-      base(
-        "At Previous Stage",
-        countCurrentOrderDrivenMilestoneStatuses(applicableFiles, "financialsanction"),
-      ),
+      base("At Previous Stage", countSupplyOrderPreviousStageStatuses(applicableFiles)),
       base("Pending", countCurrentOrderDrivenMilestoneStatuses(applicableFiles, "supplyorder")),
     ];
   }
@@ -20905,6 +21381,10 @@ function countAtPreviousStageFiles(files: FileRecord[], milestone: MilestoneDefi
 }
 
 function isAtPreviousStageFile(file: FileRecord, milestone: MilestoneDefinition) {
+  if (milestone.key === "ifa") return isIfaAtPreviousStageFile(file);
+  if (milestone.key === "postTcec") return isPostTcecAtPreviousStageFile(file);
+  if (milestone.key === "refloatPostTcec") return false;
+  if (milestone.key === "cnc") return isCncAtPreviousStageFile(file);
   if (!isEligibleMilestone(file, milestone)) return false;
   if (isMilestoneComplete(file, milestone)) return false;
   if (isManualActiveMilestone(file, milestone)) return false;
@@ -20916,6 +21396,51 @@ function isAtPreviousStageFile(file: FileRecord, milestone: MilestoneDefinition)
     if (countCompletedOrderDrivenMilestoneStatuses([file], normalized) > 0) return false;
   }
   return true;
+}
+
+function isIfaAtPreviousStageFile(file: FileRecord) {
+  const controlling = milestoneDefinitions.find((item) => item.key === "control");
+  return Boolean(
+    controlling &&
+    !isCancelledFile(file) &&
+    isYes(file.ifa) &&
+    normalizeMilestoneName(file.currentMilestone) === "controlling" &&
+    isPreviousApplicableMilestoneComplete(file, controlling) &&
+    !isMilestoneComplete(file, controlling),
+  );
+}
+
+function isPostTcecAtPreviousStageFile(file: FileRecord) {
+  const bidding = milestoneDefinitions.find((item) => item.key === "bidding");
+  return Boolean(
+    bidding &&
+    !isCancelledFile(file) &&
+    isYes(file.tcec) &&
+    !isYes(file.refloat) &&
+    normalizeMilestoneName(file.currentMilestone) === "bidding" &&
+    isMilestoneApplicable(file, bidding) &&
+    isPreviousApplicableMilestoneComplete(file, bidding) &&
+    !isMilestoneComplete(file, bidding),
+  );
+}
+
+function isCncAtPreviousStageFile(file: FileRecord) {
+  const refloat = isYes(file.refloat);
+  const predecessorKey = refloat ? "refloatPostTcec" : "postTcec";
+  const predecessor = milestoneDefinitions.find((item) => item.key === predecessorKey);
+  const current = normalizeMilestoneName(file.currentMilestone);
+  return Boolean(
+    predecessor &&
+    !isCancelledFile(file) &&
+    isYes(file.tcec) &&
+    !hasFilledString(file.cncApprovalDate) &&
+    current === predecessorKey.toLowerCase() &&
+    (refloat
+      ? isYes(file.refloatBiddingStageOver) && !hasFilledString(file.refloatPostTcecMinutesDate)
+      : isMilestoneApplicable(file, predecessor) &&
+        isPreviousApplicableMilestoneComplete(file, predecessor) &&
+        !hasFilledString(file.postTcecMinutesDate)),
+  );
 }
 
 function isMilestoneApplicable(file: FileRecord, milestone: MilestoneDefinition) {
@@ -20957,6 +21482,14 @@ function isMilestoneComplete(file: FileRecord, milestone: MilestoneDefinition) {
   if (milestone.key === "bidding") return isYes(file.biddingStageOver);
   if (milestone.key === "refloatBidding") {
     return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
+  }
+  if (milestone.key === "refloatPostTcec") {
+    return (
+      isYes(file.refloat) &&
+      isYes(file.tcec) &&
+      isYes(file.refloatBiddingStageOver) &&
+      hasFilledString(file.refloatPostTcecMinutesDate)
+    );
   }
   if (milestone.key === "financialSanction")
     return matchesCompletedSupplyOrderDrivenMilestone(file, "financialsanction");
@@ -21240,7 +21773,10 @@ function countPlacedSupplyOrders(files: FileRecord[]) {
     (sum, file) =>
       sum +
       rawSupplyOrders(file).filter(
-        (order) => isSupplyOrderTabComplete(file, order) && !isSupplyOrderCancelled(file, order),
+        (order) =>
+          hasDate(order.soDate) &&
+          !isDateAfterToday(order.soDate) &&
+          !isSupplyOrderCancelled(file, order),
       ).length,
     0,
   );
@@ -21268,7 +21804,7 @@ function isFinancialSanctionReached(file: FileRecord) {
   return (
     !isCancelledFile(file) &&
     (isBiddingApplicableForFile(file)
-      ? isYes(file.biddingStageOver)
+      ? isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
       : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
@@ -21423,6 +21959,17 @@ function countCurrentOrderDrivenMilestoneStatuses(
   }, 0);
 }
 
+function countSupplyOrderPreviousStageStatuses(files: FileRecord[]) {
+  return files.reduce(
+    (total, file) =>
+      total +
+      orderDrivenMilestoneRows(file, "supplyorder").filter((order) =>
+        isSupplyOrderAtPreviousStage(file, order),
+      ).length,
+    0,
+  );
+}
+
 function countFinancialSanctionPreviousStageFiles(files: FileRecord[]) {
   return files.filter(isFinancialSanctionPreviousStageFile).length;
 }
@@ -21434,7 +21981,8 @@ function isFinancialSanctionPreviousStageFile(file: FileRecord) {
   const current = normalizeMilestoneName(file.currentMilestone);
   if (isYes(file.tcec)) return current === "cnc" && hasFilledString(file.cncApprovalDate) === false;
   return isBiddingApplicableForFile(file)
-    ? current === "bidding" && !isYes(file.biddingStageOver)
+    ? current === "bidding" &&
+        !isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
     : current === "cfa" && !hasFilledString(file.cfaDate);
 }
 
@@ -21905,8 +22453,12 @@ function getLaterDate(first: string | undefined, second: string | undefined) {
 function isFileTenderLive(file: FileRecord) {
   const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
   const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  const opened = isYes(file.refloat)
+    ? isYes(file.refloatBidOpened) || isYes(file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
   return (
     isBiddingApplicableForFile(file) &&
+    !opened &&
     hasFilledString(bidDate) &&
     hasFilledString(bidOpeningDate) &&
     !isDateAfterToday(bidDate) &&
@@ -21914,17 +22466,28 @@ function isFileTenderLive(file: FileRecord) {
   );
 }
 
+function isCurrentNormalBiddingMilestone(file: FileRecord) {
+  return normalizeMilestoneName(file.currentMilestone) === "bidding";
+}
+
+function isCurrentRefloatBiddingMilestone(file: FileRecord) {
+  return normalizeMilestoneName(file.currentMilestone) === "refloatbidding";
+}
+
+function isCurrentRefloatPostTcecMilestone(file: FileRecord) {
+  return normalizeMilestoneName(file.currentMilestone) === "refloatposttcec";
+}
+
 function isRefloatBiddingInProgressFile(file: FileRecord) {
   return (
-    isBiddingApplicableForFile(file) &&
     isYes(file.refloat) &&
-    hasFilledString(file.refloatBiddingDate) &&
+    isCurrentRefloatBiddingMilestone(file) &&
     !isRefloatBiddingStageComplete(file)
   );
 }
 
 function isRefloatBiddingStageComplete(file: FileRecord) {
-  return isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver);
+  return isYes(file.refloatBiddingStageOver);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -21932,11 +22495,19 @@ function getEffectiveBidOpeningDate(file: FileRecord) {
 }
 
 function isRefloatBidOverdue(file: FileRecord) {
-  return isNo(file.bidOpened) && isDateBeforeToday(file.refloatBidOpeningDate);
+  return (
+    isYes(file.refloat) &&
+    isNo(file.refloatBidOpened) &&
+    isNo(file.refloatBiddingStageOver) &&
+    isDateBeforeToday(file.refloatBidOpeningDate)
+  );
 }
 
 function isBidOverdue(file: FileRecord) {
-  return isNo(file.bidOpened) && isDateBeforeToday(getEffectiveBidOpeningDate(file));
+  const opened = isYes(file.refloat)
+    ? isYes(file.refloatBidOpened) || isYes(file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
+  return !opened && isDateBeforeToday(getEffectiveBidOpeningDate(file));
 }
 
 function countPreBidMeetingStatuses(

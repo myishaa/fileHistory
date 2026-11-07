@@ -19,6 +19,7 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { readFilterCombinationLock } from "@/lib/filter-combination-lock";
+import type { AppFontScale } from "@/lib/font-scale";
 
 const anomalyRefreshStorageKey = "recordkeeper:anomaly-data-updated";
 
@@ -84,10 +85,14 @@ export type FileRecord = {
   cfaSentDate?: string;
   cfaDate?: string;
   gemUndertakingDate?: string;
+  refloatGemBiddingMode?: string;
   refloatGemUndertakingDate?: string;
   refloatRecommendationDate?: string;
   rfpVettingInitiationDate?: string;
   rfpVettingApprovalDate?: string;
+  refloatRfpVetting?: string;
+  refloatRfpVettingInitiationDate?: string;
+  refloatRfpVettingApprovalDate?: string;
   preBidMeeting?: string;
   preBidMeetingDate?: string;
   tenderLive?: string;
@@ -95,6 +100,9 @@ export type FileRecord = {
   bidDate?: string;
   bidOpeningDate?: string;
   bidOpened?: string;
+  refloatTenderLive?: string;
+  refloatBidNumber?: string;
+  refloatBidOpened?: string;
   refloat?: string;
   refloatPreBidMeeting?: string;
   refloatPreBidMeetingDate?: string;
@@ -236,6 +244,7 @@ export type FileProcessingNotification = {
 };
 
 export type BillReturnCycle = {
+  id?: string;
   returnedDate?: string;
   reason?: string;
   resubmittedDate?: string;
@@ -415,6 +424,7 @@ export type StageDeliveryDetail = {
 };
 
 export type FirmDetail = {
+  id?: string;
   firmName?: string;
   city?: string;
   address?: string;
@@ -626,6 +636,8 @@ export type FirmRatingField = {
   id: string;
   label: string;
   weight?: string;
+  minValue?: string;
+  maxValue?: string;
 };
 export type FirmRatingConfig = {
   fields: FirmRatingField[];
@@ -661,6 +673,7 @@ export type AppSettings = {
   themeTint: AppThemeTint;
   appearancePreset?: AppearancePreset | null;
   fontFamily?: AppFontFamily | null;
+  fontScale?: AppFontScale;
   topRibbonColor?: TopRibbonColor | null;
   topRibbonTextColor?: TopRibbonTextColor | null;
   chartBarColor?: string;
@@ -720,6 +733,7 @@ const defaultSettings: AppSettings = {
   themeTint: "plain",
   appearancePreset: null,
   fontFamily: null,
+  fontScale: 100,
   topRibbonColor: null,
   topRibbonTextColor: null,
   chartBarColor: "#0f766e",
@@ -760,9 +774,15 @@ const defaultSettings: AppSettings = {
   quickEntryExcelPresetsLegacyImported: false,
   firmRatingConfig: {
     fields: [
-      { id: "delivery", label: "Delivery", weight: "1" },
-      { id: "quality", label: "Quality", weight: "1" },
-      { id: "afterSalesService", label: "After Sales Service", weight: "1" },
+      { id: "delivery", label: "Delivery", weight: "1", minValue: "0", maxValue: "5" },
+      { id: "quality", label: "Quality", weight: "1", minValue: "0", maxValue: "5" },
+      {
+        id: "afterSalesService",
+        label: "After Sales Service",
+        weight: "1",
+        minValue: "0",
+        maxValue: "5",
+      },
     ],
   },
   addEditRibbonFields: defaultAddEditRibbonFields,
@@ -897,6 +917,55 @@ let loadAgain = false;
 function setState(patch: Partial<StoreState>) {
   state = { ...state, ...patch };
   emit();
+}
+
+export type FileDetailDeleteRequest = {
+  kind: "remark" | "marker" | "firm" | "supplementaryBill" | "billReturnCycle";
+  rowId: string;
+  firmType?: "bq" | "invited" | "bidder";
+  orderId?: string;
+};
+
+function removeReturnCycleById(value: unknown, rowId: string): unknown {
+  if (Array.isArray(value)) return value.map((item) => removeReturnCycleById(item, rowId));
+  if (!value || typeof value !== "object") return value;
+  const source = value as Record<string, unknown>;
+  return Object.fromEntries(
+    Object.entries(source).map(([key, child]) => [
+      key,
+      key === "billReturnCycles" && Array.isArray(child)
+        ? child.filter(
+            (cycle) =>
+              !cycle || typeof cycle !== "object" || (cycle as Record<string, unknown>).id !== rowId,
+          )
+        : removeReturnCycleById(child, rowId),
+    ]),
+  );
+}
+
+export function removeFileDetailRowFromRecord(file: FileRecord, item: FileDetailDeleteRequest): FileRecord {
+  if (item.kind === "remark") {
+    return { ...file, remarks: (file.remarks ?? []).filter((row) => row.id !== item.rowId) };
+  }
+  if (item.kind === "marker") {
+    return { ...file, markers: (file.markers ?? []).filter((row) => row.id !== item.rowId) };
+  }
+  if (item.kind === "firm") {
+    const key =
+      item.firmType === "bq" ? "bqFirms" : item.firmType === "invited" ? "invitedFirms" : "bidderFirms";
+    return { ...file, [key]: (file[key] ?? []).filter((row) => row.id !== item.rowId) };
+  }
+  const supplyOrders = (file.supplyOrders ?? []).map((order) => {
+    if (order.id !== item.orderId) return order;
+    if (item.kind === "supplementaryBill") {
+      return {
+        ...order,
+        supplementaryBills: (order.supplementaryBills ?? []).filter((row) => row.id !== item.rowId),
+      };
+    }
+    return removeReturnCycleById(order, item.rowId) as SupplyOrderDetail;
+  });
+  return { ...file, supplyOrders };
 }
 
 function globalYearSessionKey(userId?: string) {
@@ -1301,11 +1370,12 @@ export const store = {
     );
   },
   deleteFinancialYear(label: string) {
-    runMutation(() =>
-      request(`/api/settings/financial-years/${encodeURIComponent(label)}`, {
+    return (async () => {
+      await request(`/api/settings/financial-years/${encodeURIComponent(label)}`, {
         method: "DELETE",
-      }),
-    );
+      });
+      await loadAll(true);
+    })();
   },
   archiveFinancialYear(label: string, archived: boolean) {
     return runMutation(() =>
@@ -1423,6 +1493,29 @@ export const store = {
       }>;
     }>(`/api/dashboard/suspected-anomalies?${params.toString()}`, { cache: "no-store" });
   },
+  preflightFileAnomalies(file: Partial<FileRecord>, fileId?: string) {
+    return request<{
+      rows: Array<{
+        signature: string;
+        fileId: string;
+        fileRef: string;
+        controlNo: string;
+        division: string;
+        indentor: string;
+        description: string;
+        block: string;
+        rule: string;
+        ruleKey?: string;
+        previousField: string;
+        previousDate: string;
+        laterField: string;
+        laterDate: string;
+      }>;
+    }>("/api/dashboard/suspected-anomalies/preflight", {
+      method: "POST",
+      body: JSON.stringify({ fileId, file }),
+    });
+  },
   async countSuspectedAnomalies(query: string) {
     const payload = await request<{ count: number }>(
       `/api/dashboard/suspected-anomalies/count?${query}`,
@@ -1518,6 +1611,91 @@ export const store = {
       return result.file;
     })();
   },
+  updateSupplyOrder(id: string, supplyOrderIndex: number, supplyOrder: SupplyOrderDetail) {
+    return (async () => {
+      const result = await request<{ file: FileRecord }>(`/api/files/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ supplyOrderIndex, supplyOrder }),
+      });
+      setState({ files: upsertFile(state.files, result.file) });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("recordkeeper:files-updated"));
+        notifyAnomalyDataUpdated();
+      }
+      return result.file;
+    })();
+  },
+  applyImmediateSupplyOrderStageChange(
+    id: string,
+    supplyOrderIndex: number,
+    supplyOrderId: string,
+    action: "reduce" | "disable",
+    deletionPassword: string,
+    stageCount?: number,
+  ) {
+    return (async () => {
+      const result = await request<{ file: FileRecord }>(`/api/files/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          supplyOrderStageCleanup: {
+            supplyOrderIndex,
+            supplyOrderId,
+            action,
+            ...(stageCount === undefined ? {} : { stageCount }),
+          },
+          deletionPassword,
+        }),
+      });
+      setState({ files: upsertFile(state.files, result.file) });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("recordkeeper:files-updated"));
+        notifyAnomalyDataUpdated();
+      }
+      return result.file;
+    })();
+  },
+  deleteSupplyOrderRowsImmediately(
+    id: string,
+    targetCount: number | undefined,
+    supplyOrderIds: string[],
+    deletionPassword: string,
+  ) {
+    return (async () => {
+      const result = await request<{ file: FileRecord }>(`/api/files/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          supplyOrderDeletion: {
+            supplyOrderIds,
+            ...(targetCount === undefined ? {} : { targetCount }),
+          },
+          deletionPassword,
+        }),
+      });
+      setState({ files: upsertFile(state.files, result.file) });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("recordkeeper:files-updated"));
+        notifyAnomalyDataUpdated();
+      }
+      return result.file;
+    })();
+  },
+  updateSupplyOrderCount(id: string, count: number, supplyOrderIdsToRemove: string[] = []) {
+    return (async () => {
+      const result = await request<{ file: FileRecord }>(`/api/files/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          noOfSo: String(count),
+          supplyOrderIdsToRemove,
+        }),
+      });
+      setState({ files: upsertFile(state.files, result.file) });
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("recordkeeper:files-updated"));
+        notifyAnomalyDataUpdated();
+      }
+      return result.file;
+    })();
+  },
   createMessage(fileId: string, section: string, text: string, recipientUserId?: string) {
     return (async () => {
       const result = await request<{ message: FileMessage }>("/api/messages", {
@@ -1592,15 +1770,48 @@ export const store = {
       invalidateMessagesCache();
     })();
   },
+  deleteFileDetailRow(
+    fileId: string,
+    item: {
+      kind: "remark" | "marker" | "firm" | "supplementaryBill" | "billReturnCycle";
+      rowId: string;
+      firmType?: "bq" | "invited" | "bidder";
+      orderId?: string;
+    },
+  ) {
+    return (async () => {
+      const result = await request<{ deleted: boolean }>(`/api/files/${fileId}/detail-rows`, {
+        method: "DELETE",
+        body: JSON.stringify(item),
+      });
+      if (result.deleted) {
+        setState({
+          files: state.files.map((file) =>
+            file.id === fileId ? removeFileDetailRowFromRecord(file, item) : file,
+          ),
+        });
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new Event("recordkeeper:files-updated"));
+          notifyAnomalyDataUpdated();
+        }
+      }
+      return result;
+    })();
+  },
   deleteFile(id: string, deletionPassword: string) {
     setState({ files: state.files.filter((f) => f.id !== id) });
     return (async () => {
-      const result = await request(`/api/files/${id}`, {
-        method: "DELETE",
-        body: JSON.stringify({ deletionPassword }),
-      });
-      notifyAnomalyDataUpdated();
-      return result;
+      try {
+        const result = await request(`/api/files/${id}`, {
+          method: "DELETE",
+          body: JSON.stringify({ deletionPassword }),
+        });
+        notifyAnomalyDataUpdated();
+        return result;
+      } catch (error) {
+        await loadAll(true);
+        throw error;
+      }
     })();
   },
   listArchivedFiles() {
@@ -1707,7 +1918,15 @@ export const store = {
         divisionIds: user.divisionIds.filter((divId) => divId !== id),
       })),
     });
-    runMutation(() => request(`/api/divisions/${id}`, { method: "DELETE" }));
+    return (async () => {
+      try {
+        await request(`/api/divisions/${id}`, { method: "DELETE" });
+        await loadAll(true);
+      } catch (error) {
+        await loadAll(true);
+        throw error;
+      }
+    })();
   },
   listArchivedDivisions() {
     const settings = store.getSettings();
@@ -1823,7 +2042,15 @@ export const store = {
   },
   deleteUser(id: string) {
     setState({ users: state.users.filter((user) => user.id !== id) });
-    runMutation(() => request(`/api/users/${id}`, { method: "DELETE" }));
+    return (async () => {
+      try {
+        await request(`/api/users/${id}`, { method: "DELETE" });
+        await loadAll(true);
+      } catch (error) {
+        await loadAll(true);
+        throw error;
+      }
+    })();
   },
   listArchivedUsers() {
     return request<{ users: AppUser[] }>("/api/users/archive/list");
@@ -2042,6 +2269,25 @@ export function savePreSoCashOutgoPlan(payload: {
     {
       method: "PUT",
       body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function savePreSoCashOutgoFilePlan(filePlan: {
+  fileId: string;
+  included: boolean;
+  tentativeSoDate: string;
+  tentativePaymentDate: string;
+}) {
+  return request<{ plan: Partial<PreSoCashOutgoPlanPayload> }>(
+    "/api/reports/pre-so-cash-outgo-plan",
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        saveStageOffsets: false,
+        stageOffsets: [],
+        filePlans: [filePlan],
+      }),
     },
   );
 }

@@ -102,6 +102,7 @@ test("Non-TCEC Refloat Bidding ranking contributes original and refloat samples"
     refloatRecommendationDate: "2026-08-12",
     refloatBiddingDate: "2026-08-20",
     biddingStageOver: "Yes",
+    refloatBiddingStageOver: "Yes",
   });
   const summary = buildDashboardSummary({ files: [candidate], divisions: [], settings });
   const row = summary.analytics.milestoneClearingRanking.find((item) => item.name === "Bidding");
@@ -136,15 +137,13 @@ test("Non-TCEC Technical Evaluation SQL click-through includes both completed cy
   assert.match(sql, /\)\s+or\s+\(/);
 });
 
-test("TCEC Refloat Bidding ranking starts at Post-TCEC minutes", () => {
+test("TCEC Refloat Bidding ranking stays on the normal Bidding cycle", () => {
   const candidate = file("tcec-refloat-bidding-ranking", {
     cfaDate: "2026-05-01",
-    gem: "Yes",
-    gemBiddingMode: "Open Tender",
-    gemUndertakingDate: "",
-    rfpVetting: "Yes",
-    rfpVettingApprovalDate: "",
+    gem: "No",
+    rfpVetting: "No",
     tcec: "Yes",
+    postTcecDate: "2026-08-25",
     postTcecMinutesDate: "2026-09-01",
     refloat: "Yes",
     bidOpeningDate: "2026-07-15",
@@ -152,12 +151,17 @@ test("TCEC Refloat Bidding ranking starts at Post-TCEC minutes", () => {
     refloatBidOpeningDate: "2026-09-05",
     refloatPostTcecDate: "2026-09-11",
     biddingStageOver: "Yes",
+    refloatBiddingStageOver: "Yes",
   });
   const summary = buildDashboardSummary({ files: [candidate], divisions: [], settings });
   const row = summary.analytics.milestoneClearingRanking.find((item) => item.name === "Bidding");
   assert.ok(row);
   assert.equal(row.sampleSize, 1);
-  assert.equal(row.averageDays, 10);
+  assert.equal(row.averageDays, 116);
+  const sql = dashboardFilterSql("analyticsMilestoneClearing:bidding", []);
+  assert.match(sql, /f\.post_tcec_date/);
+  assert.doesNotMatch(sql, /f\.refloat_post_tcec_date/);
+  assert.doesNotMatch(sql, /f\.post_tcec_minutes_date/);
   assert.deepEqual(
     searchFiles([candidate], { dashboardFilter: "analyticsMilestoneClearing:bidding" })
       .map(({ id }) => id),

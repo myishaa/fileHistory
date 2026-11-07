@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Bell, Check, ChevronLeft, ChevronRight, Eye, FolderOpen, Trash2 } from "lucide-react";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 import { useMemo } from "react";
 import {
   store,
@@ -343,7 +344,7 @@ function FileProcessingNotificationRow({
           <span className="font-medium">
             {notification.fileUniqueCode || notification.fileNo || notification.imms || "File"}
           </span>
-          <span className="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium">
+          <span className="rounded-full bg-secondary px-2 py-0.5 text-[0.6875rem] font-medium">
             File Processing
           </span>
         </div>
@@ -436,7 +437,7 @@ function MessageRow({
           <span className="font-medium">
             {message.fileUniqueCode || message.fileNo || message.imms || "File"}
           </span>
-          <span className="rounded-full bg-secondary px-2 py-0.5 text-[11px] font-medium capitalize">
+          <span className="rounded-full bg-secondary px-2 py-0.5 text-[0.6875rem] font-medium capitalize">
             {message.status}
           </span>
         </div>
@@ -493,15 +494,16 @@ function MessageRow({
           </button>
         ) : null}
         {canDelete ? (
-          <button
-            type="button"
-            onClick={() => void store.deleteMessage(message.id)}
-            title="Delete"
-            aria-label="Delete"
-            className="grid size-8 place-items-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10"
-          >
-            <Trash2 className="size-4" />
-          </button>
+          <DeleteConfirmation onConfirm={() => store.deleteMessage(message.id)}>
+            <button
+              type="button"
+              title="Delete"
+              aria-label="Delete"
+              className="grid size-8 place-items-center rounded-md border border-destructive/30 text-destructive hover:bg-destructive/10"
+            >
+              <Trash2 className="size-4" />
+            </button>
+          </DeleteConfirmation>
         ) : null}
       </div>
     </div>

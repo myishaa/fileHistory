@@ -31,10 +31,12 @@ export type ExportPlot = {
 export type ExportPayload = {
   format: ExportFormat;
   title: string;
+  primarySheetName?: string;
   subtitle?: string;
   description?: string;
   fileName?: string;
   tables: ExportTable[];
+  sheets?: Array<{ name: string; tables: ExportTable[] }>;
   plot?: ExportPlot;
   plots?: ExportPlot[];
 };

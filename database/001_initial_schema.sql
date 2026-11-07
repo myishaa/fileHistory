@@ -61,7 +61,7 @@ create table app_settings (
 
 create table master_firms (
   id uuid primary key default gen_random_uuid(),
-  firm_name text,
+  firm_name text not null,
   email_id text,
   city text,
   address text,
@@ -73,11 +73,7 @@ create table master_firms (
   created_by uuid references app_users(id) on delete set null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (
-    nullif(btrim(coalesce(firm_name, '')), '') is not null or
-    nullif(btrim(coalesce(email_id, '')), '') is not null or
-    nullif(btrim(coalesce(firm_unique_no, '')), '') is not null
-  )
+  constraint master_firms_name_required check (nullif(btrim(firm_name), '') is not null)
 );
 
 create table files (

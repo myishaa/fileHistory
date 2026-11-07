@@ -686,6 +686,47 @@ test("Financial Sanction delay excludes non-TCEC refloat files without a refloat
   assert.equal(rows.length, 0);
 });
 
+test("Financial Sanction uses the active Refloat Bidding completion flag", () => {
+  const refloatBidOpeningDate = daysAgo(12);
+  const activeRefloat = {
+    id: "fs-delay-active-refloat",
+    fileType: "Goods & Services",
+    tcec: "No",
+    refloat: "Yes",
+    biddingStageOver: "No",
+    refloatBiddingStageOver: "Yes",
+    refloatBidOpeningDate,
+    currentMilestone: "Financial Sanction",
+    demandCancelled: "No",
+    supplyOrders: [{ soNo: "SO-1", soCancelled: "No", financialSanctionDate: "" }],
+  };
+  assert.deepEqual(
+    searchFiles([activeRefloat], {
+      dashboardFilter: "status4:Financial%20Sanction:current",
+    }).map(({ id }) => id),
+    [activeRefloat.id],
+  );
+
+  const normalOnly = {
+    id: "fs-delay-normal-only-with-refloat",
+    fileType: "Goods & Services",
+    tcec: "No",
+    refloat: "Yes",
+    biddingStageOver: "Yes",
+    refloatBiddingStageOver: "No",
+    refloatBidOpeningDate,
+    currentMilestone: "Financial Sanction",
+    demandCancelled: "No",
+    supplyOrders: [{ soNo: "SO-1", soCancelled: "No", financialSanctionDate: "" }],
+  };
+  assert.deepEqual(
+    searchFiles([normalOnly], {
+      dashboardFilter: "status4:Financial%20Sanction:current",
+    }).map(({ id }) => id),
+    [],
+  );
+});
+
 test("Financial Sanction delay excludes non-TCEC files when bidding does not apply", () => {
   const cfaDate = daysAgo(9);
   const rows = financialSanctionRows({

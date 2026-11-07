@@ -36,6 +36,12 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
+import {
+  appFontScaleOptions,
+  defaultAppFontScale,
+  normalizeAppFontScale,
+  type AppFontScale,
+} from "@/lib/font-scale";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { HelperContent } from "@/components/helper-content";
 import { hasCapability } from "@/lib/permissions";
@@ -139,6 +145,8 @@ export function TopBar() {
   const canUpdateAppearance = Boolean(activeUser);
   const canSelectYear = Boolean(activeUser) && pathname !== "/quick-entry";
   const canViewUserSettings = Boolean(activeUser);
+  const fontScale = normalizeAppFontScale(settings.fontScale ?? defaultAppFontScale);
+  const fontScaleIndex = appFontScaleOptions.findIndex((option) => option.value === fontScale);
   const dashboardTab = typeof locationSearch.tab === "string" ? locationSearch.tab : undefined;
   const analyticsPanel =
     typeof locationSearch.analyticsPanel === "string" ? locationSearch.analyticsPanel : undefined;
@@ -669,6 +677,14 @@ export function TopBar() {
   } satisfies CSSProperties;
   const hasCustomRibbon = Boolean(ribbonBackground || ribbonTextColor);
   const ribbonControlClass = "border-white/25 bg-white/10 text-current hover:bg-white/20";
+  const fontScaleControlClass = hasCustomRibbon
+    ? ribbonControlClass
+    : "border-border bg-card hover:bg-accent";
+
+  const updateFontScale = (nextScale: AppFontScale) => {
+    if (!activeUser || nextScale === fontScale) return;
+    store.updateSettings({ fontScale: nextScale });
+  };
 
   useEffect(() => {
     const root = document.documentElement;
@@ -702,16 +718,63 @@ export function TopBar() {
       style={topRibbonStyle}
     >
       <div className="min-h-14 px-4 lg:px-6 pt-2.5 pb-6 flex flex-wrap items-center gap-3">
-        <div className="relative mr-2 flex min-w-0 items-center">
+        <div className="relative mr-2 flex min-w-0 flex-col items-start gap-1">
           <div className="flex items-center gap-2.5">
             <div className="grid size-8 place-items-center rounded-md border border-white/20 bg-white/10">
               <UserRound className="size-4 text-current" />
             </div>
             <div className="leading-tight">
-              <div className="text-[11px] font-medium text-current opacity-65">User</div>
+              <div className="text-[0.6875rem] font-medium text-current opacity-65">User</div>
               <div className="text-sm font-semibold">{activeUser?.name ?? "Not signed in"}</div>
             </div>
           </div>
+          {activeUser ? (
+            <div
+              className="ml-10 flex items-center gap-1"
+              role="group"
+              aria-label="Font size"
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  const previous = appFontScaleOptions[fontScaleIndex - 1];
+                  if (previous) updateFontScale(previous.value);
+                }}
+                disabled={fontScaleIndex <= 0}
+                className={`inline-flex h-6 min-w-7 items-center justify-center rounded border px-1 text-xs font-semibold text-current disabled:cursor-not-allowed disabled:opacity-40 ${fontScaleControlClass}`}
+                aria-label="Decrease font size"
+                title="Decrease font size"
+              >
+                A−
+              </button>
+              <button
+                type="button"
+                onClick={() => updateFontScale(defaultAppFontScale)}
+                disabled={fontScale === defaultAppFontScale}
+                className={`inline-flex h-6 min-w-7 items-center justify-center rounded border px-1 text-xs font-semibold text-current disabled:cursor-not-allowed disabled:opacity-40 ${fontScaleControlClass}`}
+                aria-label="Reset font size"
+                title={`Reset font size (currently ${appFontScaleOptions[fontScaleIndex]?.label ?? "Default"})`}
+              >
+                A
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = appFontScaleOptions[fontScaleIndex + 1];
+                  if (next) updateFontScale(next.value);
+                }}
+                disabled={fontScaleIndex >= appFontScaleOptions.length - 1}
+                className={`inline-flex h-6 min-w-7 items-center justify-center rounded border px-1 text-xs font-semibold text-current disabled:cursor-not-allowed disabled:opacity-40 ${fontScaleControlClass}`}
+                aria-label="Increase font size"
+                title="Increase font size"
+              >
+                A+
+              </button>
+              <span className="sr-only">
+                Current font size: {appFontScaleOptions[fontScaleIndex]?.label ?? "Default"}
+              </span>
+            </div>
+          ) : null}
         </div>
 
         <nav className="flex flex-wrap items-center gap-1">
@@ -756,7 +819,7 @@ export function TopBar() {
             >
               <Bell className="size-4" />
               {adminBellCount ? (
-                <span className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[10px] font-semibold leading-none text-destructive-foreground">
+                <span className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full bg-destructive px-1.5 py-0.5 text-[0.625rem] font-semibold leading-none text-destructive-foreground">
                   {adminBellCount}
                 </span>
               ) : null}
@@ -872,7 +935,7 @@ export function TopBar() {
                 <span
                   className={filterLabelClass(
                     globalFilterActive,
-                    `shrink-0 whitespace-nowrap text-[11px] font-medium ${
+                    `shrink-0 whitespace-nowrap text-[0.6875rem] font-medium ${
                       hasCustomRibbon ? "text-current" : "text-muted-foreground"
                     }`,
                   )}
@@ -984,7 +1047,7 @@ export function TopBar() {
             </div>
             <div className="flex min-w-0 items-center gap-1 pl-1">
               <div
-                className="flex max-w-[24rem] min-w-0 items-center gap-1 truncate text-[11px] font-semibold leading-none text-current"
+                className="flex max-w-[24rem] min-w-0 items-center gap-1 truncate text-[0.6875rem] font-semibold leading-none text-current"
                 title={`Recommended: ${recommendedFilterLabel.activityYear}${
                   recommendedFilterLabel.fileYear ? ` + ${recommendedFilterLabel.fileYear}` : ""
                 }`}

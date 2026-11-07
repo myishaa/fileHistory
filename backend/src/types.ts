@@ -40,6 +40,7 @@ export type AppearancePreset =
   | "roseQuartz"
   | "midnightIndigo";
 export type AppFontFamily = "inter" | "manrope" | "sourceSans" | "nunito";
+export type AppFontScale = 90 | 100 | 110 | 125 | 140 | 150 | 160;
 export type FileTypeGroup = "goodsServices" | "contract";
 
 export type Division = {
@@ -107,6 +108,7 @@ export type AppSettings = {
   themeTint: AppThemeTint;
   appearancePreset?: AppearancePreset | null;
   fontFamily?: AppFontFamily | null;
+  fontScale?: AppFontScale;
   topRibbonColor?: TopRibbonColor | null;
   topRibbonTextColor?: TopRibbonTextColor | null;
   chartBarColor?: string;
@@ -175,6 +177,8 @@ export type FirmRatingField = {
   id: string;
   label: string;
   weight?: string;
+  minValue?: string;
+  maxValue?: string;
 };
 
 export type FileTypeGroupSetting = {
@@ -216,6 +220,7 @@ export type FileMarker = {
 };
 
 export type BillReturnCycle = {
+  id?: string;
   returnedDate?: string;
   reason?: string;
   resubmittedDate?: string;
@@ -361,6 +366,7 @@ export type StageDeliveryDetail = {
 };
 
 export type FirmDetail = {
+  id?: string;
   firmName?: string;
   city?: string;
   address?: string;
@@ -439,10 +445,14 @@ export type FileRecord = {
   cfaSentDate?: string;
   cfaDate?: string;
   gemUndertakingDate?: string;
+  refloatGemBiddingMode?: string;
   refloatGemUndertakingDate?: string;
   refloatRecommendationDate?: string;
   rfpVettingInitiationDate?: string;
   rfpVettingApprovalDate?: string;
+  refloatRfpVetting?: string;
+  refloatRfpVettingInitiationDate?: string;
+  refloatRfpVettingApprovalDate?: string;
   preBidMeeting?: string;
   preBidMeetingDate?: string;
   tenderLive?: string;
@@ -450,6 +460,9 @@ export type FileRecord = {
   bidDate?: string;
   bidOpeningDate?: string;
   bidOpened?: string;
+  refloatTenderLive?: string;
+  refloatBidNumber?: string;
+  refloatBidOpened?: string;
   refloat?: string;
   refloatPreBidMeeting?: string;
   refloatPreBidMeetingDate?: string;

@@ -75,7 +75,7 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
     aliases: ["Refloat bidding"],
     completionLabel: "Bidding stage over",
     isApplicable: (file) => isYes(file.refloat) && isBiddingApplicableForFile(file),
-    isComplete: (file) => isYes(file.biddingStageOver),
+    isComplete: (file) => isYes(file.refloatBiddingStageOver),
   },
   {
     aliases: ["Refloat Post-TCEC"],
@@ -84,7 +84,7 @@ const milestoneCompletionRules: MilestoneCompletionRule[] = [
       isYes(file.refloat) &&
       isYes(file.tcec) &&
       isBiddingApplicableForFile(file) &&
-      isYes(file.biddingStageOver),
+      isYes(file.refloatBiddingStageOver),
     isComplete: (file) => hasFilledString(file.refloatPostTcecMinutesDate),
   },
   {

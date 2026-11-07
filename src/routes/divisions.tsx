@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { fetchFilesForYear, store, type FileRecord, useDivisions, useSettings } from "@/lib/files-store";
 import { Building2, Pencil, Trash2, Plus, X, Check } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
 
 export const Route = createFileRoute("/divisions")({
   component: DivisionsPage,
@@ -17,6 +19,14 @@ function DivisionsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
   const [editCode, setEditCode] = useState("");
+  const editedDivision = divisions.find((division) => division.id === editingId);
+  const divisionDraftDirty =
+    Boolean(name.trim() || code.trim()) ||
+    Boolean(
+      editedDivision &&
+        (editName !== editedDivision.name || editCode !== (editedDivision.code ?? "")),
+    );
+  useUnsavedChanges("divisions-editor", divisionDraftDirty);
 
   const add = () => {
     if (!name.trim()) return;
@@ -87,7 +97,7 @@ function DivisionsPage() {
                   ) : (
                     <div>
                       <div className="text-sm font-semibold">{d.name}</div>
-                      <div className="text-[11px] text-muted-foreground">{count} files</div>
+                      <div className="text-[0.6875rem] text-muted-foreground">{count} files</div>
                     </div>
                   )}
                 </div>
@@ -119,16 +129,21 @@ function DivisionsPage() {
                       >
                         <Pencil className="size-4" />
                       </button>
-                      <button
-                        onClick={async () => {
-                          if (await requestDeletionPassword(`delete division "${d.name}"`)) {
-                            store.deleteDivision(d.id);
+                      <DeleteConfirmation
+                        mode="archive"
+                        onConfirm={async () => {
+                          if (await requestDeletionPassword(`archive division "${d.name}"`)) {
+                            await store.deleteDivision(d.id);
                           }
                         }}
-                        className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
                       >
-                        <Trash2 className="size-4" />
-                      </button>
+                        <button
+                          type="button"
+                          className="size-8 grid place-items-center rounded-md text-destructive hover:bg-destructive/10"
+                        >
+                          <Trash2 className="size-4" />
+                        </button>
+                      </DeleteConfirmation>
                     </>
                   )}
                 </div>

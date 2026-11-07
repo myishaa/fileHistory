@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { GitMerge, Landmark, Plus, RotateCw, Save } from "lucide-react";
 import {
   fetchFilesForYear,
@@ -21,6 +21,8 @@ import {
 import { DateInput } from "@/components/date-input";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { formatIndiaDate } from "@/lib/india-date";
+import { useSettingsDraftContext } from "@/lib/settings-draft";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
 
 export const Route = createFileRoute("/year-setup")({
   component: YearSetupPage,
@@ -51,6 +53,7 @@ export function YearSetupPanel({
   settingsOverride,
   onSetupYearChange,
 }: YearSetupPanelProps = {}) {
+  const draftContext = useSettingsDraftContext();
   const activeUser = useActiveUser();
   const loadedSettings = useSettings();
   const settings = settingsOverride ?? loadedSettings;
@@ -242,6 +245,83 @@ export function YearSetupPanel({
   const splitTransferRevenue = parseAmount(splitRevenue) ?? 0;
   const splitRemainingCapital = splitSourceCapital - splitTransferCapital;
   const splitRemainingRevenue = splitSourceRevenue - splitTransferRevenue;
+
+  const allocationDraftDirty = rows.some(({ division, draft }) => {
+    return (
+      draft.allocatedCapital !== (division.allocatedCapital ?? "") ||
+      draft.allocatedRevenue !== (division.allocatedRevenue ?? "") ||
+      draft.active !== (division.active ?? false)
+    );
+  });
+  const yearSetupDraftDirty = Boolean(
+    newName.trim() ||
+      newCode.trim() ||
+      newCapital.trim() ||
+      newRevenue.trim() ||
+      allocationDraftDirty ||
+      mergeSourceIds.length ||
+      mergeTargetId ||
+      mergeNotes.trim() ||
+      mergeEffectiveDate !== todayIsoDate() ||
+      !moveActiveFiles ||
+      !deactivateSourceDivisions ||
+      splitSourceDivisionId ||
+      splitIndentorIds.length ||
+      splitTargetId ||
+      splitCapital.trim() ||
+      splitRevenue.trim() ||
+      splitNotes.trim() ||
+      splitEffectiveDate !== todayIsoDate() ||
+      deactivateSplitSource,
+  );
+  useUnsavedChanges("year-setup-editor", yearSetupDraftDirty);
+  const cancelYearSetupDraftsRef = useRef(() => undefined);
+  cancelYearSetupDraftsRef.current = () => {
+    const nextDrafts: Record<string, DraftAllocation> = {};
+    currentDivisions.forEach((division) => {
+      nextDrafts[getAllocationDraftKey(setupYear, division.id)] = {
+        allocatedCapital: division.allocatedCapital ?? "",
+        allocatedRevenue: division.allocatedRevenue ?? "",
+        active: division.active ?? false,
+      };
+    });
+    setDrafts(nextDrafts);
+    setNewName("");
+    setNewCode("");
+    setNewCapital("");
+    setNewRevenue("");
+    setMergeSourceIds([]);
+    setMergeTargetId("");
+    setMergeEffectiveDate(todayIsoDate);
+    setMergeNotes("");
+    setMoveActiveFiles(true);
+    setDeactivateSourceDivisions(true);
+    setSplitSourceDivisionId("");
+    setSplitIndentorIds([]);
+    setSelectedSplitIndentorNames({});
+    setSplitTargetId("");
+    setSplitCapital("");
+    setSplitRevenue("");
+    setSplitEffectiveDate(todayIsoDate);
+    setSplitNotes("");
+    setDeactivateSplitSource(false);
+    setAllocationFeedback({});
+    setMergeMessage("");
+    setSplitMessage("");
+  };
+
+  useEffect(() => {
+    if (!draftContext?.registerExternalDraft) return;
+    draftContext.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelYearSetupDraftsRef.current(),
+    });
+    return () => draftContext.registerExternalDraft?.(null);
+  }, [draftContext?.registerExternalDraft]);
+
+  useEffect(() => {
+    draftContext?.setLocalDirty?.(yearSetupDraftDirty);
+  }, [draftContext?.setLocalDirty, yearSetupDraftDirty]);
 
 
   if (activeUser?.role !== "admin") {

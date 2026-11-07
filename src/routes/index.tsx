@@ -2,7 +2,6 @@ import { createFileRoute, redirect, useNavigate, useRouterState } from "@tanstac
 import {
   createContext,
   Fragment,
-  type ReactElement,
   type ReactNode,
   useCallback,
   useEffect,
@@ -27,12 +26,12 @@ import {
 import { chartColorCssPalette, getRankedChartColor } from "@/lib/chart-colors";
 import {
   isBiddingApplicableForFile,
+  isRefloatBiddingApplicableForFile,
   isContractFileType,
   isDeliveryInspectionApplicableByGroup,
 } from "@/lib/file-type-groups";
 import {
   advancePaymentEntries,
-  countSupplyOrderRows,
   countExpectedSupplyOrderRows,
   effectivePaymentEntries as normalizedPaymentEntries,
   effectiveSupplyOrderEntries as normalizedSupplyOrderEntries,
@@ -42,6 +41,7 @@ import {
   getEffectiveSupplyOrderCurrentMilestone as getCanonicalSupplyOrderCurrentMilestone,
   getPaymentTimingTriggerDate,
   hasUnpaidSupplyOrderPayment,
+  isSupplyOrderAtPreviousStage,
   isExpiredDeliveryPeriodEntry,
   isStatus2DpExpiredDeliveryEntry,
   isExtendedDeliveryPeriodEntry,
@@ -138,6 +138,7 @@ import {
 import {
   ArrowRight,
   ChevronDown,
+  ChevronRight,
   FileSpreadsheet,
   FileText,
   Info,
@@ -183,7 +184,7 @@ function FinancePositionYAxisTitle({
       textAnchor="middle"
       dominantBaseline="middle"
       fill="#707078"
-      fontSize={13}
+      fontSize="0.8125rem"
     >
       Value (Lakhs)
     </text>
@@ -274,6 +275,11 @@ type AnalyticsPanelKey =
   | "milestoneClearingTable"
   | "demandProcessingAnalysis"
   | "firmPerformance";
+type ExpandableFiscalScheduleKey =
+  | "preBidMeetings"
+  | "bidOpeningSchedule"
+  | "tcecStatus"
+  | "cncSummary";
 const analyticsPanelGroups: Array<{
   title: string;
   keys: AnalyticsPanelKey[];
@@ -398,7 +404,7 @@ const dashboardTabHelpers: Partial<Record<DashboardTab, string[]>> = {
     "Count basis: Each row's label or tooltip says whether it counts unique files or individual S.O., payment, BG, or other work items. One file may contribute multiple items.",
     "These counts show recorded workflow status for files in the selected scope; completed steps may have happened in an earlier FY.",
     "Status-3 presents the Status-1 measures in tables.",
-    "Cancelled demands appear only in their cancellation count.",
+    "Cancelled files are excluded from active workflow counters; Total counts follow each card's applicability rule.",
     "A file whose every S.O. is cancelled may remain in Total Files, but is excluded from pending-work and related payment, delivery, BG, and liability counts.",
   ],
   liveStatus: [
@@ -625,7 +631,7 @@ const dashboardSectionRuleHelpers = {
     "Purpose: Summarises each file's recorded workflow position and related work items.",
     "Count basis: Each row's label or tooltip identifies unique files versus individual S.O., payment, BG, or other work items.",
     "These counts show recorded workflow status for files in the selected scope; completed steps may have happened in an earlier FY.",
-    "Due, Reviewed, Pending, and Completed are different positions in a stage. Use each row's tooltip to see its count unit.",
+    "Each counter has its own rule. Some groups can overlap; open a counter's tooltip for its exact condition and count unit.",
     "Cancelled demands appear only in their cancellation count.",
     "The Global Filter decides whether closed files are included.",
   ],
@@ -679,20 +685,16 @@ const dashboardSectionRuleHelpers = {
 } as const;
 const deliveryPeriodMetricHelpers = {
   valid: [
-    "The original D.P. date is today or later.",
-    "No revised D.P. is present; revised/extended cases are not counted here.",
-    "Material receipt/job completion must still be pending.",
-    "Cancelled demand and cancelled S.O. are excluded. Shortclosed S.O. rows are included where completed/history or pending liability still exists.",
+    "Counts an eligible S.O. or delivery-stage row with an original D.P. date today or later, no revised D.P., and delivery still incomplete.",
+    "Count unit: S.O./delivery-stage rows, not unique files.",
   ],
   expired: [
-    "The effective D.P. date is before today.",
-    "Material receipt/job completion must still be pending.",
-    "Cancelled demand and cancelled S.O. are excluded. Shortclosed S.O. rows are included where completed/history or pending liability still exists.",
+    "Counts an eligible S.O. or delivery-stage row whose effective D.P. (revised D.P. when present, otherwise original D.P.) is before today and delivery remains incomplete.",
+    "Count unit: S.O./delivery-stage rows, not unique files.",
   ],
   extended: [
-    "A revised D.P. date is recorded and is today or later.",
-    "Material receipt/job completion must still be pending.",
-    "Shown separately from normal D.P. Valid in Status-1 and Status-3.",
+    "Counts an eligible S.O. or delivery-stage row with a revised D.P. today or later and delivery still incomplete.",
+    "Count unit: S.O./delivery-stage rows, not unique files. Shown separately from Valid.",
   ],
 } as const;
 
@@ -958,6 +960,8 @@ const fallbackDelayMilestoneOptions = [
   { key: "ifa", label: "IFA" },
   { key: "cfa", label: "CFA" },
   { key: "gemUndertaking", label: "GeM Undertaking" },
+  { key: "rfpVetting", label: "Normal RFP Vetting" },
+  { key: "refloatRfpVetting", label: "Refloat RFP Vetting" },
   { key: "bidding", label: "Bidding" },
   { key: "postTcec", label: "Post-TCEC" },
   { key: "cnc", label: "CNC" },
@@ -1003,13 +1007,25 @@ function getAnalyticsDelayBasisText(milestoneKey: string) {
     ifa: mainTimelineBasis,
     cfa: mainTimelineBasis,
     gemUndertaking: [
-      "For normal applicable GeM files, starts from CFA Approval Date and ends when GeM Undertaking Date is recorded. For Non-TCEC Refloat + GeM files, the common GeM Undertaking delay starts from Refloat recommendation and ends when Refloat GeM undertaking is recorded. TCEC Refloat + GeM continues to use its Post-TCEC approval start and Refloat GeM undertaking end.",
-      "Applies to applicable GeM files; GeM Comparison files are excluded.",
+      "Delay Status uses one active cycle: normal uses CFA Approval Date → GeM Undertaking Date; Refloat uses Post-TCEC Date (TCEC) or Refloat recommendation (Non-TCEC) → Refloat GeM undertaking.",
+      "The matching cycle's GeM Bidding Mode determines applicability; Comparison excludes that cycle's delay. Milestone Clearing may count separate normal and Refloat samples.",
       "If the required start date is blank, no fallback is used: the row contributes neither zero days nor an average sample.",
       "Example table: Scenario | Recorded dates | Result",
       "Example row: GeM = Yes; GeM Undertaking Date blank | CFA Approval: 1 Oct; as of 23 Oct | GeM Undertaking pending for 22 days.",
       "Example row: GeM = Yes; undertaking completed | CFA Approval: 1 Oct; GeM Undertaking: 5 Oct | No current GeM Undertaking delay after 5 Oct.",
-      "Example row: TCEC Refloat + GeM; Refloat GeM undertaking blank | Post-TCEC Approval: 1 Oct; as of 23 Oct | The same GeM Undertaking delay is pending for 22 days; it ends when Refloat GeM undertaking is recorded.",
+      "Example row: TCEC Refloat + GeM; Refloat GeM undertaking blank | Refloat Post-TCEC Date: 1 Oct; as of 23 Oct | One active-cycle delay is pending for 22 days; normal-cycle dates do not add a second Delay Status row.",
+    ],
+    refloatRfpVetting: [
+      "Applies when Refloat = Yes, Refloat RFP Vetting = Yes, Refloat bidding applies, Refloat RFP Vetting Initiation Date is recorded, and Refloat RFP Vetting Approval Date is blank.",
+      "Starts from Refloat RFP Vetting Initiation Date and remains pending until approval is recorded, even if the current milestone advances or Refloat Bidding Stage Over becomes Yes.",
+      "No delay is calculated if the initiation date is blank. The selected day threshold still applies.",
+      "Example row: Refloat RFP Vetting Initiation: 1 Oct; Approval: blank; current milestone: CNC; as of 23 Oct | Refloat RFP Vetting is still pending for 22 days.",
+    ],
+    rfpVetting: [
+      "Applies when Refloat is not Yes, RFP Vetting = Yes, normal bidding applies, RFP Vetting Initiation Date is recorded, and RFP Vetting Approval Date is blank.",
+      "Starts from normal RFP Vetting Initiation Date and remains pending until approval is recorded, even if the current milestone advances or Bidding Stage Over becomes Yes.",
+      "No delay is calculated if the initiation date is blank. The selected day threshold still applies.",
+      "Example row: Normal RFP Vetting Initiation: 1 Oct; Approval: blank; current milestone: Financial Sanction; as of 23 Oct | Normal RFP Vetting is still pending for 22 days.",
     ],
     bidding: [
       "Bidding covers normal bidding cases. Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
@@ -1043,27 +1059,28 @@ function getAnalyticsDelayBasisText(milestoneKey: string) {
       "Example table: Refloat dates | Status on 23 Oct | Interpretation",
       "Example row: Refloat prerequisites complete 12 Oct; no refloat Bid Date | Bidding not started | Pending age is 11 days, subject to the selected threshold.",
     ],
+    prePostTcec: [
+      "Normal cycle requires Bidding Stage Over = Yes; Refloat cycle requires Refloat Bidding Stage Over = Yes. Each interval also requires its own Bid Opening Date and ends when its matching Post-TCEC Date is recorded.",
+      "Starts from normal Bid Opening Date or Refloat Bid Opening Date. The row remains pending if the file's current milestone advances; it ends when the matching Post-TCEC Date is recorded.",
+      "The matching cycle must be bidding-applicable, and its own GeM Bidding Mode determines applicability.",
+    ],
     postTcec: [
-      "Requires TCEC = Yes, Bidding Stage Over = Yes, and a recorded Bid Closing Date. Otherwise Post-TCEC is not counted.",
-      "The start is the latest completed, applicable predecessor by date. If Bidding is latest, its completion date is Bid Closing Date; Bid Date is never a fallback.",
-      "The interval ends on Post-TCEC Minutes Date. While that date is blank, age runs through today.",
-      "Example table: Completed predecessors | Bid Closing / Post-TCEC dates | Result (as of 23 Aug)",
-      "Example row: Pre-TCEC: 10 Aug; R&QA: 18 Aug | Bid Closing: 20 Aug; Post-TCEC Minutes: blank | Starts 20 Aug; pending 3 days.",
-      "Example row: Pre-TCEC: 10 Aug; R&QA: 18 Aug | Bid Closing: 15 Aug; Post-TCEC Minutes: blank | Starts 18 Aug; pending 5 days.",
-      "Example row: Bidding Stage Over = No, or Bid Closing blank | Post-TCEC Minutes: blank | Not counted; no fallback date is used.",
-      "Example row: Bidding Stage Over = Yes; Bid Closing: 20 Aug | Post-TCEC Minutes: 22 Aug | Ends 22 Aug; duration is 2 days.",
+      "Requires TCEC = Yes, applicable bidding, Bidding Stage Over = Yes, and a recorded Post-TCEC Date. The delay remains visible if the current milestone advances.",
+      "Starts from Post-TCEC Date and remains pending until Post-TCEC Minutes Date is recorded. A missing Post-TCEC Date means this minutes-stage delay has not started.",
+      "Example row: Post-TCEC Date: 10 Oct; Minutes Date: blank; current milestone: CNC; as of 23 Oct | Post-TCEC minutes remain pending for 13 days.",
     ],
     refloatPostTcec: [
-      "Requires Refloat = Yes, TCEC = Yes, Bidding Stage Over = Yes, and a recorded Refloat Bid Closing Date.",
-      "The start is the latest completed, applicable predecessor by date. Refloat Bidding contributes its Refloat Bid Closing Date only; there is no fallback to Refloat Bid Date.",
-      "The interval ends on Refloat Post-TCEC Minutes Date. If the closing date is missing, the delay is not counted and no older date is used as a fallback.",
+      "Requires Refloat = Yes, TCEC = Yes, applicable Refloat bidding, Refloat Bidding Stage Over = Yes, and a recorded Refloat Post-TCEC Date. The delay remains visible if the current milestone advances.",
+      "Starts from Refloat Post-TCEC Date and remains pending until Refloat Post-TCEC Minutes Date is recorded.",
+      "Example row: Refloat Post-TCEC Date: 10 Oct; Minutes Date: blank; current milestone: CNC; as of 23 Oct | Refloat Post-TCEC minutes remain pending for 13 days.",
     ],
     cnc: [
-      "Starts only from Post-TCEC Minutes Date (the Post-TCEC approval date) and ends at CNC Approval Date.",
-      "TCEC only. If Post-TCEC Minutes Date is blank, CNC timing is not counted; no earlier milestone or other date is used as a fallback.",
+      "Normal TCEC files start from Post-TCEC Minutes Date; TCEC Refloats start from Refloat Post-TCEC Minutes Date. Both end at CNC Approval Date.",
+      "If the active cycle's Post-TCEC Minutes Date is blank, CNC timing is not counted; no earlier milestone or other date is used as a fallback.",
       "Example table: Scenario | Recorded dates | Result",
-      "Example row: Post-TCEC Minutes: 10 Oct; CNC Approval: blank | As of 23 Oct | CNC pending for 13 days.",
-      "Example row: Post-TCEC Minutes: blank; earlier milestone: 8 Oct; CNC Approval: blank | As of 23 Oct | No CNC duration; the earlier milestone is not used as a fallback.",
+      "Example row: Normal Post-TCEC Minutes: 10 Oct; CNC Approval: blank | As of 23 Oct | CNC pending for 13 days.",
+      "Example row: Refloat Post-TCEC Minutes: 10 Oct; CNC Approval: blank | As of 23 Oct | Refloat CNC pending for 13 days.",
+      "Example row: Active-cycle Post-TCEC Minutes: blank; earlier milestone: 8 Oct; CNC Approval: blank | As of 23 Oct | No CNC duration; the earlier milestone is not used as a fallback.",
     ],
     financialSanction: [
       "CNC Approval Date → today while an expected TCEC S.O. awaits sanction.",
@@ -1071,7 +1088,7 @@ function getAnalyticsDelayBasisText(milestoneKey: string) {
       "For normal Non-TCEC cases, Financial Sanction is the end date for Technical Evaluation. During a Refloat cycle, Refloat recommendation is the end date; after that cycle, the next cycle uses Financial Sanction instead.",
     ],
     supplyOrder: [
-      "TCEC: starts from CNC Approval Date. No earlier-milestone or File Received Date fallback is used.",
+      "TCEC: each S.O.'s delay clock starts from the file's CNC Approval Date and runs to that S.O.'s S.O. Date (or today while placement is pending). The same CNC Approval Date is used for every S.O.; if it is blank, no fallback date is used.",
       "Non-TCEC: starts from that S.O.'s Financial Sanction date.",
       "Each S.O. is assessed separately.",
     ],
@@ -1488,6 +1505,9 @@ export function Dashboard() {
   const [selectedPreBidMonth, setSelectedPreBidMonth] = useState("");
   const [selectedBidOpeningFiscalYear, setSelectedBidOpeningFiscalYear] = useState("");
   const [selectedBidOpeningMonth, setSelectedBidOpeningMonth] = useState("");
+  const [expandedFiscalYears, setExpandedFiscalYears] = useState<
+    Partial<Record<ExpandableFiscalScheduleKey, string[]>>
+  >({});
   const [selectedTcecFiscalYear, setSelectedTcecFiscalYear] = useState("");
   const [selectedTcecMonth, setSelectedTcecMonth] = useState("");
   useEffect(() => {
@@ -1509,6 +1529,17 @@ export function Dashboard() {
   const [selectedTcecCommittee, setSelectedTcecCommittee] = useState("");
   const [selectedCncFiscalYear, setSelectedCncFiscalYear] = useState("");
   const [selectedCncMonth, setSelectedCncMonth] = useState("");
+  const toggleExpandedFiscalYear = (
+    panelKey: ExpandableFiscalScheduleKey,
+    fiscalYear: string,
+  ) => {
+    setExpandedFiscalYears((current) => {
+      const next = new Set(current[panelKey] ?? []);
+      if (next.has(fiscalYear)) next.delete(fiscalYear);
+      else next.add(fiscalYear);
+      return { ...current, [panelKey]: [...next] };
+    });
+  };
   useEffect(() => {
     if (
       isNoticeBoardEmbed &&
@@ -2658,12 +2689,7 @@ export function Dashboard() {
       setStatus4FilesLoading(false);
       untrackController();
     };
-  }, [
-    activeDashboardTab,
-    dashboardCalculationNonce,
-    includeArchivedYears,
-    settings.selectedYear,
-  ]);
+  }, [activeDashboardTab, dashboardCalculationNonce, includeArchivedYears, settings.selectedYear]);
 
   useEffect(() => {
     if (activeDashboardTab !== "analytics" || activeAnalyticsPanel !== "delayStatus") return;
@@ -3052,7 +3078,7 @@ export function Dashboard() {
   const dashboardFileCount = dashboardSummary?.dashboardFileCount ?? dashboardProcessFiles.length;
   const dashboardSupplyOrderCount =
     dashboardSummary?.dashboardSupplyOrderCount ??
-    dashboardProcessFiles.reduce((total, file) => total + countSupplyOrderRows(file), 0);
+    countPlacedSupplyOrders(dashboardProcessFiles);
   const dashboardDivisionsForView = dashboardSummary?.dashboardDivisions ?? dashboardDivisions;
   const modeCounts = dashboardSummary?.modeCounts ?? localModeCounts ?? [];
   const gemBiddingModeCounts =
@@ -4674,6 +4700,48 @@ export function Dashboard() {
     activeDivision === "all"
       ? `Finance summary - Global Filter ${financeActivityYearExportLabel} - Subfilter ${financeFileYearExportLabel} - All divisions`
       : `Finance summary - Global Filter ${financeActivityYearExportLabel} - Subfilter ${financeFileYearExportLabel} - ${activeDivision}`;
+  const fyActivityExportTitle = financeExportTitle.replace(/^Finance summary/, "FY Activity");
+  const fyActivityExportTables: ExportTable[] = [
+    {
+      title: `S.O.s placed and files closed during ${selectedFinanceYearLabel}`,
+      headers: ["File initiation FY", "S.O. placed", "Live S.O.", "Files closed"],
+      rows: [
+        ...(finance1Summary.activityCountsForFileScopeByInitiationYear ?? []).map((row) => [
+          row.initiationYear,
+          row.supplyOrdersPlaced,
+          row.liveSupplyOrders,
+          row.filesClosed,
+        ]),
+        [
+          "Total",
+          finance1Summary.activityCountsForFileScope?.supplyOrdersPlacedInSelectedFy ?? 0,
+          finance1Summary.activityCountsForFileScope?.liveSupplyOrdersPlacedInSelectedFy ?? 0,
+          finance1Summary.activityCountsForFileScope?.filesClosedInSelectedFy ?? 0,
+        ],
+      ],
+    },
+    {
+      title: `Payments in ${selectedFinanceYearLabel}`,
+      headers: ["S.O. FY", "Payment cases", "Capital (Lakhs)", "Revenue (Lakhs)"],
+      rows: [
+        ...(financeTotals.paymentSourceYearBreakdown ?? []).map((row) => [
+          row.sourceYear === "unclassified" ? "S.O. FY unavailable" : row.sourceYear,
+          row.count,
+          Number(formatLakhsValue(row.capital).replace(/,/g, "")),
+          Number(formatLakhsValue(row.revenue).replace(/,/g, "")),
+        ]),
+        [
+          "Payment total",
+          (financeTotals.paymentSourceYearBreakdown ?? []).reduce(
+            (sum, row) => sum + row.count,
+            0,
+          ),
+          Number(formatLakhsValue(financePaymentInYearCapital).replace(/,/g, "")),
+          Number(formatLakhsValue(financePaymentInYearRevenue).replace(/,/g, "")),
+        ],
+      ],
+    },
+  ];
   const financeExportRows = [
     {
       category: "Allocated",
@@ -5508,6 +5576,13 @@ export function Dashboard() {
     "refloatPreBidDue",
     "refloatPreBidCompleted",
   ]);
+  const expandedPreBidRows = getExpandableFiscalScheduleRows(
+    preBidFyRows,
+    preBidScheduleDailyRows,
+    "date",
+    ["count", "preBidDue", "preBidCompleted", "refloatPreBidDue", "refloatPreBidCompleted"],
+    new Set(expandedFiscalYears.preBidMeetings ?? []),
+  );
   const preBidMonthRows = selectedPreBidFiscalYear
     ? getCalendarMonthSummaryRows(
         preBidScheduleDailyRows,
@@ -5537,6 +5612,13 @@ export function Dashboard() {
         selectedBidOpeningFiscalYear,
       ).map((row) => ({ ...row, monthDrilldown: 1, fiscalYear: selectedBidOpeningFiscalYear }))
     : [];
+  const bidOpeningExpandedRows = getExpandableFiscalScheduleRows(
+    bidOpeningFyRows,
+    analyticsBidOpeningDailyRows,
+    "date",
+    ["count", "bidOpeningDue", "bidOpeningOpened", "bidOpeningOverdue"],
+    new Set(expandedFiscalYears.bidOpeningSchedule ?? []),
+  );
   const displayedBidOpeningRows = selectedBidOpeningFiscalYear
     ? selectedBidOpeningMonth
       ? analyticsBidOpeningDailyRows
@@ -5570,6 +5652,14 @@ export function Dashboard() {
     "signed",
     "pending",
   ]);
+  const expandedTcecRows = getExpandableFiscalScheduleRows(
+    tcecFyRows,
+    tcecDateRows,
+    "date",
+    ["reviewed", "signed", "pending"],
+    new Set(expandedFiscalYears.tcecStatus ?? []),
+    { stage: tcecStatusStage, committee: "" },
+  );
   const tcecCalendarDateRows = getDateSummaryRows(
     activeTcecCommittee
       ? activeTcecStatus.meetings.filter((row) => row.committee === activeTcecCommittee)
@@ -5612,6 +5702,21 @@ export function Dashboard() {
     date: String(row.cncDate ?? ""),
     monthKey: String(row.cncDate ?? "").slice(0, 7),
   }));
+  const expandedCncRows = getExpandableFiscalScheduleRows(
+    cncFyRows,
+    cncDateRows,
+    "date",
+    [
+      "reviewed",
+      "approved",
+      "financialSanctionSigned",
+      "supplyOrderPlaced",
+      "approvalPending",
+      "financialSanctionPending",
+      "supplyOrderPending",
+    ],
+    new Set(expandedFiscalYears.cncSummary ?? []),
+  );
   const cncMonthRows = selectedCncFiscalYear
     ? getCalendarMonthSummaryRows(
         cncDateRows,
@@ -6099,10 +6204,16 @@ export function Dashboard() {
         ? selectedPreBidMonth
           ? getPreBidMeetingDateColumns()
           : getPreBidMonthAnalyticsColumns(setSelectedPreBidMonth)
-        : getFiscalPreBidMeetingAnalyticsColumns((year) => {
-            setSelectedPreBidMonth("");
-            setSelectedPreBidFiscalYear(year);
-          }),
+        : getFiscalPreBidMeetingAnalyticsColumns(
+            (year) => {
+              setSelectedPreBidMonth("");
+              setSelectedPreBidFiscalYear(year);
+            },
+            (year, monthKey) => {
+              setSelectedPreBidFiscalYear(year);
+              setSelectedPreBidMonth(monthKey);
+            },
+          ),
       rows: displayedPreBidRows,
     },
     {
@@ -6121,9 +6232,9 @@ export function Dashboard() {
         ? selectedBidOpeningMonth
           ? getBidOpeningScheduleColumns()
           : getBidOpeningScheduleMonthColumns(setSelectedBidOpeningMonth)
-        : getFiscalBidOpeningScheduleColumns((year) => {
-            setSelectedBidOpeningMonth("");
-            setSelectedBidOpeningFiscalYear(year);
+        : getExpandableFiscalBidOpeningScheduleColumns((fiscalYear, monthKey) => {
+            setSelectedBidOpeningFiscalYear(fiscalYear);
+            setSelectedBidOpeningMonth(monthKey);
           }),
       rows: displayedBidOpeningRows,
     },
@@ -6162,11 +6273,19 @@ export function Dashboard() {
         ? selectedTcecMonth
           ? getTcecDateSummaryColumns(tcecStatusStage)
           : getTcecMonthSummaryColumns(setSelectedTcecMonth)
-        : getFiscalTcecStatusColumns(tcecStatusStage, (year) => {
-            setSelectedTcecMonth("");
-            setSelectedTcecFiscalYear(year);
-            setSelectedTcecCommittee("");
-          }),
+        : getFiscalTcecStatusColumns(
+            tcecStatusStage,
+            (year) => {
+              setSelectedTcecMonth("");
+              setSelectedTcecFiscalYear(year);
+              setSelectedTcecCommittee("");
+            },
+            (year, monthKey) => {
+              setSelectedTcecFiscalYear(year);
+              setSelectedTcecMonth(monthKey);
+              setSelectedTcecCommittee("");
+            },
+          ),
       rows: displayedTcecRows,
     },
     {
@@ -6202,10 +6321,16 @@ export function Dashboard() {
         ? selectedCncMonth
           ? getCncSummaryColumns()
           : getCncMonthSummaryColumns(setSelectedCncMonth)
-        : getFiscalCncSummaryColumns((year) => {
-            setSelectedCncMonth("");
-            setSelectedCncFiscalYear(year);
-          }),
+        : getFiscalCncSummaryColumns(
+            (year) => {
+              setSelectedCncMonth("");
+              setSelectedCncFiscalYear(year);
+            },
+            (year, monthKey) => {
+              setSelectedCncFiscalYear(year);
+              setSelectedCncMonth(monthKey);
+            },
+          ),
       rows: displayedCncRows,
     },
     {
@@ -6259,11 +6384,16 @@ export function Dashboard() {
         "Calculation: A completed task runs from its applicable start date to its recorded completion date. A pending task runs from its applicable start date through today.",
         "Current status: Delay Status shows only work that is still pending. A completed milestone is not shown as a live delay, even if it took longer than the selected threshold.",
         "Count unit: The clickable count is file-level so it matches the Search Files landing. A file can still contain multiple underlying S.O., stage, BG, bill, or payment cases; those case details remain visible after opening the file.",
+        "Sequential workflow and BG obligations are tracked independently: each S.O. contributes only its current sequential stage, while applicable unreceived PSB, PWB, or PSB+PWB can appear alongside it. A pending BG does not hide IR, bill, or payment delays.",
+        "PWB delay starts from IR Receipt Date for Goods & Services with IR = Yes. Otherwise, it uses the applicable Material Receipt or Job Completion date; contract files use the S.O. date.",
+        "Example: With IR = Yes, a blank IR Receipt Date means no PWB delay age is calculated yet.",
         "Scope: Cancelled files are excluded. Cancelled S.O.s, demand-cancelled files, and no-further-action payment cases are excluded from applicable S.O. and payment delay rows.",
-        "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Other file-level milestones start from the latest applicable earlier completed predecessor and remain open through today.",
+        "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Most file-level milestones use the latest applicable earlier completed predecessor; TCEC Pre Post-TCEC and Post-TCEC use their explicit cycle dates below.",
         "Bidding: Normal bidding starts from CFA Approval Date and ends when Bid Date is recorded. For a Non-TCEC Refloat, after Refloat recommendation and Bidding Stage Over = Yes, the common Bidding delay restarts from Refloat recommendation and ends when Refloat bidding date is recorded.",
-        "GeM Undertaking: Every applicable GeM file other than GeM Comparison can complete the normal cycle from CFA Approval Date to GeM Undertaking Date, including files marked Refloat. A refloat file can also have a separate cycle: TCEC uses Post-TCEC Date to Refloat GeM undertaking, while Non-TCEC uses Refloat recommendation to Refloat GeM undertaking. Missing required dates create no sample; the two cycles remain independent.",
-        "Non-TCEC Technical Evaluation: The recorded Bid closing date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid closing to the first Financial Sanction. If Refloat = Yes before Refloat bid closing is recorded, it runs from Bid closing to Refloat recommendation. After Refloat bid closing, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat bid closing to Financial Sanction.",
+        "GeM Undertaking: Delay Status selects one active cycle. Normal uses CFA Approval Date → GeM Undertaking Date and normal GeM mode. Refloat uses Post-TCEC Date (TCEC) or Refloat recommendation (Non-TCEC) → Refloat GeM undertaking and Refloat GeM mode. Comparison excludes that cycle. Milestone Clearing may count separate normal and Refloat samples.",
+        "Non-TCEC Technical Evaluation: The recorded Bid Opening Date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid Opening Date to the first Financial Sanction. If Refloat = Yes before Refloat Bid Opening Date is recorded, it runs from Bid Opening Date to Refloat recommendation. After Refloat Bid Opening Date, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat Bid Opening Date to Financial Sanction.",
+        "Pre Post-TCEC: For a TCEC file, the pending clock starts at Bid Opening Date (normal cycle) or Refloat Bid Opening Date (Refloat cycle), requires the corresponding Bidding Stage Over = Yes, and ends when that cycle's Post-TCEC Date is recorded. It remains visible if the current milestone advances. Applicability uses the matching cycle's GeM Bidding Mode.",
+        "Post-TCEC: Once its Post-TCEC Date is recorded, the pending clock starts on that date and ends at the corresponding Post-TCEC Minutes Date. Normal and Refloat cycles use their own current milestone, date fields, and Bidding Stage Over flag.",
         "Order workflow: Financial Sanction, Supply Order, PSB, PWB, PSB+PWB, Delivery, Job Completion, IR, Bill preparation, Bill sent for payment, and open bill returns use their own applicable S.O. or stage dates.",
         "Job Completion and payment are independent delay items. An overdue payment does not suppress Job Completion, and a pending Job Completion does not create or replace a payment delay.",
         "Payment cycle (ASL, bill trigger to bill submission): Counts included regular or stage payment cases without a first Bill Sent for Payment date. Group A with IR = Yes starts at IR Receipt Date; Group A with IR = No and Group B start at Job Completion Received Date. Common staged payment starts at the last applicable stage date. Returned payment cases, advances, and supplementary bills are excluded.",
@@ -6368,22 +6498,36 @@ export function Dashboard() {
           ],
           [
             "Non-TCEC Technical Evaluation",
-            "Non-TCEC file with a past Bid closing; first cycle requires Bidding Stage Over = Yes; later refloat cycle requires Refloat Bidding Stage Over = Yes",
-            "First cycle: Bid closing; later cycle: Refloat bid closing date",
+            "Non-TCEC file with a past Bid Opening Date; first cycle requires Bidding Stage Over = Yes; later refloat cycle requires Refloat Bidding Stage Over = Yes",
+            "First cycle: Bid Opening Date; later cycle: Refloat Bid Opening Date",
             "Refloat = No: Financial Sanction; first Refloat cycle: Refloat recommendation; later Refloat cycle: Financial Sanction",
             "One row per file; no row before the applicable stage-over field is Yes or after the applicable end date",
           ],
           [
+            "Pre Post-TCEC",
+            "TCEC file; Current Milestone = Post-TCEC or Refloat Post-TCEC; the active cycle's Bidding Stage Over = Yes",
+            "Normal: Bid Opening Date; Refloat: Refloat Bid Opening Date",
+            "Normal: Post-TCEC Date; Refloat: Refloat Post-TCEC Date",
+            "One file-level row for the active cycle; requires its opening date and a blank Post-TCEC date",
+          ],
+          [
             "Post-TCEC",
-            "TCEC file; Bidding Stage Over = Yes; Bid Opening Date recorded",
-            "Bid Opening Date",
+            "Current Milestone = Post-TCEC; TCEC = Yes; Bidding Stage Over = Yes; Post-TCEC Date recorded",
+            "Post-TCEC Date",
             "Post-TCEC Minutes Date",
-            "One file",
+            "One file; pending clock starts only after Post-TCEC Date is recorded",
+          ],
+          [
+            "Refloat Post-TCEC",
+            "Current Milestone = Refloat Post-TCEC; TCEC = Yes; Refloat = Yes; Refloat Bidding Stage Over = Yes; Refloat Post-TCEC Date recorded",
+            "Refloat Post-TCEC Date",
+            "Refloat Post-TCEC Minutes Date",
+            "One file; pending clock starts only after Refloat Post-TCEC Date is recorded",
           ],
           [
             "CNC",
-            "Current TCEC CNC milestone",
-            "Post-TCEC Minutes Date (approval date)",
+            "Current TCEC CNC milestone; Refloat uses the active Refloat Post-TCEC cycle",
+            "Normal: Post-TCEC Minutes Date; Refloat: Refloat Post-TCEC Minutes Date",
             "CNC Approval Date",
             "One file; only while pending; no fallback",
           ],
@@ -6397,7 +6541,7 @@ export function Dashboard() {
           [
             "Supply Order",
             "Active S.O. awaiting placement",
-            "TCEC: CNC Approval Date; Non-TCEC: that S.O.'s Financial Sanction Date",
+            "TCEC: file-level CNC Approval Date, shared by each S.O.; Non-TCEC: that S.O.'s Financial Sanction Date",
             "S.O. Date",
             "One row per active S.O.; TCEC has no fallback",
           ],
@@ -6644,53 +6788,53 @@ export function Dashboard() {
             ),
             onClose: () => setSelectedTcecMonth(""),
           }
-          : displayedAnalyticsPanel.key === "bidOpeningSchedule" && selectedBidOpeningMonth
-            ? {
-                monthKey: selectedBidOpeningMonth,
-                days: getBidOpeningCalendarDays(
-                  analyticsBidOpeningDailyRows,
-                  selectedBidOpeningMonth,
-                  (date, status) =>
-                    openAnalyticsSearchTarget({
-                      dashboardFilter: `bidOpeningSchedule:${status}:${date}`,
-                      focusSection: "Bidding details",
-                    }),
-                ),
-                onClose: () => setSelectedBidOpeningMonth(""),
-              }
-        : displayedAnalyticsPanel.key === "cncSummary" && selectedCncMonth
+        : displayedAnalyticsPanel.key === "bidOpeningSchedule" && selectedBidOpeningMonth
           ? {
-              monthKey: selectedCncMonth,
-              days: getMonthlyCalendarDays(
-                cncDateRows,
-                selectedCncMonth,
-                "date",
-                [
-                  {
-                    key: "approved",
-                    label: "CNC approved",
-                    color: "green",
-                    hideLabel: true,
-                  },
-                  {
-                    key: "approvalPending",
-                    label: "Approval pending",
-                    color: "red",
-                    hideLabel: true,
-                  },
-                ],
-                (date, key) =>
-                  key === "approved" || key === "approvalPending"
-                    ? () =>
-                        openAnalyticsSearchTarget({
-                          dashboardFilter: getCncSummaryDashboardFilter(key, date),
-                          focusSection: "Approval block",
-                        })
-                    : undefined,
+              monthKey: selectedBidOpeningMonth,
+              days: getBidOpeningCalendarDays(
+                analyticsBidOpeningDailyRows,
+                selectedBidOpeningMonth,
+                (date, status) =>
+                  openAnalyticsSearchTarget({
+                    dashboardFilter: `bidOpeningSchedule:${status}:${date}`,
+                    focusSection: "Bidding details",
+                  }),
               ),
-              onClose: () => setSelectedCncMonth(""),
+              onClose: () => setSelectedBidOpeningMonth(""),
             }
-          : undefined;
+          : displayedAnalyticsPanel.key === "cncSummary" && selectedCncMonth
+            ? {
+                monthKey: selectedCncMonth,
+                days: getMonthlyCalendarDays(
+                  cncDateRows,
+                  selectedCncMonth,
+                  "date",
+                  [
+                    {
+                      key: "approved",
+                      label: "CNC approved",
+                      color: "green",
+                      hideLabel: true,
+                    },
+                    {
+                      key: "approvalPending",
+                      label: "Approval pending",
+                      color: "red",
+                      hideLabel: true,
+                    },
+                  ],
+                  (date, key) =>
+                    key === "approved" || key === "approvalPending"
+                      ? () =>
+                          openAnalyticsSearchTarget({
+                            dashboardFilter: getCncSummaryDashboardFilter(key, date),
+                            focusSection: "Approval block",
+                          })
+                      : undefined,
+                ),
+                onClose: () => setSelectedCncMonth(""),
+              }
+            : undefined;
   const analyticsCalendarExportTable: ExportTable | undefined = selectedAnalyticsCalendar
     ? {
         title: `Daily breakdown - ${formatMonthKeyLabel(selectedAnalyticsCalendar.monthKey)}`,
@@ -6883,7 +7027,11 @@ export function Dashboard() {
               <TooltipContent
                 side="bottom"
                 align="center"
-                className="box-border w-[min(80rem,calc(100vw-2rem))] max-w-[calc(100vw-2rem)] max-h-[min(80dvh,var(--radix-popper-available-height,80dvh))] overflow-y-auto overscroll-contain touch-pan-y border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+                className={`box-border ${
+                  panel.key === "milestoneClearingTable"
+                    ? "w-[min(96rem,calc(100vw-2rem))]"
+                    : "w-[min(80rem,calc(100vw-2rem))]"
+                } max-w-[calc(100vw-2rem)] max-h-[min(80dvh,var(--radix-popper-available-height,80dvh))] overflow-y-auto overscroll-contain touch-pan-y border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed`}
               >
                 <HelperWithExamples items={panel.helper} examples={panel.helperExamples} />
               </TooltipContent>
@@ -7349,8 +7497,8 @@ export function Dashboard() {
   return (
     <div className="space-y-3">
       <div className={isNoticeBoardEmbed ? "hidden" : "space-y-3"}>
-        <div className="section-accent-border w-full min-w-0 overflow-x-auto rounded-lg border border-primary/25 bg-primary/5 p-1">
-          <div className="inline-flex min-w-max rounded-md p-1">
+        <div className="section-accent-border w-full min-w-0 rounded-lg border border-primary/25 bg-primary/5 p-1">
+          <div className="flex w-full min-w-0 flex-wrap gap-x-1 gap-y-1 rounded-md p-1">
             {dashboardTabOptions.map((tab) => {
               const tabKey = tab.key;
               const helper = dashboardTabHelpers[tabKey];
@@ -7396,8 +7544,8 @@ export function Dashboard() {
             })}
           </div>
         </div>
-        <div className="section-accent-border flex w-full min-w-0 flex-nowrap items-end justify-start gap-3 overflow-x-auto rounded-lg border border-border bg-secondary/30 p-2">
-          <div className="flex shrink-0 flex-nowrap items-end gap-2">
+        <div className="section-accent-border flex w-full min-w-0 flex-wrap items-end justify-start gap-3 rounded-lg border border-border bg-secondary/30 p-2">
+          <div className="flex min-w-0 max-w-full flex-wrap items-end gap-2">
             <div className="flex items-end gap-1.5">
               <label
                 className={filterLabelClass(
@@ -7503,15 +7651,7 @@ export function Dashboard() {
                 onClear={clearFileInitiationDateRange}
               />
             )}
-            <label className="flex h-9 items-center gap-2 self-end rounded-md border border-input bg-background px-2.5 py-0 text-xs text-foreground">
-              <input
-                type="checkbox"
-                data-testid="dashboard-include-active-archived-years"
-                checked={includeArchivedYears}
-                onChange={(event) => setIncludeArchivedYears(event.target.checked)}
-                className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
-              />
-              <span className="whitespace-nowrap">Include active files from archived years</span>
+            <div className="flex min-w-0 max-w-full flex-col items-end gap-1 self-end">
               <TooltipProvider delayDuration={150}>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -7535,7 +7675,19 @@ export function Dashboard() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-            </label>
+              <label className="flex min-h-9 max-w-full min-w-0 items-center gap-1.5 rounded-md border border-input bg-background px-2 py-1 text-xs text-foreground">
+                <input
+                  type="checkbox"
+                  data-testid="dashboard-include-active-archived-years"
+                  checked={includeArchivedYears}
+                  onChange={(event) => setIncludeArchivedYears(event.target.checked)}
+                  className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
+                />
+                <span className="whitespace-normal break-words">
+                  Include active files from archived years
+                </span>
+              </label>
+            </div>
           </div>
           <label
             className={filterLabelClass(
@@ -7589,15 +7741,19 @@ export function Dashboard() {
               aria-label="Refresh dashboard calculation"
             >
               <RotateCcw className="size-3.5" aria-hidden="true" />
-              {(activeDashboardTab === "analytics"
-                ? analyticsCalculationActive
-                : dashboardCalculationActive)
+              {(
+                activeDashboardTab === "analytics"
+                  ? analyticsCalculationActive
+                  : dashboardCalculationActive
+              )
                 ? "Calculating…"
                 : "Refresh"}
             </button>
-            {(activeDashboardTab === "analytics"
-              ? analyticsCalculationActive
-              : dashboardCalculationActive) ? (
+            {(
+              activeDashboardTab === "analytics"
+                ? analyticsCalculationActive
+                : dashboardCalculationActive
+            ) ? (
               <button
                 type="button"
                 onClick={
@@ -7984,9 +8140,8 @@ export function Dashboard() {
                           count: milestone.irPreparationPending,
                           onClick: () => handleStatusFilter("irPreparationPending"),
                           help: [
-                            "Files with delivery or Job Completion recorded are included while IR preparation remains pending.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
+                            "Counts S.O. rows when IR applies and IR = Yes, the S.O. date and Material Receipt date are recorded, and IR Preparation Date is blank.",
+                            "Cancelled and short-closed S.O.s are excluded. Count unit: S.O. rows.",
                           ],
                         },
                         {
@@ -7994,9 +8149,8 @@ export function Dashboard() {
                           count: milestone.irReceiptPending,
                           onClick: () => handleStatusFilter("irReceiptPending"),
                           help: [
-                            "Files with IR preparation recorded are included while IR receipt remains pending.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
+                            "Counts S.O. rows when IR applies and IR = Yes, IR Preparation Date is recorded, and IR Receipt Date is blank.",
+                            "Cancelled and short-closed S.O.s are excluded. Count unit: S.O. rows.",
                           ],
                         },
                         {
@@ -8004,9 +8158,8 @@ export function Dashboard() {
                           count: milestone.irCompleted,
                           onClick: () => handleStatusFilter("irCompleted"),
                           help: [
-                            "Files with IR receipt or completion recorded are included.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
+                            "Counts S.O. rows when IR applies, IR = Yes, and IR Receipt Date is recorded.",
+                            "Cancelled S.O.s are excluded. Count unit: S.O. rows.",
                           ],
                         },
                       ]}
@@ -8035,41 +8188,25 @@ export function Dashboard() {
                           label: "Due",
                           count: milestone.preBidDue,
                           onClick: () => handleStatusFilter("preBidMeeting:due"),
-                          help: [
-                            "Files with a due, incomplete Pre-bid Meeting are included.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
-                          ],
+                          help: getPreBidMeetingStatusHelp(false, "due"),
                         },
                         {
                           label: "Completed",
                           count: milestone.preBidCompleted,
                           onClick: () => handleStatusFilter("preBidMeeting:completed"),
-                          help: [
-                            "Files with Pre-bid Meeting completion recorded are included.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
-                          ],
+                          help: getPreBidMeetingStatusHelp(false, "completed"),
                         },
                         {
                           label: "Refloat Due",
                           count: milestone.refloatPreBidDue,
                           onClick: () => handleStatusFilter("refloatPreBidMeeting:due"),
-                          help: [
-                            "Refloat files with a due, incomplete Pre-bid Meeting are included.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
-                          ],
+                          help: getPreBidMeetingStatusHelp(true, "due"),
                         },
                         {
                           label: "Refloat Completed",
                           count: milestone.refloatPreBidCompleted,
                           onClick: () => handleStatusFilter("refloatPreBidMeeting:completed"),
-                          help: [
-                            "Refloat files with Pre-bid Meeting completion recorded are included.",
-                            "Cancelled demand files are excluded.",
-                            "File Closed follows the selected Global Filter.",
-                          ],
+                          help: getPreBidMeetingStatusHelp(true, "completed"),
                         },
                       ]}
                     />
@@ -8099,7 +8236,13 @@ export function Dashboard() {
                         handleStatusFilter(`milestoneReviewed:${milestone.key}`)
                       }
                       onPendingClick={() => handleStatusFilter(`milestonePending:${milestone.key}`)}
-                      onClearedClick={() => handleStatusFilter(`milestoneCleared:${milestone.key}`)}
+                      onClearedClick={() =>
+                        handleStatusFilter(
+                          milestone.key === "cfa"
+                            ? "cfaCompleted"
+                            : `milestoneCleared:${milestone.key}`,
+                        )
+                      }
                       onLiveBidsClick={() => handleStatusFilter("liveBids")}
                       onBidOverdueClick={() => handleStatusFilter("bidOverdue")}
                       onRefloatLiveBidsClick={() =>
@@ -8392,7 +8535,7 @@ export function Dashboard() {
                   <button
                     type="button"
                     onClick={() => setAnalyticsSidePanelHooked(false)}
-                    className="rounded-md border border-border bg-background px-2 py-1 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                    className="rounded-md border border-border bg-background px-2 py-1 text-[0.6875rem] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
                     title="Unhook side panel"
                   >
                     Unhook
@@ -8424,7 +8567,7 @@ export function Dashboard() {
                 <button
                   type="button"
                   onClick={() => setAnalyticsSidePanelHooked(true)}
-                  className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[11px] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
+                  className="flex h-full min-h-40 w-full items-center justify-center rounded-md border border-dashed border-border bg-background px-1 py-3 text-[0.6875rem] font-semibold text-muted-foreground hover:bg-accent hover:text-foreground"
                   title="Hook side panel"
                   aria-label="Hook side panel"
                 >
@@ -9335,7 +9478,9 @@ export function Dashboard() {
                           items={[
                             { label: "Analytics" },
                             {
-                              label: selectedBidOpeningFiscalYear ? "Years" : "Bid-opening schedule",
+                              label: selectedBidOpeningFiscalYear
+                                ? "Years"
+                                : "Bid-opening schedule",
                               onClick: selectedBidOpeningFiscalYear
                                 ? () => {
                                     setSelectedBidOpeningMonth("");
@@ -9491,7 +9636,68 @@ export function Dashboard() {
                             ) : null}
                             <AnalyticsRankingTable
                               columns={displayedAnalyticsPanel.columns}
-                              rows={displayedAnalyticsPanel.rows}
+                              rows={
+                                displayedAnalyticsPanel.key === "preBidMeetings" &&
+                                !selectedPreBidFiscalYear
+                                  ? expandedPreBidRows
+                                  : displayedAnalyticsPanel.key === "bidOpeningSchedule" &&
+                                      !selectedBidOpeningFiscalYear
+                                    ? bidOpeningExpandedRows
+                                    : displayedAnalyticsPanel.key === "tcecStatus" &&
+                                        !selectedTcecFiscalYear
+                                      ? expandedTcecRows
+                                      : displayedAnalyticsPanel.key === "cncSummary" &&
+                                          !selectedCncFiscalYear
+                                        ? expandedCncRows
+                                        : displayedAnalyticsPanel.rows
+                              }
+                              totalRows={
+                                displayedAnalyticsPanel.key === "preBidMeetings" &&
+                                !selectedPreBidFiscalYear
+                                  ? preBidFyRows
+                                  : displayedAnalyticsPanel.key === "bidOpeningSchedule" &&
+                                      !selectedBidOpeningFiscalYear
+                                    ? bidOpeningFyRows
+                                    : displayedAnalyticsPanel.key === "tcecStatus" &&
+                                        !selectedTcecFiscalYear
+                                      ? tcecFyRows
+                                      : displayedAnalyticsPanel.key === "cncSummary" &&
+                                          !selectedCncFiscalYear
+                                        ? cncFyRows
+                                        : undefined
+                              }
+                              getRowClickDetails={
+                                (displayedAnalyticsPanel.key === "preBidMeetings" &&
+                                  !selectedPreBidFiscalYear) ||
+                                (displayedAnalyticsPanel.key === "bidOpeningSchedule" &&
+                                  !selectedBidOpeningFiscalYear) ||
+                                (displayedAnalyticsPanel.key === "tcecStatus" &&
+                                  !selectedTcecFiscalYear) ||
+                                (displayedAnalyticsPanel.key === "cncSummary" &&
+                                  !selectedCncFiscalYear)
+                                  ? (row) =>
+                                      Number(row.expandable) === 1
+                                        ? {
+                                            label: `FY ${String(row.name)}: ${Number(row.expanded) === 1 ? "collapse" : "expand"} months`,
+                                            expanded: Number(row.expanded) === 1,
+                                          }
+                                        : undefined
+                                  : undefined
+                              }
+                              onRowClick={(row) => {
+                                if (Number(row.expandable) !== 1) return;
+                                const fiscalYear = String(row.fiscalYear ?? "");
+                                if (!fiscalYear) return;
+                                if (displayedAnalyticsPanel.key === "preBidMeetings") {
+                                  toggleExpandedFiscalYear("preBidMeetings", fiscalYear);
+                                } else if (displayedAnalyticsPanel.key === "bidOpeningSchedule") {
+                                  toggleExpandedFiscalYear("bidOpeningSchedule", fiscalYear);
+                                } else if (displayedAnalyticsPanel.key === "tcecStatus") {
+                                  toggleExpandedFiscalYear("tcecStatus", fiscalYear);
+                                } else if (displayedAnalyticsPanel.key === "cncSummary") {
+                                  toggleExpandedFiscalYear("cncSummary", fiscalYear);
+                                }
+                              }}
                               getRowNameHelpBreadcrumb={(row) => [
                                 "Dashboard",
                                 "Analytics",
@@ -9509,7 +9715,11 @@ export function Dashboard() {
                                 displayedAnalyticsPanel.key === "indentorFirmLinkage"
                               }
                               wideNameColumn={displayedAnalyticsPanel.key === "indentorFirmLinkage"}
-                              getCellSearchTarget={getAnalyticsCellSearchTarget}
+                              getCellSearchTarget={(row, column) =>
+                                Number(row.expandable) === 1
+                                  ? undefined
+                                  : getAnalyticsCellSearchTarget(row, column)
+                              }
                               getColumnTotalSearchTarget={getAnalyticsColumnTotalSearchTarget}
                               onOpenSearchTarget={openAnalyticsSearchTarget}
                             />
@@ -9950,20 +10160,20 @@ export function Dashboard() {
                         dataKey="position"
                         axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                         tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                        tick={{ fontSize: 13 }}
+                        tick={{ fontSize: "0.8125rem" }}
                       />
                       <YAxis
                         width={finance1PositionYAxisWidth}
                         allowDecimals={false}
                         axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                         tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                        tick={{ fontSize: 13 }}
+                        tick={{ fontSize: "0.8125rem" }}
                         tickFormatter={(value: number) =>
                           formatThousandsAndLakhs(value / 100_000, 0)
                         }
                       />
                       <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
-                      <Legend wrapperStyle={{ fontSize: 13 }} />
+                      <Legend wrapperStyle={{ fontSize: "0.8125rem" }} />
                       <Bar
                         dataKey="capital"
                         name="Capital"
@@ -10695,7 +10905,7 @@ export function Dashboard() {
                       </div>
                     ) : (
                       <div className="mt-3 overflow-x-auto rounded-md border border-border bg-card">
-                        <table className="w-full min-w-[920px] border-collapse text-xs">
+                        <table className="w-full min-w-[920px] border-collapse text-[0.8125rem]">
                           <thead className="bg-secondary text-muted-foreground">
                             <tr>
                               <th className="border-b border-border px-3 py-2 text-left font-semibold">
@@ -10964,7 +11174,7 @@ export function Dashboard() {
                       </div>
                     ) : (
                       <div className="mt-3 overflow-x-auto rounded-md border border-border bg-card">
-                        <table className="w-full min-w-[640px] border-collapse text-xs">
+                        <table className="w-full min-w-[640px] border-collapse text-[0.8125rem]">
                           <thead className="bg-secondary text-muted-foreground">
                             <tr>
                               <th className="border-b border-border px-3 py-2 text-left font-semibold">
@@ -11623,10 +11833,11 @@ export function Dashboard() {
                         onClick={() =>
                           printFinanceRowsToPdf(
                             financeExportRows,
-                            financeExportTitle,
+                            fyActivityExportTitle,
                             financeFirmTypeDistributionExportRows,
                             selectedFinanceFirmTypeDistributionLabel,
                             dashboardExportDescription,
+                            fyActivityExportTables,
                           )
                         }
                         className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
@@ -11641,10 +11852,11 @@ export function Dashboard() {
                         onClick={() =>
                           exportFinanceRowsToExcel(
                             financeExportRows,
-                            financeExportTitle,
+                            fyActivityExportTitle,
                             financeFirmTypeDistributionExportRows,
                             selectedFinanceFirmTypeDistributionLabel,
                             dashboardExportDescription,
+                            fyActivityExportTables,
                           )
                         }
                         className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium hover:bg-accent"
@@ -12148,7 +12360,7 @@ export function Dashboard() {
                             </FinanceInteractiveHelp>
                           </div>
                           <div className="mt-2">
-                            <table className="w-full table-fixed border-collapse text-xs">
+                            <table className="w-full table-fixed border-collapse text-[0.8125rem]">
                               <colgroup>
                                 <col className="w-[34%]" />
                                 <col className="w-[22%]" />
@@ -12310,7 +12522,7 @@ export function Dashboard() {
                             </FinanceInteractiveHelp>
                           </div>
                           <div className="mt-2 overflow-x-auto">
-                            <table className="w-full min-w-[620px] border-collapse text-xs">
+                            <table className="w-full min-w-[620px] border-collapse text-[0.8125rem]">
                               <thead className="bg-secondary/60">
                                 <tr className="text-left">
                                   <th
@@ -12489,14 +12701,14 @@ export function Dashboard() {
                                 dataKey="position"
                                 axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                                 tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                                tick={{ fontSize: 13 }}
+                                tick={{ fontSize: "0.8125rem" }}
                               />
                               <YAxis
                                 width={financePositionYAxisWidthCurrent}
                                 allowDecimals={false}
                                 axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
                                 tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                                tick={{ fontSize: 13 }}
+                                tick={{ fontSize: "0.8125rem" }}
                                 tickFormatter={(value: number) =>
                                   formatThousandsAndLakhs(value / 100_000, 0)
                                 }
@@ -12504,7 +12716,7 @@ export function Dashboard() {
                               <ChartTooltip
                                 formatter={(value) => formatCurrency(Number(value) || 0)}
                               />
-                              <Legend wrapperStyle={{ fontSize: 13 }} />
+                              <Legend wrapperStyle={{ fontSize: "0.8125rem" }} />
                               <Bar
                                 dataKey="capital"
                                 name="Capital"
@@ -12803,7 +13015,7 @@ function SnapshotPieChart({
             type="button"
             disabled={!row.searchFilter}
             onClick={() => row.searchFilter && onSelect(row.searchFilter)}
-            className="grid w-full grid-cols-[9px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-sm py-1 text-left text-[10px] leading-tight hover:bg-accent disabled:cursor-default"
+            className="grid w-full grid-cols-[9px_minmax(0,1fr)_auto] items-center gap-1.5 rounded-sm py-1 text-left text-xs leading-tight hover:bg-accent disabled:cursor-default"
           >
             <span
               className="size-2 rounded-sm"
@@ -12904,7 +13116,7 @@ function FinanceInlinePieChart({
                 type="button"
                 disabled={!onSelect}
                 onClick={() => onSelect?.(row.label)}
-                className="grid w-full grid-cols-[9px_minmax(0,1fr)_auto] items-center gap-1.5 rounded text-left text-[10px] leading-tight disabled:cursor-default enabled:hover:bg-accent/60"
+                className="grid w-full grid-cols-[9px_minmax(0,1fr)_auto] items-center gap-1.5 rounded text-left text-xs leading-tight disabled:cursor-default enabled:hover:bg-accent/60"
               >
                 <span
                   className="size-2 rounded-sm"
@@ -13135,7 +13347,7 @@ function CategoryBarChart({
                   textAnchor="middle"
                   dominantBaseline="middle"
                   fill="currentColor"
-                  fontSize="12"
+                  fontSize="0.75rem"
                   fontWeight="500"
                 >
                   {valueLabel}
@@ -13220,7 +13432,7 @@ function CategoryBarChart({
                   className="grid min-w-0 text-center disabled:cursor-default"
                   style={{ gridTemplateRows: `22px ${columnPlotHeight}px ${columnLabelHeight}px` }}
                 >
-                  <span className="truncate text-[11px] font-semibold tabular-nums">
+                  <span className="truncate text-[0.6875rem] font-semibold tabular-nums">
                     {(showColumnAxis && !showColumnValues) || rows.length > 14
                       ? ""
                       : (row.displayValue ?? formatValue(row.value))}
@@ -13263,7 +13475,7 @@ function CategoryBarChart({
                       />
                     )}
                   </span>
-                  <span className="relative block min-w-0 overflow-visible pt-2 text-[11px] leading-tight text-muted-foreground">
+                  <span className="relative block min-w-0 overflow-visible pt-2 text-[0.6875rem] leading-tight text-muted-foreground">
                     {straightColumnLabels ? (
                       <span className="block whitespace-nowrap text-center" title={row.label}>
                         {row.label}
@@ -13422,7 +13634,7 @@ function CategoryBarChart({
                 </div>
               </div>
               <span />
-              <div className="flex justify-between pt-1 text-[11px] tabular-nums text-muted-foreground">
+              <div className="flex justify-between pt-1 text-[0.6875rem] tabular-nums text-muted-foreground">
                 {[...axisTicks].reverse().map((value) => (
                   <span key={value}>{value.toLocaleString("en-IN")}</span>
                 ))}
@@ -13702,7 +13914,7 @@ function FinanceSectionTitle({
           <div
             className={
               compact
-                ? "text-[11px] font-semibold text-foreground"
+                ? "text-xs font-semibold text-foreground"
                 : "text-sm font-extrabold text-foreground"
             }
           >
@@ -13720,7 +13932,7 @@ function FinanceSectionTitle({
           ) : null}
         </div>
         {basis ? (
-          <div className="mt-0.5 text-[11px] font-medium text-muted-foreground">{basis}</div>
+          <div className="mt-0.5 text-xs font-medium text-muted-foreground">{basis}</div>
         ) : null}
       </div>
       {!helpInline ? (
@@ -13752,7 +13964,7 @@ function FinanceAmountTile({
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2.5">
       <div className="flex items-center justify-between gap-2">
-        <div className="text-[11px] text-muted-foreground">{label}</div>
+        <div className="text-xs text-muted-foreground">{label}</div>
         <FloatingHelp label={`${label} amount help`}>{help}</FloatingHelp>
       </div>
       <div className={`mt-1 font-semibold tracking-tight ${compact ? "text-sm" : "text-lg"}`}>
@@ -13774,7 +13986,9 @@ function FinanceAmountTile({
         )}
       </div>
       {percentLabel ? (
-        <div className="mt-1 text-[11px] font-medium text-muted-foreground">{percentLabel}</div>
+        <div className="mt-1 text-xs font-medium text-muted-foreground">
+          {percentLabel}
+        </div>
       ) : null}
     </div>
   );
@@ -13803,7 +14017,7 @@ function Finance1AmountMetricCard({
     <div className="rounded-md border border-border bg-card px-3 py-2.5">
       <div className="flex items-start justify-between gap-2">
         <div>
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
             <span>{title}</span>
             {help ? (
               <FinanceInteractiveHelp label={`${title} help`}>{help}</FinanceInteractiveHelp>
@@ -13823,7 +14037,7 @@ function Finance1AmountMetricCard({
           className={`flex items-center gap-2 ${showCount ? "justify-between" : "justify-start"}`}
         >
           {showCount && !amountFirst ? (
-            <div className="text-xs text-muted-foreground">
+            <div className="text-[0.8125rem] text-muted-foreground">
               {countText ?? `${metric.count}${unitLabel ? ` ${unitLabel}` : ""}`}
             </div>
           ) : null}
@@ -13832,12 +14046,12 @@ function Finance1AmountMetricCard({
             {onClick ? <Search aria-hidden="true" className="h-3.5 w-3.5 text-primary" /> : null}
           </div>
           {showCount && amountFirst ? (
-            <div className="text-xs text-muted-foreground">
+            <div className="text-[0.8125rem] text-muted-foreground">
               {countText ?? `${metric.count}${unitLabel ? ` ${unitLabel}` : ""}`}
             </div>
           ) : null}
         </div>
-        <div className="mt-2 grid grid-cols-1 gap-1 text-[11px] text-muted-foreground">
+        <div className="mt-2 grid grid-cols-1 gap-1 text-xs text-muted-foreground">
           <div>Capital {formatCurrency(metric.capital)}</div>
           <div>Revenue {formatCurrency(metric.revenue)}</div>
         </div>
@@ -13857,7 +14071,7 @@ function Finance1CountMetricCard({
 }) {
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2.5">
-      <div className="text-[11px] font-semibold text-foreground">{title}</div>
+      <div className="text-xs font-semibold text-foreground">{title}</div>
       <button
         type="button"
         onClick={onClick}
@@ -13952,21 +14166,21 @@ function FinanceCarryForwardPanel({
       <div className="flex items-start justify-between gap-2">
         <div>
           <div className="flex items-center gap-1.5">
-            <div className="text-[11px] font-semibold text-foreground">{title}</div>
+          <div className="text-xs font-semibold text-foreground">{title}</div>
             <FinanceInteractiveHelp label={`${title} help`}>
               <HelperWithExamples items={help} examples={examples} details={details} />
             </FinanceInteractiveHelp>
           </div>
           {basis ? (
-            <div className="mt-0.5 text-[10px] font-medium text-muted-foreground">{basis}</div>
+            <div className="mt-0.5 text-[0.6875rem] font-medium text-muted-foreground">{basis}</div>
           ) : null}
-          <div className="mt-1 text-xs text-muted-foreground">
+          <div className="mt-1 text-[0.8125rem] text-muted-foreground">
             {safeTotal.count} liability cases
           </div>
         </div>
         <div className="text-right text-sm font-semibold">{formatCurrency(safeTotal.total)}</div>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-muted-foreground">
+      <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-muted-foreground">
         <div>Capital {formatCurrency(safeTotal.capital)}</div>
         <div>Revenue {formatCurrency(safeTotal.revenue)}</div>
       </div>
@@ -13977,13 +14191,13 @@ function FinanceCarryForwardPanel({
               key={`${title}-${row.year}`}
               type="button"
               onClick={() => onOpenFilter(row.filter)}
-              className="flex w-full items-center rounded border border-border bg-background px-2 py-1.5 text-left text-xs hover:bg-accent"
+              className="flex w-full items-center rounded border border-border bg-background px-2 py-1.5 text-left text-[0.8125rem] hover:bg-accent"
             >
               <span className="font-medium">{getRowLabel(row)}</span>
             </button>
           ))
         ) : (
-          <div className="rounded border border-dashed border-border px-2 py-1.5 text-xs text-muted-foreground">
+          <div className="rounded border border-dashed border-border px-2 py-1.5 text-[0.8125rem] text-muted-foreground">
             {emptyText}
           </div>
         )}
@@ -14193,7 +14407,7 @@ function LiveStatusSection({
               {pendingPaymentBreakdown.total}
             </span>
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">
+          <div className="mt-1 text-[0.6875rem] text-muted-foreground">
             Returned-bill status counts are not added separately.
           </div>
         </div>
@@ -14695,7 +14909,7 @@ function Status4Table({
                   <button
                     type="button"
                     onClick={row.onLabelClick}
-                    className="text-left text-foreground hover:text-primary hover:underline"
+                    className="text-left text-primary underline decoration-dotted underline-offset-2 hover:text-primary/80"
                   >
                     {row.label}
                   </button>
@@ -15905,6 +16119,8 @@ function FileCategoryFilter({
   );
 }
 
+const dashboardDateInputWidthClass = "w-[12.5rem] min-w-[12.5rem] max-w-[12.5rem]";
+
 function FileInitiationDateRangeFilter({
   fromDate,
   toDate,
@@ -15924,7 +16140,9 @@ function FileInitiationDateRangeFilter({
 }) {
   const hasRange = Boolean(fromDate || toDate);
   return (
-    <div className={filterLabelClass(active, "flex flex-col gap-1 text-xs text-foreground")}>
+    <div
+      className={filterLabelClass(active, "flex shrink-0 flex-col gap-1 text-xs text-foreground")}
+    >
       <span className="inline-flex items-center gap-1 leading-none">
         Initiation date
         <TooltipProvider delayDuration={150}>
@@ -15953,9 +16171,10 @@ function FileInitiationDateRangeFilter({
           value={fromDate}
           onChange={onFromDateChange}
           disabled={disabled}
+          widthClass={dashboardDateInputWidthClass}
           className={filterControlClass(
             active,
-            "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+            "h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
           )}
         />
         <span className="text-xs text-muted-foreground">to</span>
@@ -15963,9 +16182,10 @@ function FileInitiationDateRangeFilter({
           value={toDate}
           onChange={onToDateChange}
           disabled={disabled}
+          widthClass={dashboardDateInputWidthClass}
           className={filterControlClass(
             active,
-            "h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
+            "h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60",
           )}
         />
         {hasRange ? (
@@ -16028,7 +16248,8 @@ function FinanceSnapshotInitiationDateFilter({
               aria-label={`Initiation Date ${label}`}
               value={initiationRange[key]}
               onChange={(value) => onInitiationChange(key, value)}
-              className="h-9 w-[160px] min-w-[160px] rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              widthClass={dashboardDateInputWidthClass}
+              className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
             />
           </Fragment>
         ))}
@@ -16064,8 +16285,8 @@ function DashboardStatusSummarySection({
 
   return (
     <section className="space-y-4">
-      <div className="section-accent-border rounded-xl border border-border bg-secondary/35 p-5 shadow-[var(--shadow-card)]">
-        <div className="mb-5 flex min-h-8 w-full items-center justify-between gap-2 overflow-x-auto">
+      <div className="section-accent-border rounded-xl border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+        <div className="mb-4 flex min-h-8 w-full items-center justify-between gap-2 overflow-x-auto">
           <h3 className="shrink-0 text-base font-bold">Live Status</h3>
           <div className="ml-auto flex shrink-0 flex-nowrap items-center justify-end gap-2">
             <DashboardScopeSummaryCards
@@ -16109,7 +16330,7 @@ function DashboardStatusSummarySection({
             Loading status summary...
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-3">
             {visibleGroups.map((group) => (
               <Status3WorkflowSection key={group.key} group={group} onOpenStatus={onOpenStatus} />
             ))}
@@ -16132,77 +16353,49 @@ function Status3WorkflowSection({
   group: Status3WorkflowGroup;
   onOpenStatus: (milestone: string, stage: string, displayStage?: string) => void;
 }) {
-  const groupStyle = {
-    "up-to-cfa": {
-      border: "border-sky-500",
-      ribbon:
-        "border border-sky-300 bg-sky-100 text-sky-950 dark:border-sky-700 dark:bg-sky-950/35 dark:text-sky-100",
-    },
-    "cfa-to-so": {
-      border: "border-emerald-500",
-      ribbon:
-        "border border-emerald-300 bg-emerald-50 text-emerald-950 dark:border-emerald-700 dark:bg-emerald-950/35 dark:text-emerald-100",
-    },
-    "so-till-payment": {
-      border: "border-amber-500",
-      ribbon:
-        "border border-amber-300 bg-amber-50 text-amber-950 dark:border-amber-700 dark:bg-amber-950/35 dark:text-amber-100",
-    },
-    miscellaneous: {
-      border: "border-rose-500",
-      ribbon:
-        "border border-rose-300 bg-rose-50 text-rose-950 dark:border-rose-700 dark:bg-rose-950/35 dark:text-rose-100",
-    },
-  }[group.key] ?? {
-    border: "border-primary",
-    ribbon: "bg-primary/10 text-foreground",
-  };
-
   return (
-    <div className="space-y-3">
-      <div className={`rounded-sm px-3 py-2 ${groupStyle.ribbon}`}>
-        <h4 className="text-xs font-bold uppercase">{group.title}</h4>
+    <section className="space-y-2">
+      <div className="flex items-center gap-2 border-b border-border px-1 pb-2">
+        <span aria-hidden="true" className="h-4 w-1 rounded-full bg-primary/55" />
+        <h4 className="text-sm font-semibold text-foreground">{group.title}</h4>
       </div>
-      <div className="space-y-3">
+      <div className="space-y-2">
         {group.sections.map((section) => (
           <Status3TableSection
             key={section.key}
             group={section}
             onOpenStatus={onOpenStatus}
-            accentBorderClass={groupStyle.border}
-            accentHeaderClass={groupStyle.ribbon}
           />
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
 function Status3TableSection({
   group,
   onOpenStatus,
-  accentBorderClass,
-  accentHeaderClass,
 }: {
   group: StatusSummaryTableGroup;
   onOpenStatus: (milestone: string, stage: string, displayStage?: string) => void;
-  accentBorderClass: string;
-  accentHeaderClass: string;
 }) {
   return (
-    <div className={`overflow-hidden rounded-lg border ${accentBorderClass}`}>
-      <div
-        className={`border-b ${accentBorderClass} px-3 py-2 text-xs font-semibold ${accentHeaderClass}`}
-      >
-        {group.title}
-      </div>
+    <div className="border-b border-border/70 pb-2 last:border-b-0 last:pb-0">
       <div className="overflow-x-auto">
-        <table className="w-auto min-w-[480px] max-w-full border-collapse text-sm">
+        <table
+          className="w-max table-fixed border-collapse text-sm"
+        >
+          <colgroup>
+            <col className="w-56" />
+            {group.columns.map((column) => (
+              <col key={column} className="w-40" />
+            ))}
+          </colgroup>
           <thead>
-            <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase text-muted-foreground">
-              <th className="sticky left-0 bg-muted py-2.5 pl-3 pr-4 font-semibold">Milestone</th>
+            <tr className="border-b border-border bg-muted/20 text-left text-[0.6875rem] uppercase text-muted-foreground">
+              <th className="sticky left-0 bg-muted py-2 pl-3 pr-4 font-semibold" />
               {group.columns.map((column) => (
-                <th key={column} className="px-3 py-2.5 text-right font-semibold">
+                <th key={column} className="px-3 py-2 text-right font-semibold">
                   {column}
                 </th>
               ))}
@@ -16212,10 +16405,10 @@ function Status3TableSection({
             {group.rows.map((row, rowIndex) => {
               const rowClass =
                 "border-b border-border/60 last:border-0 " +
-                (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15");
+                (rowIndex % 2 === 0 ? "bg-transparent" : "bg-muted/10");
               const cellClass =
-                "sticky left-0 py-2.5 pl-3 pr-4 font-medium " +
-                (rowIndex % 2 === 0 ? "bg-card" : "bg-secondary/15");
+                "sticky left-0 py-2 pl-3 pr-4 font-medium " +
+                (rowIndex % 2 === 0 ? "bg-background" : "bg-muted/10");
 
               return (
                 <tr key={row.milestone} className={rowClass}>
@@ -16223,7 +16416,7 @@ function Status3TableSection({
                     <Status3MilestoneNameCell name={row.milestone} />
                   </td>
                   {group.columns.map((column) => (
-                    <td key={column} className="px-3 py-2.5 text-right tabular-nums">
+                    <td key={column} className="px-3 py-2 text-right tabular-nums">
                       <DashboardStatusSummaryValue
                         value={
                           row.counts[column] ??
@@ -16247,7 +16440,9 @@ function Status3TableSection({
                           onOpenStatus(
                             target.milestone,
                             target.stage,
-                            column === "Due" && target.stage === "In process" ? "Due" : undefined,
+                            column === "Due" && target.stage === "In process"
+                              ? "Due"
+                              : undefined,
                           );
                         }}
                       />
@@ -16284,78 +16479,39 @@ function DashboardStatusSummaryValue({
   if (value === "-") {
     return <span className="text-muted-foreground">-</span>;
   }
-  const bgReturnHelp =
-    normalizeMilestoneName(stage) === "tobereturned" &&
-    isBgMilestoneKey(normalizeMilestoneName(milestone))
-      ? getBgReturnDueHelp(normalizeMilestoneName(milestone))
-      : undefined;
-  const totalPendingHelp =
+  const testId =
     normalizeMilestoneName(milestone) === "payment" &&
-    normalizeMilestoneName(stage) === "totalpending"
-      ? [
-          "Total Pending = Due + In process + Submitted and unpaid + Return pending + Resubmitted and unpaid + Advance Pending + Supplementary submitted and unpaid + Supplementary return pending + Supplementary resubmitted and unpaid.",
-          "Advance payment returns are included under Advance Pending, not added again under Return pending.",
-          "This counts payment items, not unique files.",
-        ]
-      : undefined;
-  const submittedPaymentHelp =
-    normalizeMilestoneName(milestone) === "payment" &&
-    normalizeMilestoneName(stage) === "submittedandunpaid"
-      ? [
-          "Counts regular or stage payment items where the Bill Sent for Payment date exists and the payment date is still blank.",
-          "Bills with return history are listed under Returned Bills instead.",
-          "Cancelled S.O.s and No Further Action items are excluded.",
-          "This counts payment items, not unique files.",
-        ]
-      : undefined;
-  const supplementaryPendingHelp =
-    normalizeMilestoneName(milestone) === "supplementarybill"
-      ? stage === "Submitted and unpaid"
-        ? supplementaryBillMetricHelp.normalPending
-        : stage === "Return pending"
-          ? supplementaryBillMetricHelp.returnPending
-          : stage === "Resubmitted and unpaid"
-            ? supplementaryBillMetricHelp.resubmittedPending
-            : undefined
-      : undefined;
-  const help = bgReturnHelp ?? totalPendingHelp ?? submittedPaymentHelp ?? supplementaryPendingHelp;
+    normalizeMilestoneName(stage) === "paymentpending"
+      ? "status-counter-payment-total-pending"
+      : `status-counter-${testIdSlug(milestone)}-${testIdSlug(stage)}`;
   const button = (
     <button
       type="button"
       onClick={onClick}
-      data-testid={`status-counter-${testIdSlug(milestone)}-${testIdSlug(stage)}`}
+      data-testid={testId}
       className={
-        "inline-flex min-w-8 flex-col items-center justify-center rounded px-2 py-0.5 text-xs font-semibold leading-tight transition hover:ring-2 hover:ring-ring/30 " +
-        (value === 0 ? "bg-secondary text-muted-foreground" : "bg-primary/10 text-foreground")
+        "inline-flex min-w-8 flex-col items-center justify-center rounded px-1.5 py-1 text-sm font-semibold leading-tight tabular-nums transition hover:bg-primary/10 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 " +
+        (value === 0 ? "text-muted-foreground" : "text-primary")
       }
     >
       <span className="inline-flex items-center gap-1">
-        {fileCount && typeof value === "number" ? `${value} Files` : value}
-        {help ? <Info className="size-3.5 text-muted-foreground" /> : null}
+        {fileCount && typeof value === "number" ? (
+          <>
+            <span className="text-sm font-semibold">{value}</span>
+            <span className="text-[0.625rem] font-normal text-muted-foreground">Files</span>
+          </>
+        ) : (
+          value
+        )}
       </span>
       {detail ? (
-        <span className="block text-[10px] font-normal leading-tight text-muted-foreground">
+        <span className="block text-[0.625rem] font-normal leading-tight text-muted-foreground">
           {detail}
         </span>
       ) : null}
     </button>
   );
-  return help ? (
-    <TooltipProvider delayDuration={150}>
-      <Tooltip>
-        <TooltipTrigger asChild>{button}</TooltipTrigger>
-        <TooltipContent
-          side="top"
-          align="center"
-          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
-        >
-          <HelperBulletList items={help} />
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
-  ) : (
-    button
-  );
+  return button;
 }
 
 function Status3MilestoneNameCell({ name }: { name: string }) {
@@ -16427,6 +16583,57 @@ function testIdSlug(value: string) {
     .replace(/(^-|-$)/g, "");
 }
 
+type Status3MetricColumn =
+  | string
+  | [displayLabel: string, sourceLabel: string, occurrence?: number];
+
+function getStatus3MetricEntries(entry: Record<string, unknown> | undefined) {
+  if (!entry) return [];
+  const noop = () => undefined;
+  const callbackKeys = [
+    "onTotalClick",
+    "onUnderProcessClick",
+    "onActiveClick",
+    "onReviewedClick",
+    "onPendingClick",
+    "onClearedClick",
+    "onLiveBidsClick",
+    "onBidOverdueClick",
+    "onRefloatLiveBidsClick",
+    "onRefloatInProcessBidsClick",
+    "onRefloatBidOverdueClick",
+    "onLiveSupplyOrdersClick",
+    "onFinancialSanctionPendingClick",
+    "onFinancialSanctionCompletedClick",
+    "onBgExpiredClick",
+    "onBgToBeReturnedClick",
+    "onBgReturnedClick",
+    "onAdvancePaidClick",
+    "onAdvancePendingClick",
+    "onAllPaymentPendingClick",
+    "onPaymentDueClick",
+    "onPaymentInProcessClick",
+    "onPaymentSubmittedClick",
+    "onBillsReturnedClick",
+    "onReturnedBillsPendingClick",
+    "onReturnedBillsResubmittedClick",
+    "onReturnedBillsPaidClick",
+    "onSupplementaryPendingClick",
+    "onSupplementaryReturnedClick",
+    "onSupplementaryReturnedPendingClick",
+    "onSupplementaryResubmittedClick",
+    "onSupplementaryPaidClick",
+    "onReturnedSupplementaryPaidClick",
+    "onSupplementaryNormalPendingClick",
+    "onSupplementaryResubmittedPendingClick",
+  ] as const;
+  const callbacks = Object.fromEntries(callbackKeys.map((key) => [key, noop]));
+  return getStatusMetrics({
+    milestone: entry as unknown as Parameters<typeof getStatusMetrics>[0]["milestone"],
+    ...callbacks,
+  } as Parameters<typeof getStatusMetrics>[0]);
+}
+
 function getStatus3Presentation(
   milestones: ReturnType<typeof combineJobCompletionAndIr>,
   miscellaneousCounts: ReturnType<typeof getMiscellaneousCounts>,
@@ -16437,6 +16644,35 @@ function getStatus3Presentation(
     typeof entry?.[key] === "number" ? (entry[key] as number) : undefined;
   const label = (entry: Record<string, unknown> | undefined, fallback: string) =>
     typeof entry?.label === "string" ? entry.label : fallback;
+  const metricEntries = (key: string) => getStatus3MetricEntries(byKey.get(key));
+  const metricCount = (key: string, sourceLabel: string, occurrence = 0) => {
+    const entry = byKey.get(key);
+    const resolvedSourceLabel =
+      sourceLabel === "Total"
+        ? typeof entry?.totalLabel === "string"
+          ? entry.totalLabel
+          : sourceLabel
+        : sourceLabel === "Completed" && typeof entry?.completedLabel === "string"
+          ? entry.completedLabel
+          : sourceLabel;
+    const normalizedLabel = normalizeMilestoneName(resolvedSourceLabel);
+    return metricEntries(key)
+      .filter((metric) => normalizeMilestoneName(metric.label) === normalizedLabel)
+      .at(occurrence)?.count;
+  };
+  const metricRow = (key: string, columns: Status3MetricColumn[], rowLabel?: string) => {
+    const entry = byKey.get(key);
+    if (!entry) return undefined;
+    const counts = Object.fromEntries(
+      columns.map((column) => {
+        const [displayLabel, sourceLabel, occurrence = 0] = Array.isArray(column)
+          ? column
+          : [column, column, 0];
+        return [displayLabel, metricCount(key, sourceLabel, occurrence)];
+      }),
+    ) as StatusSummaryTableRow["counts"];
+    return makeRow(rowLabel ?? label(entry, key), counts);
+  };
   const makeRow = (milestone: string, counts: StatusSummaryTableRow["counts"]) => ({
     milestone,
     counts,
@@ -16464,165 +16700,99 @@ function getStatus3Presentation(
         }
       : undefined;
   };
-  const approvalColumns = [
-    "Total",
-    "Completed",
-    "Due",
-    "Reviewed",
-    "Pending",
-    "At previous stage",
-  ];
-  const approvalRows = ["scrutiny", "highValue", "tcec", "ad", "rqa", "control", "cfa"].flatMap(
-    (key) => {
-      const entry = byKey.get(key);
-      if (!entry) return [];
-      return [
-        makeRow(label(entry, key), {
-          Total: metric(entry, "total"),
-          Completed: metric(entry, "cleared"),
-          "At previous stage": "-",
-          Due: metric(entry, "active"),
-          Reviewed: metric(entry, "reviewed"),
-          Pending: metric(entry, "pending"),
-        }),
-      ];
-    },
-  );
-  const ifa = byKey.get("ifa");
+  const approvalColumns = ["Total", "Completed", "Due", "Reviewed", "Pending", "At previous stage"];
+  const approvalRows = ["scrutiny", "highValue", "tcec", "ad", "rqa", "control", "ifa", "cfa"]
+    .map((key) => metricRow(key, approvalColumns))
+    .filter((row): row is StatusSummaryTableRow => Boolean(row));
   const dueColumns = ["Total", "Completed", "Due", "Reviewed", "Pending", "At previous stage"];
+  const cfaToSoSections = [
+    section(
+      "Tender movement",
+      ["Live", "In process", "Opening overdue", "Completed", "At previous stages"],
+      [
+        metricRow(
+          "bidding",
+          ["Live", "In process", "Opening overdue", "Completed", "At previous stages"],
+          "Bidding",
+        ),
+      ],
+    ),
+    section(
+      "Refloat tender movement",
+      ["Live", "In process", "Opening overdue", "Completed"],
+      [metricRow("refloatBidding", ["Live", "In process", "Opening overdue", "Completed"])],
+    ),
+    section(
+      "Pre-Bid Meeting",
+      ["Due", "Completed", "Refloat Due", "Refloat Completed"],
+      [
+        makeRow("Pre-Bid Meeting", {
+          Due: byKey.get("preBidMeeting")
+            ? metric(byKey.get("preBidMeeting"), "preBidDue")
+            : undefined,
+          Completed: byKey.get("preBidMeeting")
+            ? metric(byKey.get("preBidMeeting"), "preBidCompleted")
+            : undefined,
+          "Refloat Due": byKey.get("preBidMeeting")
+            ? metric(byKey.get("preBidMeeting"), "refloatPreBidDue")
+            : undefined,
+          "Refloat Completed": byKey.get("preBidMeeting")
+            ? metric(byKey.get("preBidMeeting"), "refloatPreBidCompleted")
+            : undefined,
+        }),
+      ],
+    ),
+    section("Post-TCEC", dueColumns, [metricRow("postTcec", dueColumns)]),
+    section(
+      "Refloat Post-TCEC",
+      ["Total", "Completed", "Due", "Reviewed", "Pending"],
+      [metricRow("refloatPostTcec", ["Total", "Completed", "Due", "Reviewed", "Pending"])],
+    ),
+    section("CNC", dueColumns, [metricRow("cnc", dueColumns)]),
+    section(
+      "Financial Sanction",
+      ["Completed", "Pending", "At previous stage"],
+      [
+        (() => {
+          const entry = byKey.get("financialSanction");
+          return entry
+            ? makeRow("Financial Sanction", {
+                Completed: metricCount("financialSanction", "Completed"),
+                "Completed cases": metric(entry, "financialSanctionCompleted"),
+                Pending: metricCount("financialSanction", "Pending"),
+                "At previous stage": metricCount("financialSanction", "At previous stage"),
+              })
+            : undefined;
+        })(),
+      ],
+    ),
+    section(
+      "Supply Order",
+      ["Placed", "Live", "Pending", "At Previous Stage"],
+      [
+        (() => {
+          const entry = byKey.get("supplyOrder");
+          return entry
+            ? makeRow("Supply Order", {
+                Placed: metricCount("supplyOrder", "Placed"),
+                "Placed cases": metric(entry, "supplyOrderPlacedCount"),
+                Live: metricCount("supplyOrder", "Live"),
+                Pending: metricCount("supplyOrder", "Pending"),
+                "At Previous Stage": metricCount("supplyOrder", "At Previous Stage"),
+              })
+            : undefined;
+        })(),
+      ],
+    ),
+  ].filter((group): group is StatusSummaryTableGroup => Boolean(group));
   const workflowGroups = [
     buildStatus3WorkflowGroup("up-to-cfa", "Up to CFA", [
-      section("Approval movement", approvalColumns, [
-        ...approvalRows,
-        ifa
-          ? makeRow(label(ifa, "IFA"), {
-              Total: metric(ifa, "total"),
-              Completed: metric(ifa, "cleared"),
-              "At previous stage": metric(ifa, "underProcess"),
-              Due: metric(ifa, "active"),
-              Reviewed: metric(ifa, "reviewed"),
-              Pending: metric(ifa, "pending"),
-            })
-          : undefined,
-      ]),
+      section("Approval movement", approvalColumns, approvalRows),
     ]),
-    buildStatus3WorkflowGroup("cfa-to-so", "CFA to S.O.", [
-      section(
-        "Tender movement",
-        ["Live", "In process", "Opening overdue", "Completed", "At previous stages"],
-        [
-          flowRow(
-            "bidding",
-            [
-              ["Live", "liveBids"],
-              ["In process", "inProcessBids"],
-              ["Opening overdue", "overdueBids"],
-              ["Completed", "cleared"],
-              ["At previous stages", "underProcess"],
-            ],
-            "Bidding",
-          ),
-          (() => {
-            const entry = byKey.get("refloatBidding");
-            return entry
-              ? makeRow("Refloat bidding", {
-                  Live: metric(entry, "liveBids"),
-                  "In process": metric(entry, "inProcessBids"),
-                  "Opening overdue": metric(entry, "overdueBids"),
-                  Completed: metric(entry, "cleared"),
-                  "At previous stages": "-",
-                })
-              : undefined;
-          })(),
-        ],
-      ),
-      section(
-        "Pre-Bid Meeting",
-        ["Due", "Completed", "Refloat Due", "Refloat Completed"],
-        [
-          makeRow("Pre-Bid Meeting", {
-            Due: byKey.get("preBidMeeting")
-              ? metric(byKey.get("preBidMeeting"), "preBidDue")
-              : undefined,
-            Completed: byKey.get("preBidMeeting")
-              ? metric(byKey.get("preBidMeeting"), "preBidCompleted")
-              : undefined,
-            "Refloat Due": byKey.get("preBidMeeting")
-              ? metric(byKey.get("preBidMeeting"), "refloatPreBidDue")
-              : undefined,
-            "Refloat Completed": byKey.get("preBidMeeting")
-              ? metric(byKey.get("preBidMeeting"), "refloatPreBidCompleted")
-              : undefined,
-          }),
-        ],
-      ),
-      section("Committee / Refloat", dueColumns, [
-        flowRow("postTcec", [
-          ["Total", "total"],
-          ["Completed", "cleared"],
-          ["Due", "active"],
-          ["Reviewed", "reviewed"],
-          ["Pending", "pending"],
-          ["At previous stage", "underProcess"],
-        ]),
-        flowRow("refloatPostTcec", [
-          ["Total", "total"],
-          ["Completed", "cleared"],
-          ["Due", "active"],
-          ["Reviewed", "reviewed"],
-          ["Pending", "pending"],
-          ["At previous stage", "underProcess"],
-        ]),
-      ]),
-      section("CNC", dueColumns, [
-        flowRow("cnc", [
-          ["Total", "total"],
-          ["Completed", "cleared"],
-          ["Due", "active"],
-          ["Reviewed", "reviewed"],
-          ["Pending", "pending"],
-          ["At previous stage", "underProcess"],
-        ]),
-      ]),
-      section(
-        "Financial Sanction",
-        ["Completed", "Pending", "At previous stage"],
-        [
-          (() => {
-            const entry = byKey.get("financialSanction");
-            return entry
-              ? makeRow("Financial Sanction", {
-                  Completed: metric(entry, "financialSanctionCompletedFiles"),
-                  "Completed cases": metric(entry, "financialSanctionCompleted"),
-                  Pending: metric(entry, "financialSanctionPending"),
-                  "At previous stage": metric(entry, "underProcess"),
-                })
-              : undefined;
-          })(),
-        ],
-      ),
-      section(
-        "Supply Order",
-        ["Placed", "Live", "Pending", "At Previous Stage"],
-        [
-          (() => {
-            const entry = byKey.get("supplyOrder");
-            return entry
-              ? makeRow("Supply Order", {
-                  Placed: metric(entry, "supplyOrderPlacedFiles"),
-                  "Placed cases": metric(entry, "supplyOrderPlacedCount"),
-                  Live: metric(entry, "liveSupplyOrders"),
-                  Pending: metric(entry, "pending"),
-                  "At Previous Stage": metric(entry, "underProcess"),
-                })
-              : undefined;
-          })(),
-        ],
-      ),
-    ]),
+    buildStatus3WorkflowGroup("cfa-to-so", "CFA to S.O.", cfaToSoSections),
     buildStatus3WorkflowGroup("so-till-payment", "S.O. till payment", [
       section(
-        "Delivery Period / Milestone",
+        "Delivery Period",
         ["Valid", "Expired", "Extended"],
         [
           flowRow(
@@ -16632,7 +16802,7 @@ function getStatus3Presentation(
               ["Expired", "expired"],
               ["Extended", "extended"],
             ],
-            "Delivery Period / Milestone",
+            "Delivery Period",
           ),
         ],
       ),
@@ -16640,13 +16810,7 @@ function getStatus3Presentation(
         "Security / Warranty BG",
         ["Received", "Pending", "Expired", "To be returned", "Returned"],
         ["psb", "pwb", "psbPwb"].map((key) =>
-          flowRow(key, [
-            ["Received", "cleared"],
-            ["Pending", "pending"],
-            ["Expired", "bgExpired"],
-            ["To be returned", "bgToBeReturned"],
-            ["Returned", "bgReturned"],
-          ]),
+          metricRow(key, ["Received", "Pending", "Expired", "To be returned", "Returned"]),
         ),
       ),
       section(
@@ -16685,38 +16849,32 @@ function getStatus3Presentation(
       ),
       section(
         "Bill movement",
-        ["Completed", "Pending"],
+        ["Total", "Completed", "In process", "At previous stage"],
         [
-          flowRow(
+          metricRow(
             "billPreparation",
-            [
-              ["Completed", "cleared"],
-              ["Pending", "pending"],
-            ],
+            ["Total", "Completed", "In process", "At previous stage"],
             "Bill preparation",
           ),
-          flowRow(
+          metricRow(
             "billSentForPayment",
-            [
-              ["Completed", "cleared"],
-              ["Pending", "pending"],
-            ],
+            ["Total", "Completed", "In process", "At previous stage"],
             "Bill sent for payment",
           ),
         ],
       ),
       section(
         "Payment",
-        ["Due", "In process", "Submitted and unpaid", "Completed", "Total Pending"],
+        ["Due", "In process", "Submitted and unpaid", "Completed", "Payment Pending"],
         [
-          flowRow(
+          metricRow(
             "payment",
             [
-              ["Due", "paymentDue"],
-              ["In process", "paymentInProcess"],
-              ["Submitted and unpaid", "paymentSubmitted"],
-              ["Completed", "cleared"],
-              ["Total Pending", "allPaymentPending"],
+              "Due",
+              "In process",
+              ["Submitted and unpaid", "Submitted and unpaid", 0],
+              "Completed",
+              ["Payment Pending", "Payment Pending"],
             ],
             "Payment",
           ),
@@ -16724,30 +16882,16 @@ function getStatus3Presentation(
       ),
       section(
         "Advance Payment",
-        ["Advance Pending", "Advance Completed"],
-        [
-          flowRow(
-            "payment",
-            [
-              ["Advance Pending", "advancePending"],
-              ["Advance Completed", "advancePaid"],
-            ],
-            "Advance Payment",
-          ),
-        ],
+        ["Advance Pending", "Advance Paid"],
+        [metricRow("payment", ["Advance Pending", "Advance Paid"], "Advance Payment")],
       ),
       section(
         "Returned Bills",
         ["Bills returned", "Return pending", "Resubmitted and Unpaid", "Returned paid"],
         [
-          flowRow(
+          metricRow(
             "payment",
-            [
-              ["Bills returned", "billsReturnedForCorrection"],
-              ["Return pending", "returnedBillsPending"],
-              ["Resubmitted and Unpaid", "returnedBillsResubmitted"],
-              ["Returned paid", "returnedBillsPaid"],
-            ],
+            ["Bills returned", "Return pending", "Resubmitted and Unpaid", "Returned paid"],
             "Returned Bills",
           ),
         ],
@@ -16755,27 +16899,27 @@ function getStatus3Presentation(
       section(
         "Supplementary Bill",
         [
-          "Submitted total",
-          "Returned total",
-          "Return pending",
-          "Resubmitted total",
-          "Returned paid",
-          "Normal paid",
+          "Supplementary submitted total",
+          "Supp. returned total",
+          "Supp. return pending",
+          "Supp. resubmitted total",
+          "Supp. returned paid",
+          "Normal supplementary paid",
           "Submitted and unpaid",
           "Resubmitted and unpaid",
         ],
         [
-          flowRow(
+          metricRow(
             "payment",
             [
-              ["Submitted total", "supplementarySubmitted"],
-              ["Returned total", "supplementaryReturnedForCorrection"],
-              ["Return pending", "supplementaryReturnedPending"],
-              ["Resubmitted total", "supplementaryReturnedResubmitted"],
-              ["Returned paid", "supplementaryReturnedPaid"],
-              ["Normal paid", "supplementaryNormalPaid"],
-              ["Submitted and unpaid", "supplementaryNormalPending"],
-              ["Resubmitted and unpaid", "supplementaryResubmittedPending"],
+              "Supplementary submitted total",
+              "Supp. returned total",
+              "Supp. return pending",
+              "Supp. resubmitted total",
+              "Supp. returned paid",
+              "Normal supplementary paid",
+              ["Submitted and unpaid", "Submitted and unpaid", 1],
+              "Resubmitted and unpaid",
             ],
             "Supplementary Bill",
           ),
@@ -16891,9 +17035,10 @@ function getLiveStatusMilestoneCount(files: FileRecord[], milestoneName: string)
     return files.filter(
       (file) =>
         !isCancelledFile(file) &&
+        isCurrentRefloatPostTcecMilestone(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
-        isYes(file.biddingStageOver) &&
+        isYes(file.refloatBiddingStageOver) &&
         !hasFilledField(file, "refloatPostTcecMinutesDate"),
     ).length;
   }
@@ -16929,7 +17074,7 @@ function isFinancialSanctionReached(file: FileRecord) {
   return (
     !isCancelledFile(file) &&
     (isBiddingApplicableForFile(file)
-      ? isYes(file.biddingStageOver)
+      ? isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
       : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
@@ -17157,6 +17302,17 @@ function countCurrentSupplyOrderMilestoneStatuses(
   }, 0);
 }
 
+function countSupplyOrderPreviousStageStatuses(files: FileRecord[]) {
+  return files.reduce(
+    (total, file) =>
+      total +
+      supplyOrderMilestoneRows(file, "supplyorder").filter((order) =>
+        isSupplyOrderAtPreviousStage(file, order),
+      ).length,
+    0,
+  );
+}
+
 function countDpDatePendingCases(files: FileRecord[]) {
   return rawSupplyOrderEntries(files).reduce((total, { file, order }) => {
     if (
@@ -17363,11 +17519,11 @@ function ManualMilestoneFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -17377,7 +17533,7 @@ function ManualMilestoneFlowNode({
               <span className="block truncate text-sm font-semibold">{milestone.name}</span>
             </span>
           </span>
-          <span className="grid grid-cols-2 gap-1.5">
+          <div className="grid min-w-0 grid-cols-2 gap-1.5">
             {metrics.map((metric) => (
               <StatusMetricBox
                 key={metric.label}
@@ -17388,11 +17544,11 @@ function ManualMilestoneFlowNode({
                 tone={tone}
               />
             ))}
-          </span>
-        </span>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -17421,11 +17577,11 @@ function StatusFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -17435,7 +17591,7 @@ function StatusFlowNode({
               <span className="block truncate text-sm font-semibold">{title}</span>
             </span>
           </span>
-          <span
+          <div
             className={`grid gap-1.5 ${
               items.length === 1
                 ? "grid-cols-1"
@@ -17453,11 +17609,11 @@ function StatusFlowNode({
                 help={item.help}
               />
             ))}
-          </span>
-        </span>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -17479,49 +17635,29 @@ function StatusSubBox({
   const tone = getMilestoneTone(count);
   const content = (
     <>
-      <span className="flex items-center justify-center gap-1 text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-        <span>{label}</span>
-        {help ? <InlineInfoIcon /> : null}
+      <span className="flex min-w-0 flex-nowrap items-center justify-center gap-1 text-[0.5625rem] font-medium uppercase leading-tight text-muted-foreground">
+        <span className="min-w-0">{label}</span>
+        {help ? <StatusMetricHelpIcon help={help} /> : null}
       </span>
       <span className="block text-base font-semibold tabular-nums">{count}</span>
     </>
   );
-  const wrapWithTooltip = (element: ReactElement) =>
-    help ? (
-      <TooltipProvider delayDuration={150}>
-        <Tooltip>
-          <TooltipTrigger asChild>{element}</TooltipTrigger>
-          <TooltipContent
-            side="top"
-            align="center"
-            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
-          >
-            <HelperBulletList items={help} />
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    ) : (
-      element
-    );
-
   if (!onClick) {
-    return wrapWithTooltip(
-      <div className="rounded-md border border-border bg-card px-2 py-1 text-center">
+    return (
+      <div className="min-h-12 w-full min-w-0 rounded-md border border-border bg-card px-2 py-1 text-center">
         {content}
-      </div>,
+      </div>
     );
   }
 
-  return wrapWithTooltip(
+  return (
     <button
       type="button"
       onClick={onClick}
-      className={
-        "rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
-      }
+      className="min-h-12 w-full min-w-0 rounded-md border border-border bg-card px-2 py-1 text-center hover:bg-accent hover:ring-2 hover:ring-ring/30"
     >
       {content}
-    </button>,
+    </button>
   );
 }
 
@@ -17539,71 +17675,46 @@ type StatusMetric = {
 
 const supplementaryBillMetricHelp = {
   submitted: [
-    "Counts supplementary bills with a Bill Sent for Payment date.",
-    "Includes bills that were later returned or paid.",
-    "Counts bill records in the selected file scope; cancelled S.O.s are excluded.",
+    "Counts supplementary bill records with Bill Sent for Payment Date recorded, whether returned or paid.",
+    "Count unit: supplementary bill records; cancelled S.O.s are excluded.",
   ],
   returned: [
-    "Counts supplementary bills with any recorded return-cycle detail.",
-    "Each bill counts once, even if it has multiple return cycles.",
-    "Counts bill records in the selected file scope; cancelled S.O.s are excluded.",
+    "Counts a supplementary bill record once when any return-cycle detail is recorded, whether it is still open, resubmitted, or paid.",
+    "Count unit: supplementary bill records; cancelled S.O.s are excluded.",
   ],
   returnPending: [
-    "Counts submitted, unpaid supplementary bills with return history and no completed resubmission recorded.",
-    "No Further Action and cancelled S.O.s are excluded.",
-    "This is one of the three non-overlapping parts of Supplementary Pending.",
-    "Counts bill records, not files.",
+    "Counts a submitted, unpaid supplementary bill record whose latest return cycle is open and awaiting resubmission.",
+    "Count unit: supplementary bill records; No Further Action and cancelled S.O.s are excluded.",
   ],
   resubmitted: [
-    "Counts supplementary bills whose latest return cycle has a resubmitted date.",
-    "A resubmitted bill may still be unpaid or may already be paid.",
-    "Counts bill records in the selected file scope; cancelled S.O.s are excluded.",
+    "Counts a supplementary bill record whose latest return cycle has a resubmitted date, whether paid or unpaid.",
+    "Count unit: supplementary bill records; cancelled S.O.s are excluded.",
   ],
   returnedPaid: [
-    "Counts supplementary bills with a payment date and a resubmitted return cycle.",
-    "Counts bill records in the selected file scope; cancelled S.O.s are excluded.",
+    "Counts a supplementary bill record with a resubmitted return cycle and a payment date.",
+    "Count unit: supplementary bill records; cancelled S.O.s are excluded.",
   ],
   normalPaid: [
-    "Counts supplementary bills with a payment date and no recorded return history.",
-    "Counts bill records in the selected file scope; cancelled S.O.s are excluded.",
+    "Counts a supplementary bill record with a payment date and no return history.",
+    "Count unit: supplementary bill records; cancelled S.O.s are excluded.",
   ],
   pending: [
-    "Counts supplementary bills with a Bill Sent for Payment date and no payment date.",
-    "The total is split into Submitted and unpaid, Return pending, and Resubmitted and unpaid.",
-    "No Further Action and cancelled S.O.s are excluded.",
-    "Counts bill records, not files.",
+    "Counts supplementary bill records with Bill Sent for Payment Date recorded and Payment Date blank.",
+    "Split into Submitted and unpaid, Return pending, and Resubmitted and unpaid; No Further Action and cancelled S.O.s are excluded.",
+    "Count unit: supplementary bill records.",
   ],
   normalPending: [
-    "Counts supplementary bill records with a Bill Sent for Payment date, no payment date, and no return history.",
-    "This is the normal/no-return part of Supplementary Pending; returned bills appear under Return pending or Resubmitted and unpaid.",
-    "No Further Action and cancelled S.O.s are excluded.",
-    "Counts supplementary bill records, not unique files.",
+    "Counts a supplementary bill record with Bill Sent for Payment Date recorded, Payment Date blank, and no return history.",
+    "Count unit: supplementary bill records; No Further Action and cancelled S.O.s are excluded.",
   ],
   resubmittedPending: [
-    "Counts submitted supplementary bills with no payment date whose latest return cycle has a resubmitted date.",
-    "This is one of the three non-overlapping parts of Supplementary Pending.",
-    "No Further Action and cancelled S.O.s are excluded.",
-    "Counts bill records, not files.",
+    "Counts a submitted supplementary bill record with Payment Date blank and a resubmitted latest return cycle.",
+    "Count unit: supplementary bill records; No Further Action and cancelled S.O.s are excluded.",
   ],
 } satisfies Record<string, string[]>;
 
 function getStatusMetricTooltip(metric: StatusMetric) {
-  if (metric.help) return metric.help;
-  if (metric.statusKind === "live") {
-    return [
-      "Files or cases in this group are still in progress.",
-      "Cancelled demands are not included.",
-      "Closed files appear only when the Global Filter includes them.",
-    ];
-  }
-  if (metric.statusKind === "history") {
-    return [
-      "This group contains work already recorded as complete.",
-      "Cancelled demands are not included.",
-      "Closed files appear only when the Global Filter includes them.",
-    ];
-  }
-  return undefined;
+  return metric.help;
 }
 
 function InlineInfoIcon() {
@@ -17614,6 +17725,39 @@ function InlineInfoIcon() {
   );
 }
 
+function StatusMetricHelpIcon({ help }: { help: string | string[] }) {
+  const items = Array.isArray(help) ? help : [help];
+  const hasScenarioTable = items.some((item) => /^Scenario table:/i.test(item));
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span
+            className="inline-flex shrink-0 cursor-help"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <InlineInfoIcon />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent
+          side="top"
+          align="center"
+          className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
+        >
+          {hasScenarioTable ? (
+            <HelperContent lines={items} showPdfExport={false} />
+          ) : (
+            <HelperBulletList items={items} showPdfExport={false} />
+          )}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 function StatusMetricBox({
   metric,
   tone,
@@ -17621,53 +17765,39 @@ function StatusMetricBox({
   metric: StatusMetric;
   tone: ReturnType<typeof getMilestoneTone>;
 }) {
+  const tooltip = getStatusMetricTooltip(metric);
+  const countTextSize = metric.countUnit ? "text-sm" : "text-base";
+  const detailTextSize = metric.countUnit ? "text-sm" : "text-[0.625rem]";
   const content = (
     <>
-      <span className="flex items-center justify-center gap-1 text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-        <span>{metric.label}</span>
-        {getStatusMetricTooltip(metric) ? <InlineInfoIcon /> : null}
+      <span className="flex min-w-0 flex-nowrap items-center justify-center gap-1 text-[0.5625rem] font-medium uppercase leading-tight text-muted-foreground">
+        <span className="min-w-0">{metric.label}</span>
+        {tooltip ? <StatusMetricHelpIcon help={tooltip} /> : null}
       </span>
-      <span className="block text-base font-semibold tabular-nums">
+      <span className={`block ${countTextSize} font-semibold tabular-nums`}>
         {metric.count}
         {metric.countUnit ? ` ${metric.countUnit}` : ""}
       </span>
       {metric.detail ? (
-        <span className="block text-[10px] leading-tight text-muted-foreground tabular-nums">
+        <span
+          className={`block ${detailTextSize} leading-tight text-muted-foreground tabular-nums`}
+        >
           {metric.detail}
         </span>
       ) : null}
     </>
   );
   const className =
-    "min-h-12 rounded-md border px-2 py-1.5 text-center transition hover:ring-2 hover:ring-ring/30 " +
+    "min-h-12 w-full min-w-0 rounded-md border px-2 py-1.5 text-center transition hover:ring-2 hover:ring-ring/30 " +
     (metric.toneCount ? tone.activeCount : "border-border bg-card hover:bg-accent");
 
-  const tooltip = getStatusMetricTooltip(metric);
-  const wrapWithTooltip = (element: ReactElement) =>
-    tooltip ? (
-      <TooltipProvider delayDuration={150}>
-        <Tooltip>
-          <TooltipTrigger asChild>{element}</TooltipTrigger>
-          <TooltipContent
-            side="top"
-            align="center"
-            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
-          >
-            <HelperBulletList items={Array.isArray(tooltip) ? tooltip : [tooltip]} />
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    ) : (
-      element
-    );
-
   if (!metric.onClick) {
-    return wrapWithTooltip(
-      <div className={className.replace(" hover:ring-2 hover:ring-ring/30", "")}>{content}</div>,
+    return (
+      <div className={className.replace(" hover:ring-2 hover:ring-ring/30", "")}>{content}</div>
     );
   }
 
-  return wrapWithTooltip(
+  return (
     <button
       type="button"
       onClick={metric.onClick}
@@ -17675,7 +17805,7 @@ function StatusMetricBox({
       className={className}
     >
       {content}
-    </button>,
+    </button>
   );
 }
 
@@ -17987,7 +18117,7 @@ function MilestoneClearingFilterPanel({
         >
           <span>File filters</span>
           {activeCount ? (
-            <span className="rounded-full bg-primary px-1.5 text-[10px] text-primary-foreground">
+            <span className="rounded-full bg-primary px-1.5 text-[0.625rem] text-primary-foreground">
               {activeCount}
             </span>
           ) : null}
@@ -18729,7 +18859,7 @@ function FirmAnalysisControls({
                   (negatedRoles.includes(roleKey) ? "border-destructive/40" : "border-primary/40")
                 }
               >
-                <label className="flex h-full items-center justify-center gap-1 border-r border-border bg-secondary/40 px-2 text-[11px] font-semibold">
+                <label className="flex h-full items-center justify-center gap-1 border-r border-border bg-secondary/40 px-2 text-[0.6875rem] font-semibold">
                   <input
                     type="checkbox"
                     checked={negatedRoles.includes(roleKey)}
@@ -19129,9 +19259,9 @@ function DashboardScopeSummaryCards({
   totalSupplyOrders: number;
 }) {
   return (
-    <div className="flex items-center gap-1.5 text-[11px]">
-      <div className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-secondary/40 px-1.5">
-        <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+    <div className="flex items-center gap-1.5 text-sm">
+      <div className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary/40 px-2">
+        <div className="flex items-center gap-1 text-sm font-medium text-muted-foreground">
           <span>Files</span>
           <FloatingHelp label="Files scope helper">
             {[
@@ -19142,13 +19272,13 @@ function DashboardScopeSummaryCards({
         </div>
         <div className="text-sm font-semibold leading-4 tabular-nums">{totalFiles}</div>
       </div>
-      <div className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-secondary/40 px-1.5">
-        <div className="flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
+      <div className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-secondary/40 px-2">
+        <div className="flex items-center gap-1 text-sm font-medium text-muted-foreground">
           <span>S.O.</span>
           <FloatingHelp label="S.O. scope helper">
             {[
-              "Counts S.O. rows belonging to the same files selected by the Global Filter and page-specific scope.",
-              "This is an S.O. count, not a unique-file count; one file can contribute more than one S.O.",
+              "Counts non-cancelled S.O. rows in the current Global Filter and page-specific scope only when an S.O. date is recorded and is not in the future.",
+              "Expected S.O. slots and Financial Sanction alone do not count. One file can contribute more than one placed S.O.",
             ]}
           </FloatingHelp>
         </div>
@@ -19217,7 +19347,7 @@ function HelperWithExamples({
                     setShowDetails((current) => !current);
                     setShowExamples(false);
                   }}
-                  className="rounded border border-primary/40 bg-background px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary/10"
+                  className="rounded border border-primary/40 bg-background px-2 py-1 text-[0.6875rem] font-semibold text-primary hover:bg-primary/10"
                   aria-expanded={showDetails}
                 >
                   {showDetails
@@ -19232,7 +19362,7 @@ function HelperWithExamples({
                     setShowExamples((current) => !current);
                     setShowDetails(false);
                   }}
-                  className="rounded border border-primary/40 bg-background px-2 py-1 text-[11px] font-semibold text-primary hover:bg-primary/10"
+                  className="rounded border border-primary/40 bg-background px-2 py-1 text-[0.6875rem] font-semibold text-primary hover:bg-primary/10"
                   aria-expanded={showExamples}
                 >
                   {showExamples ? "Hide examples" : "Examples"}
@@ -19412,13 +19542,7 @@ function getMonthCountAnalyticsColumns(): AnalyticsTableColumn[] {
 
 function renderStatusCount(
   value: number | string,
-  tone:
-    | "due"
-    | "opened"
-    | "overdue"
-    | "completed"
-    | "approved"
-    | "pending",
+  tone: "due" | "opened" | "overdue" | "completed" | "approved" | "pending",
 ) {
   const toneClass =
     tone === "due"
@@ -19427,7 +19551,9 @@ function renderStatusCount(
         ? "border-success/20 bg-success/10 text-success"
         : "border-destructive/20 bg-destructive/10 text-destructive";
   return (
-    <span className={`inline-flex min-w-8 justify-center rounded-md border px-2 py-1 font-semibold ${toneClass}`}>
+    <span
+      className={`inline-flex min-w-8 justify-center rounded-md border px-2 py-1 font-semibold ${toneClass}`}
+    >
       {String(value)}
     </span>
   );
@@ -19511,9 +19637,12 @@ function getPreBidMonthAnalyticsColumns(
 
 function getFiscalPreBidMeetingAnalyticsColumns(
   onFiscalYearClick: (fiscalYear: string) => void,
+  onMonthClick?: (fiscalYear: string, monthKey: string) => void,
 ): AnalyticsTableColumn[] {
   return [
-    getFiscalYearDrilldownColumn(onFiscalYearClick),
+    onMonthClick
+      ? getExpandableFiscalScheduleNameColumn(onMonthClick, "Pre-Bid meeting")
+      : getFiscalYearDrilldownColumn(onFiscalYearClick),
     { key: "count", label: "Total" },
     {
       key: "preBidDue",
@@ -19592,6 +19721,30 @@ function getBidOpeningScheduleMonthColumns(
   ];
 }
 
+function getExpandableFiscalBidOpeningScheduleColumns(
+  onMonthClick: (fiscalYear: string, monthKey: string) => void,
+): AnalyticsTableColumn[] {
+  return [
+    getExpandableFiscalScheduleNameColumn(onMonthClick, "bid-opening"),
+    { key: "count", label: "Total" },
+    {
+      key: "bidOpeningDue",
+      label: "Due",
+      render: (value) => renderStatusCount(value, "due"),
+    },
+    {
+      key: "bidOpeningOpened",
+      label: "Opened",
+      render: (value) => renderStatusCount(value, "opened"),
+    },
+    {
+      key: "bidOpeningOverdue",
+      label: "Overdue",
+      render: (value) => renderStatusCount(value, "overdue"),
+    },
+  ];
+}
+
 function getFiscalBidOpeningScheduleColumns(
   onFiscalYearClick: (fiscalYear: string) => void,
 ): AnalyticsTableColumn[] {
@@ -19619,9 +19772,12 @@ function getFiscalBidOpeningScheduleColumns(
 function getFiscalTcecStatusColumns(
   _stage: TcecStatusStage,
   onFiscalYearClick: (fiscalYear: string) => void,
+  onMonthClick?: (fiscalYear: string, monthKey: string) => void,
 ): AnalyticsTableColumn[] {
   return [
-    getFiscalYearDrilldownColumn(onFiscalYearClick),
+    onMonthClick
+      ? getExpandableFiscalScheduleNameColumn(onMonthClick, "TCEC")
+      : getFiscalYearDrilldownColumn(onFiscalYearClick),
     { key: "reviewed", label: "Files reviewed" },
     {
       key: "signed",
@@ -19679,11 +19835,46 @@ function getFiscalYearDrilldownColumn(
       <button
         type="button"
         onClick={() => onFiscalYearClick(String(value))}
-        className="rounded-md px-2 py-1 text-left font-semibold text-primary hover:bg-primary/10"
+        className="rounded-md px-2 py-1 text-left font-semibold text-primary hover:bg-primary/10 hover:underline"
       >
         {String(value)}
       </button>
     ),
+  };
+}
+
+function getExpandableFiscalScheduleNameColumn(
+  onMonthClick: (fiscalYear: string, monthKey: string) => void,
+  label: string,
+): AnalyticsTableColumn {
+  return {
+    key: "name",
+    label: "FY",
+    align: "left",
+    render: (value, row) => {
+      if (Number(row.monthDrilldown) === 1) {
+        const fiscalYear = String(row.parentFiscalYear ?? row.fiscalYear ?? "");
+        const monthKey = String(row.monthKey ?? value);
+        return (
+          <button
+            type="button"
+            onClick={() => onMonthClick(fiscalYear, monthKey)}
+            aria-label={`Open ${label} details for ${formatMonthKeyLabel(monthKey)}`}
+            className="w-full rounded-md py-1 pl-8 pr-2 text-left font-normal text-primary hover:bg-primary/10 hover:underline"
+          >
+            {formatMonthKeyLabel(monthKey)}
+          </button>
+        );
+      }
+      if (Number(row.expandable) !== 1) return String(value);
+      const Chevron = Number(row.expanded) === 1 ? ChevronDown : ChevronRight;
+      return (
+        <span className="inline-flex items-center gap-1.5 font-semibold text-primary group-hover:underline">
+          <Chevron aria-hidden="true" className="size-4 shrink-0 text-primary" />
+          <span>{String(value)}</span>
+        </span>
+      );
+    },
   };
 }
 
@@ -20194,11 +20385,12 @@ function getMilestoneClearingPanelHelper(context: MilestoneClearingHelperContext
     "Calculation: Stage duration runs from the applicable start date to the end date. Cumulative duration runs from File Received Date to the milestone end date. The Milestone date rules table in this help panel lists the exact fields.",
     "Filters: Current filters narrow the files included; they do not change the date rules. File-level stages generally start at the latest earlier applicable completion.",
     "Sampling: From Supply Order onward, each qualifying S.O., delivery stage, bill, return cycle, or payment case is one sample. Stagewise payments are separate; one common staged payment counts once.",
-    "Special cases: Scrutiny uses Received Date → Scrutiny Completion Date. Bidding contributes one sample per completed cycle; a Non-TCEC Refloat can contribute two. When GeM = Yes and GeM Bidding Mode = Comparison, no GeM Undertaking or Bidding sample is created.",
+    "Special cases: Scrutiny uses Received Date → Scrutiny Completion Date. Bidding contributes a normal-cycle sample and, when Refloat = Yes, a separate Refloat-cycle sample if the required dates are recorded. Each Bidding cycle uses its own GeM Bidding Mode; Comparison excludes that cycle's Bidding sample.",
     "GeM Undertaking: This single milestone combines the normal CFA Approval Date → GeM Undertaking Date sample with a separate refloat sample. TCEC refloat uses Post-TCEC Date → Refloat GeM undertaking; Non-TCEC refloat uses Refloat recommendation → Refloat GeM undertaking. A file can therefore contribute two samples while remaining one distinct file; Search opens the file once.",
-    "Bidding: The single milestone can contain separate completed samples. Normal Non-TCEC and the original cycle of a Non-TCEC Refloat use CFA Approval Date → Bid Date; the Refloat cycle uses Refloat recommendation → Refloat bidding date after the original Bidding Stage Over = Yes prerequisite. Bid-opening dates are not used as the completion endpoint for these Non-TCEC samples.",
-    "Non-TCEC Technical Evaluation: A non-refloat file contributes one completed sample (Bid closing → first Financial Sanction). A Refloat file can contribute two completed samples: first cycle Bid closing → Refloat recommendation, then Refloat bid closing → first Financial Sanction. The first cycle requires Bidding Stage Over = Yes; the second requires Refloat Bidding Stage Over = Yes.",
-    "Post-TCEC counting: Original Post-TCEC and Refloat Post-TCEC are independent completed stages. If both are recorded for one file, each contributes one sample to its own milestone.",
+    "Bidding: Normal Non-TCEC and normal TCEC cycles use CFA Approval Date → Bid Date. A Refloat adds a separate sample: Non-TCEC uses Refloat recommendation date → Refloat bidding date; TCEC uses Post-TCEC Minutes Date → Refloat bidding date. A Refloat sample requires Refloat Bidding Stage Over = Yes and uses Refloat GeM Bidding Mode for applicability. Bid Opening dates are not the endpoint.",
+    "Non-TCEC Technical Evaluation: A non-refloat file contributes one completed sample (Bid Opening Date → first Financial Sanction). A Refloat file can contribute two completed samples: first cycle Bid Opening Date → Refloat recommendation, then Refloat Bid Opening Date → first Financial Sanction. The first cycle requires Bidding Stage Over = Yes; the second requires Refloat Bidding Stage Over = Yes.",
+    "Pre Post-TCEC: TCEC normal cycle uses Bid Opening Date → Post-TCEC Date. TCEC Refloat uses Refloat Bid Opening Date → Refloat Post-TCEC Date. Each cycle requires its own Bidding Stage Over = Yes and uses its own GeM Bidding Mode for applicability; a file may contribute a sample for each completed cycle.",
+    "Post-TCEC counting: After the Pre Post-TCEC interval ends at the applicable Post-TCEC Date, Post-TCEC runs from that date to its matching Minutes Date. Original Post-TCEC and Refloat Post-TCEC remain independent stages and use separate fields.",
     "Responsibility split: Job Completion measures effective D.P. (Revised D.P. when present) → Job Completion Received Date. Bill preparation then measures Job Completion Received Date → Bill Preparation Date for Job Completion workflows. Official Payment Due and Delay Status keep their existing liability rules.",
     "Payment cases with return history are excluded from Payment cycle (PCDA) and Payment cycle (ASL+PCDA). Payment cycle (ASL) counts the trigger-to-first-submission interval for a returned payment case.",
     "Scope: Demand-cancelled files are excluded; closed files follow the Global Filter; historical milestone records may remain after an S.O. is cancelled; payment averages exclude cancelled S.O.s.",
@@ -20239,6 +20431,20 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       end: "Refloat GeM undertaking date",
     },
     {
+      path: "TCEC",
+      milestone: "GeM Undertaking",
+      case: "TCEC Refloat with applicable Refloat GeM mode",
+      start: "Post-TCEC Date",
+      end: "Refloat GeM undertaking date",
+    },
+    {
+      path: "Non-TCEC + TCEC",
+      milestone: "RFP Vetting",
+      case: "Refloat RFP Vetting = Yes",
+      start: "Refloat RFP Vetting Initiation Date",
+      end: "Refloat RFP Vetting Approval Date",
+    },
+    {
       path: "Non-TCEC + TCEC",
       milestone: "RFP Vetting",
       case: "RFP Vetting = Yes",
@@ -20246,17 +20452,38 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       end: "RFP Vetting Approval Date",
     },
     {
-      path: "TCEC",
+      path: "Non-TCEC + TCEC",
       milestone: "Bidding",
-      case: "TCEC file",
-      start: "Latest applicable of CFA Approval, GeM Undertaking, and RFP Vetting Approval",
-      end: "Post-TCEC Date",
+      case: "Normal bidding cycle, including the original cycle on a Refloat file",
+      start: "CFA Approval Date",
+      end: "Bid Date",
+    },
+    {
+      path: "Non-TCEC",
+      milestone: "Bidding",
+      case: "Additional Refloat cycle; original Bidding Stage Over = Yes and Refloat Bidding Stage Over = Yes",
+      start: "Refloat recommendation date",
+      end: "Refloat bidding date",
     },
     {
       path: "TCEC",
       milestone: "Bidding",
-      case: "TCEC refloat; first bidding cycle is not a separate sample",
+      case: "Additional TCEC Refloat cycle; Refloat Bidding Stage Over = Yes",
       start: "Post-TCEC Minutes Date",
+      end: "Refloat bidding date",
+    },
+    {
+      path: "TCEC",
+      milestone: "Pre Post-TCEC",
+      case: "Normal TCEC cycle, including the original cycle on a Refloat file",
+      start: "Bid Opening Date",
+      end: "Post-TCEC Date",
+    },
+    {
+      path: "TCEC",
+      milestone: "Pre Post-TCEC",
+      case: "TCEC Refloat cycle",
+      start: "Refloat Bid Opening Date",
       end: "Refloat Post-TCEC Date",
     },
     {
@@ -20276,8 +20503,8 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
     {
       path: "TCEC",
       milestone: "CNC",
-      case: "TCEC file; no fallback if Post-TCEC approval date is blank",
-      start: "Post-TCEC Minutes Date (approval date)",
+      case: "Normal TCEC or TCEC Refloat; no fallback if the active cycle's minutes date is blank",
+      start: "Normal: Post-TCEC Minutes Date; Refloat: Refloat Post-TCEC Minutes Date",
       end: "CNC Approval Date",
     },
     {
@@ -20319,21 +20546,21 @@ function MilestoneClearingDateRulesTable({ path }: { path: MilestoneClearingPath
       path: "Non-TCEC",
       milestone: "Non-TCEC Technical Evaluation",
       case: "Non-refloat; Bidding Stage Over = Yes",
-      start: "Bid closing date",
+      start: "Bid Opening Date",
       end: "First Financial Sanction date",
     },
     {
       path: "Non-TCEC",
       milestone: "Non-TCEC Technical Evaluation",
       case: "First Refloat cycle; Bidding Stage Over = Yes",
-      start: "Bid closing date",
+      start: "Bid Opening Date",
       end: "Refloat recommendation date",
     },
     {
       path: "Non-TCEC",
       milestone: "Non-TCEC Technical Evaluation",
       case: "Second Refloat cycle; Refloat Bidding Stage Over = Yes",
-      start: "Refloat bid closing date",
+      start: "Refloat Bid Opening Date",
       end: "First Financial Sanction date",
     },
     {
@@ -20703,55 +20930,65 @@ function getMilestoneClearingHelper(name: string, path: MilestoneClearingPath) {
     ad: "Latest earlier completed applicable milestone date → AD Vetting Date.\nAD Sent Date is not the calculation start.",
     rqa: "Latest earlier completed applicable milestone date → R&QA Approval Date.\nR&QA Sent Date is not the calculation start.",
     controlling: "Latest earlier completed applicable milestone date → Demand Control Date.",
-    ifa: "Latest earlier completed applicable milestone date → IFA Final Date.\nIFA Sent Date is not the calculation start.",
-    cfa: "Latest earlier completed applicable milestone date → CFA Approval Date.",
+    ifa: "Expected predecessor: Demand Control Date. The calculation uses the latest eligible earlier applicable completion date among Scrutiny, High Value, Pre-TCEC, AD, R&QA, and Demand Control. If none is available, it uses Received Date → IFA Final Date. IFA Sent Date is not the start.",
+    cfa: "Expected predecessor: IFA Final Date when IFA applies; otherwise, Demand Control Date. The calculation uses the latest eligible earlier applicable completion date → CFA Approval Date; if none is available, it uses Received Date.",
     bidding:
       path === "tcec"
-        ? "TCEC normal: latest applicable completed prerequisite (CFA Approval, GeM Undertaking, or RFP Vetting Approval) → Post-TCEC Date. TCEC Refloat: Post-TCEC Minutes Date → Refloat Post-TCEC Date. Bidding Stage Over must be Yes; normal TCEC requires every applicable prerequisite date."
+        ? "Normal: CFA Approval Date → Bid Date (Bidding Stage Over = Yes). TCEC Refloat: Post-TCEC Minutes Date → Refloat bidding date (Refloat Bidding Stage Over = Yes; Refloat GeM Bidding Mode controls applicability)."
         : path === "nonTcec"
-          ? "Normal Non-TCEC and the original cycle of a Non-TCEC Refloat: CFA Approval Date → Bid Date. Second Non-TCEC Refloat cycle: after original Bidding Stage Over = Yes, Refloat recommendation → Refloat bidding date. Both samples remain under the single Bidding milestone; bid-opening dates are not used as the Non-TCEC completion endpoint."
-          : "TCEC normal uses its existing prerequisite-to-Post-TCEC timing; TCEC Refloat uses Post-TCEC Minutes Date → Refloat Post-TCEC Date. Non-TCEC normal and original Refloat cycles use CFA Approval Date → Bid Date; the second Refloat cycle uses Refloat recommendation → Refloat bidding date after original Bidding Stage Over = Yes. All samples remain under the single Bidding milestone.",
+          ? "Normal and original Refloat cycle: CFA Approval Date → Bid Date. Non-TCEC Refloat: Refloat recommendation date → Refloat bidding date (Refloat Bidding Stage Over = Yes; Refloat GeM Bidding Mode controls applicability)."
+          : "Normal: CFA Approval Date → Bid Date. Refloat Non-TCEC: Refloat recommendation date → Refloat bidding date. Refloat TCEC: Post-TCEC Minutes Date → Refloat bidding date. TCEC normal requires Bidding Stage Over = Yes; Refloat samples require Refloat Bidding Stage Over = Yes and use Refloat GeM Bidding Mode for applicability.",
     nontcectechnicalevaluation:
-      "Non-refloat: Bid closing → first Financial Sanction Date. First Refloat cycle: Bid closing → Refloat recommendation. Second Refloat cycle: Refloat bid closing date → first Financial Sanction.\nA non-refloat file contributes one completed sample; a Refloat file can contribute two completed samples. Bidding Stage Over = Yes is required for the first cycle; Refloat Bidding Stage Over = Yes is required for the second cycle. Missing dates or an invalid interval contribute no sample.",
+      "Non-refloat: Bid Opening Date → first Financial Sanction Date. First Refloat cycle: Bid Opening Date → Refloat recommendation. Second Refloat cycle: Refloat Bid Opening Date → first Financial Sanction.\nA non-refloat file contributes one completed sample; a Refloat file can contribute two completed samples. Bidding Stage Over = Yes is required for the first cycle; Refloat Bidding Stage Over = Yes is required for the second cycle. Missing dates or an invalid interval contribute no sample.",
+    preposttcec:
+      "TCEC normal: Bid Opening Date → Post-TCEC Date; requires Bidding Stage Over = Yes. TCEC Refloat: Refloat Bid Opening Date → Refloat Post-TCEC Date; requires Refloat Bidding Stage Over = Yes. Each cycle uses its own GeM Bidding Mode for applicability. A file can contribute two samples when both cycles qualify; missing dates or invalid chronology are skipped.",
     posttcec:
-      "Post-TCEC Date → Post-TCEC Minutes Date.\nTCEC original Post-TCEC stage. If recorded on a refloat file, it contributes its own sample.",
+      "Post-TCEC Date → Post-TCEC Minutes Date.\nTCEC normal Post-TCEC stage, measured after the separate Pre Post-TCEC interval. If recorded on a Refloat file, it contributes its own normal-cycle sample.",
     refloatposttcec:
       "Refloat Post-TCEC Date → Refloat Post-TCEC Minutes Date.\nTCEC refloat stage. It is counted as a separate sample from the original Post-TCEC stage.",
-    cnc: "Post-TCEC Minutes Date (approval date) → CNC Approval Date.\nTCEC only. No earlier milestone or other fallback is used; CNC timing is not counted until the Post-TCEC Minutes Date is recorded.",
+    cnc: "Normal TCEC: Post-TCEC Minutes Date → CNC Approval Date. TCEC Refloat: Refloat Post-TCEC Minutes Date → CNC Approval Date. No earlier milestone or other fallback is used; CNC timing is not counted until the active cycle's minutes date is recorded.",
     financialsanction:
       "CNC Approval Date → that S.O.'s Financial Sanction Date.\nTCEC only. Each recorded S.O. with a Financial Sanction date is one sample.",
     gemundertaking:
-      "Applicable GeM files other than Comparison contribute the normal CFA Approval Date → GeM Undertaking Date sample, even when Refloat = Yes. A refloat can add a separate sample under this same milestone: TCEC uses Post-TCEC Date → Refloat GeM undertaking; Non-TCEC uses Refloat recommendation → Refloat GeM undertaking. A file may therefore contribute two samples, while Files remains a distinct-file count and Search opens it once. Missing dates or an invalid interval contribute no sample.",
+      "Normal and Refloat GeM samples use their own GeM Bidding Mode; Comparison excludes only that cycle. The normal sample is CFA Approval Date → GeM Undertaking Date. A Refloat can add a separate sample: TCEC uses Post-TCEC Date → Refloat GeM Undertaking Date; Non-TCEC uses Refloat recommendation → Refloat GeM Undertaking Date. A file may contribute both samples, while Files remains a distinct-file count and Search opens it once. Missing dates or an invalid interval contribute no sample.",
     rfpvetting:
-      "GeM Undertaking Date when GeM applies (not Comparison); otherwise CFA Approval Date → RFP Vetting Approval Date.\nRFP Vetting = Yes. If GeM applies but its undertaking date is missing, no duration sample is counted. Cumulative days remain File Received Date → RFP Vetting Approval Date.",
+      [
+        "RFP Vetting duration is calculated separately for each qualifying cycle.",
+        "Scenario table: Scenario | Applies when | Start date | End date | Example / result",
+        "Scenario row: Normal — GeM applies | RFP Vetting = Yes; GeM = Yes; GeM Bidding Mode ≠ Comparison; CFA Approval Date is recorded | GeM Undertaking Date | RFP Vetting Approval Date | GeM Undertaking: 5 Aug → Approval: 12 Aug = 7 days",
+        "Scenario row: Normal — GeM does not apply | RFP Vetting = Yes; GeM is not Yes or GeM Bidding Mode = Comparison | CFA Approval Date | RFP Vetting Approval Date | CFA Approval: 1 Aug → Approval: 12 Aug = 11 days",
+        "Scenario row: Normal — required GeM date is blank | Normal GeM applies as above | GeM Undertaking Date (blank) | RFP Vetting Approval Date | No sample; CFA is not substituted",
+        "Scenario row: Refloat | Refloat = Yes; Refloat RFP Vetting = Yes | Refloat RFP Vetting Initiation Date | Refloat RFP Vetting Approval Date | Initiation: 10 Aug → Approval: 15 Aug = 5 days",
+        "Details: Missing required dates or an end date before the start date produce no sample. A file may contribute one Normal and one Refloat sample. Cumulative days run from File Received Date to that cycle's approval date.",
+      ].join("\n"),
     supplyorder:
       path === "nonTcec"
         ? "For each S.O.: Financial Sanction Date → that S.O.'s S.O. Date.\nNon-TCEC only. Cancelled S.O.s remain included in placement history."
         : path === "tcec"
-          ? "For each S.O.: CNC Approval Date → that S.O.'s S.O. Date.\nTCEC only. There is no fallback if CNC Approval Date is blank. Delay Status uses the same start rule. Cancelled S.O.s remain included in placement history."
-          : "TCEC: CNC Approval Date → that S.O.'s S.O. Date, with no fallback if CNC Approval Date is blank. Non-TCEC: that S.O.'s Financial Sanction Date → S.O. Date.\nOne sample per S.O. Cancelled S.O.s remain included in placement history.",
+          ? "For each S.O.: the file-level CNC Approval Date → that S.O.'s S.O. Date. The same CNC Approval Date starts every TCEC S.O. interval; if it is blank, there is no fallback. Delay Status uses the same start rule. Cancelled S.O.s remain included in placement history."
+          : "TCEC: the file-level CNC Approval Date → each S.O.'s S.O. Date; that same start date is used for every S.O., with no fallback if it is blank. Non-TCEC: each S.O.'s Financial Sanction Date → its S.O. Date.\nOne sample per S.O. Cancelled S.O.s remain included in placement history.",
     jobcompletion:
-      "Effective D.P. (Revised D.P. when present) → Job Completion Received Date.\nApplies to Group A / Goods & Services with IR = No and Group B. Stagewise cases use each stage; common staged cases use the latest effective D.P. and latest Job Completion date, with all required stage dates recorded.",
+      "Effective D.P. (Revised D.P. when recorded; otherwise D.P.) → Job Completion Received Date. Applies to Group A / Goods & Services with IR = No and Group B. Stagewise payment: pair each stage’s effective D.P. with that stage’s Job Completion date. If Stage Delivery = Yes and Stage Payment = No, use the latest effective stage D.P. → the S.O.-level Job Completion date; every stage’s Job Completion date must be recorded.",
     irpreparation:
-      "Material Receipt Date → IR Preparation Date.\nFor each applicable S.O. or delivery stage.",
+      "Material Receipt Date → IR Preparation Date. Use the corresponding dates for each S.O.; when delivery is staged, calculate each delivery stage separately, even if payment is common.",
     irreceipt:
-      "IR Preparation Date → IR Receipt Date.\nFor each applicable S.O. or delivery stage.",
+      "IR Preparation Date → IR Receipt Date. Use the corresponding dates for each S.O.; when delivery is staged, calculate each delivery stage separately, even if payment is common.",
     billpreparation:
-      "Job Completion workflows (Group A / Goods & Services with IR = No, and Group B): Job Completion Received Date → Bill Preparation Date.\nInspection workflows with IR = Yes use IR Receipt Date; common staged cases use the latest applicable stage date, and every required stage date must be recorded.",
+      "Start depends on the delivery workflow: IR-enabled inspection (Group A / Goods & Services with IR = Yes): IR Receipt Date → Bill Preparation Date. Job Completion workflow (Group A / Goods & Services with IR = No, and Group B): Job Completion Received Date → Bill Preparation Date. Other inspection-applicable cases use Material Receipt Date. Stagewise payment pairs each stage’s trigger and bill-preparation dates. If Stage Delivery = Yes and Stage Payment = No, use the latest applicable stage trigger → the S.O.-level Bill Preparation Date; all required stage dates must be recorded.",
     billsentforpayment:
-      "Bill Preparation Date → Bill Sent for Payment Date.\nEach payment case is a separate sample.",
+      "Bill Preparation Date → Bill Sent for Payment Date. Stagewise payment uses each stage’s dates. If Stage Delivery = Yes and Stage Payment = No, use the S.O.-level dates once. Each payment case is a separate sample.",
     payment:
-      "First Bill Sent for Payment Date → Payment Date.\nApplies to included regular, stagewise, advance, or supplementary cases with no return history. Advances and supplementary bills use their own dates. Stagewise payments use each stage's dates; one common staged payment counts once using the S.O.-level dates. Cancelled S.O.s are excluded.",
+      "For each included regular payment: Bill Sent for Payment Date → that payment’s Payment Date. Stagewise payment uses each stage’s dates. If Stage Delivery = Yes and Stage Payment = No, use the S.O.-level dates once. Advance and supplementary payments use their own submission and payment dates. Returned cases and cancelled S.O.s are excluded.",
     paymentcycleasl:
-      "Start → end: Group A / Goods & Services with IR = Yes: IR Receipt Date → first Bill Sent for Payment Date. Group A with IR = No and Group B: Job Completion Received Date → first Bill Sent for Payment Date. Stagewise payments use each stage; common staged payments use the latest applicable stage date. Advance and supplementary payments are excluded.",
+      "Workflow trigger → first Bill Sent for Payment Date. Group A / Goods & Services with IR = Yes: IR Receipt Date; otherwise: Job Completion Received Date. Stagewise payment pairs each stage’s trigger and submission dates. If Stage Delivery = Yes and Stage Payment = No, use the latest applicable stage trigger and the S.O.-level submission date. Advance and supplementary payments are excluded.",
     paymentcyclepcda:
-      "Start → end: first Bill Sent for Payment Date → Payment Date. Regular and stagewise payments use each applicable payment case; a common staged payment uses the S.O.-level dates and counts once. Advance and supplementary payments use their own submission and Payment Date. Only paid cases with no return history are included.",
+      "Bill Sent for Payment Date → Payment Date. Stagewise payment uses each stage’s dates. If Stage Delivery = Yes and Stage Payment = No, use the S.O.-level dates once. Advance and supplementary payments use their own submission and payment dates. Only paid cases with no return history are included.",
     paymentaslpcda:
-      "Start → end: Group A / Goods & Services with IR = Yes: IR Receipt Date → Payment Date. Group A with IR = No and Group B: Job Completion Received Date → Payment Date. Stagewise payments use each stage; common staged payments use the latest applicable stage date across all stages. Advance and supplementary payments use their first submission date → Payment Date. Only paid cases with no return history are included; unpaid and returned cases are excluded from this ranking.",
+      "Workflow trigger → Payment Date. Group A / Goods & Services with IR = Yes: IR Receipt Date; otherwise: Job Completion Received Date. Stagewise payment pairs each stage’s trigger and payment dates. If Stage Delivery = Yes and Stage Payment = No, use the latest applicable stage trigger and S.O.-level payment date. Advance and supplementary payments use their own first submission date → Payment Date. Only paid cases with no return history are included.",
     paymentbeforesubmission:
-      "Applicable trigger → first Bill Sent for Payment Date.\nGroup A with IR = Yes: IR Receipt Date. Group A with IR = No and Group B: Job Completion Received Date. Common staged payments start at the latest applicable stage date. Returned bills stop at their first submission; resubmission is not counted. Advances and supplementary bills are excluded.",
+      "Workflow trigger → first Bill Sent for Payment Date. Group A / Goods & Services with IR = Yes: IR Receipt Date; otherwise: Job Completion Received Date. Stagewise payment pairs each stage’s trigger with its submission. If Stage Delivery = Yes and Stage Payment = No, start from the latest applicable stage trigger. Returned bills stop at first submission; resubmission is not counted. Advances and supplementary bills are excluded.",
     paymentcumulative:
-      "Regular/stage: applicable delivery trigger → Payment Date. Advance/supplementary: first submission → Payment Date.\nUnpaid cases end today in Delay Status but are excluded from Milestone Clearing Ranking. Returned payment cases are excluded entirely. Stagewise payments use each stage; one common staged payment counts once from the latest stage trigger.",
+      "Regular payment: applicable workflow trigger → Payment Date. Advance/supplementary: first submission → Payment Date. Stagewise payment pairs each stage’s trigger and payment dates. If Stage Delivery = Yes and Stage Payment = No, use the latest applicable stage trigger and S.O.-level payment date once. Unpaid cases end today in Delay Status but are excluded from Milestone Clearing Ranking. Returned cases are excluded.",
     billreturnedforcorrection:
       "Bill Returned Date → Bill Resubmission Date.\nOnly a completed return/resubmission cycle contributes to the ranking.",
     supplementarybillreturnedforcorrection:
@@ -20772,19 +21009,19 @@ function getMilestoneClearingExampleLines(name: string, path: MilestoneClearingP
           ]
         : path === "tcec"
           ? [
-              "Example row: TCEC S.O. | Latest applicable completed file milestone on or before S.O.: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
-              "Example row: TCEC S.O., no qualifying milestone | No applicable completed milestone on or before 8 May; File Received Date: 1 May; S.O. Date: 8 May | Received Date is the fallback start; one 7-day sample.",
-              "Example row: TCEC S.O., no qualifying start | No applicable completed milestone on or before 8 May; File Received Date: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
-              "Example row: TCEC S.O., later milestone exists | Candidate milestone: 10 May; File Received Date: 1 May; S.O. Date: 8 May | The 10 May milestone is ineligible; Received Date is used as fallback, producing 7 days.",
+              "Example row: TCEC S.O. | CNC Approval Date: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
+              "Example row: TCEC S.O., CNC Approval missing | CNC Approval Date: blank; S.O. Date: 8 May | No duration sample; there is no fallback.",
+              "Example row: TCEC file with two S.O.s | CNC Approval Date: 1 May; S.O. Dates: 8 May and 12 May | Two samples: 7 and 11 days; the same CNC date starts each S.O. interval.",
+              "Example row: TCEC S.O., CNC approval after placement | CNC Approval Date: 10 May; S.O. Date: 8 May | Invalid interval; no duration sample.",
             ]
           : [
               "Example row: Non-TCEC S.O. | Financial Sanction: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
-              "Example row: TCEC S.O. | Latest applicable completed file milestone on or before S.O.: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
-              "Example row: TCEC S.O., no qualifying milestone | No applicable completed milestone on or before 8 May; File Received Date: 1 May; S.O. Date: 8 May | Received Date is the fallback start; one 7-day sample.",
+              "Example row: TCEC S.O. | CNC Approval Date: 1 May; S.O. Date: 8 May | 8 May − 1 May = 7 days; one completed S.O. sample.",
               "Example row: Non-TCEC S.O., Financial Sanction missing | Financial Sanction: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
-              "Example row: TCEC S.O., no qualifying start | No applicable completed milestone on or before 8 May; File Received Date: blank; S.O. Date: 8 May | No duration sample; the S.O. is skipped rather than counted as zero.",
+              "Example row: TCEC S.O., CNC Approval missing | CNC Approval Date: blank; S.O. Date: 8 May | No duration sample; there is no fallback.",
               "Example row: Non-TCEC S.O., sanction after placement | Financial Sanction: 10 May; S.O. Date: 8 May | Negative interval; the sample is skipped.",
-              "Example row: TCEC S.O., later milestone exists | Candidate milestone: 10 May; File Received Date: 1 May; S.O. Date: 8 May | The 10 May milestone is ineligible; Received Date is used as fallback, producing 7 days.",
+              "Example row: TCEC file with two S.O.s | CNC Approval Date: 1 May; S.O. Dates: 8 May and 12 May | Two samples: 7 and 11 days; the same CNC date starts each S.O. interval.",
+              "Example row: TCEC S.O., CNC approval after placement | CNC Approval Date: 10 May; S.O. Date: 8 May | Invalid interval; no duration sample.",
             ];
     return [
       "Example table: S.O. type | Start and S.O. dates | Calculation / interpretation",
@@ -20794,8 +21031,8 @@ function getMilestoneClearingExampleLines(name: string, path: MilestoneClearingP
   }
   if (key === "bidding") {
     const tcecRows = [
-      "Example row: TCEC normal bidding; RFP applies | CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug; Post-TCEC Date: 20 Aug; Bidding Stage Over: Yes | 20 Aug − 12 Aug = 8 days.",
-      "Example row: TCEC Refloat bidding | Post-TCEC Minutes: 1 Sep; Refloat Post-TCEC Date: 10 Sep; Bidding Stage Over: Yes | 10 Sep − 1 Sep = 9 days.",
+      "Example row: Normal TCEC bidding; GeM and RFP apply | CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug; Bid Date: 20 Aug; Bidding Stage Over: Yes | 20 Aug − 1 Aug = 19 days; later GeM/RFP dates do not shift the start.",
+      "Example row: TCEC Refloat file with both cycles complete | Normal: CFA Approval 1 Aug → Bid Date 20 Aug; Refloat: Post-TCEC Minutes 1 Sep → Refloat bidding date 10 Sep; Bidding Stage Over: Yes | Two samples: 19 and 9 days; Files remains 1.",
     ];
     const nonTcecRows = [
       "Example row: Normal Non-TCEC bidding | CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug; Bid Date: 20 Aug | 20 Aug − 1 Aug = 19 days; the GeM/RFP dates do not shift the CFA-based Bidding start.",
@@ -20814,10 +21051,18 @@ function getMilestoneClearingExampleLines(name: string, path: MilestoneClearingP
   if (key === "nontcectechnicalevaluation") {
     return [
       "Example table: File status | Recorded dates | Calculation / interpretation",
-      "Example row: Non-refloat; Bidding Stage Over = Yes | Bid closing: 10 Aug; first Financial Sanction: 23 Aug | One completed sample: 13 days.",
-      "Example row: Refloat first cycle; Bidding Stage Over = Yes | Bid closing: 10 Aug; Refloat recommendation: 18 Aug | One completed first-cycle sample: 8 days.",
-      "Example row: Refloat second cycle; Refloat Bidding Stage Over = Yes | Refloat bid closing: 20 Aug; first Financial Sanction: 25 Aug | One completed second-cycle sample: 5 days.",
+      "Example row: Non-refloat; Bidding Stage Over = Yes | Bid Opening Date: 10 Aug; first Financial Sanction: 23 Aug | One completed sample: 13 days.",
+      "Example row: Refloat first cycle; Bidding Stage Over = Yes | Bid Opening Date: 10 Aug; Refloat recommendation: 18 Aug | One completed first-cycle sample: 8 days.",
+      "Example row: Refloat second cycle; Refloat Bidding Stage Over = Yes | Refloat Bid Opening Date: 20 Aug; first Financial Sanction: 25 Aug | One completed second-cycle sample: 5 days.",
       "Example row: Same Refloat file with both cycles complete | First cycle: 10 Aug → 18 Aug; second cycle: 20 Aug → 25 Aug | Two samples (8 and 5 days); file count remains 1 and sample size is 2.",
+    ];
+  }
+  if (key === "preposttcec") {
+    return [
+      "Example table: TCEC cycle | Opening date | Post-TCEC date | Result",
+      "Example row: Normal cycle | Bid Opening: 1 Aug | Post-TCEC Date: 10 Aug | One completed Pre Post-TCEC sample of 9 days.",
+      "Example row: Refloat cycle | Refloat Bid Opening: 12 Aug | Refloat Post-TCEC Date: 20 Aug | One separate completed sample of 8 days; the same file can contribute both samples.",
+      "Example row: Stage Over = No or either required date missing | Any TCEC cycle | No sample is counted for that cycle.",
     ];
   }
   if (key === "gemundertaking") {
@@ -20830,12 +21075,7 @@ function getMilestoneClearingExampleLines(name: string, path: MilestoneClearingP
     ];
   }
   if (key === "rfpvetting") {
-    return [
-      "Example table: Applicability | Recorded dates | Stage duration | Cumulative duration",
-      "Example row: GeM applies; RFP Vetting applies | Received: 20 Jul; CFA Approval: 1 Aug; GeM Undertaking: 5 Aug; RFP Vetting Approval: 12 Aug | 12 Aug − 5 Aug = 7 days | 12 Aug − 20 Jul = 23 days.",
-      "Example row: GeM does not apply; RFP Vetting applies | Received: 20 Jul; CFA Approval: 1 Aug; RFP Vetting Approval: 12 Aug | 12 Aug − 1 Aug = 11 days | 12 Aug − 20 Jul = 23 days.",
-      "Example row: GeM applies but undertaking date is missing | CFA Approval: 1 Aug; GeM Undertaking: blank; RFP Vetting Approval: 12 Aug | No sample; CFA is not substituted for a required GeM date | No cumulative sample.",
-    ];
+    return [];
   }
   if (key === "paymentcyclepcda") {
     return [
@@ -21005,9 +21245,12 @@ function getCncSummaryColumns(): AnalyticsTableColumn[] {
 
 function getFiscalCncSummaryColumns(
   onFiscalYearClick: (fiscalYear: string) => void,
+  onMonthClick?: (fiscalYear: string, monthKey: string) => void,
 ): AnalyticsTableColumn[] {
   return [
-    getFiscalYearDrilldownColumn(onFiscalYearClick),
+    onMonthClick
+      ? getExpandableFiscalScheduleNameColumn(onMonthClick, "CNC")
+      : getFiscalYearDrilldownColumn(onFiscalYearClick),
     { key: "reviewed", label: "Cases reviewed" },
     {
       key: "approved",
@@ -22111,6 +22354,12 @@ function getFinance1DrillFocus(
 
 function getMilestoneClearingSearchTarget(name: string): AnalyticsSearchTarget | undefined {
   const normalized = normalizeMilestoneClearingName(name);
+  if (normalized === "preposttcec") {
+    return {
+      dashboardFilter: "analyticsMilestoneClearing:prePostTcec",
+      focusSection: "TCEC block",
+    };
+  }
   if (normalized === "bidding") {
     return {
       dashboardFilter: "analyticsMilestoneClearing:bidding",
@@ -22292,6 +22541,9 @@ function getDelayStatusSearchFocus(
       focusTarget: "billsentforpayment:pending",
     };
   }
+  if (milestoneKey === "prePostTcec") {
+    return { focusSection: "TCEC block" };
+  }
   const dateFieldFocusByMilestone: Record<string, { section: string; focusTarget: string }> = {
     scrutiny: { section: "Scrutiny and control", focusTarget: "scrutinyCompletionDate" },
     control: { section: "Scrutiny and control", focusTarget: "immsDate" },
@@ -22406,6 +22658,23 @@ function groupAnomalyAcceptances(rows: AnomalyAcceptanceRow[]) {
 
 function humanizeCompactAnomalyLabel(value?: string) {
   if (!value) return "";
+  const knownLabels: Record<string, string> = {
+    refloatcycleactivityexistsbutrefloatrecommendationdateisblank:
+      "Refloat cycle activity exists but Refloat recommendation date is blank",
+    laterstagehaspaymentorbilldateswhileearlierstagedeliveryjobcompletionisincomplete:
+      "Later stage has payment or bill dates while earlier stage delivery/job completion is incomplete",
+    soisshortclosedbutdeliverypaymentjobcompletioncontinuesaftershortclosuredate:
+      "S.O. is shortclosed but delivery/payment/job completion continues after shortclosure date",
+    soisshortclosedbutjobcompletionispending: "S.O. is shortclosed but Job Completion is pending",
+    soisshortclosedbutmaterialreceiptispending:
+      "S.O. is shortclosed but material receipt is pending",
+    soisshortclosedbutpaymentispending: "S.O. is shortclosed but payment is pending",
+    soisshortclosedbutreturnedbillworkflowispending:
+      "S.O. is shortclosed but returned bill workflow is pending",
+    soisshortclosedbutsupplementarybillworkflowispending:
+      "S.O. is shortclosed but supplementary bill workflow is pending",
+  };
+  if (knownLabels[value]) return knownLabels[value];
   if (value === "fileclosedbutbgreturnpendingexists") {
     return "File is closed but BG return is still pending";
   }
@@ -23516,6 +23785,9 @@ function CncSummaryChart({
 function AnalyticsRankingTable({
   columns,
   rows,
+  totalRows,
+  getRowClickDetails,
+  onRowClick,
   getRowNameHelpBreadcrumb,
   getRowNameHelpText,
   compactRankColumn = false,
@@ -23526,6 +23798,11 @@ function AnalyticsRankingTable({
 }: {
   columns: AnalyticsTableColumn[];
   rows: Array<Record<string, number | string>>;
+  totalRows?: Array<Record<string, number | string>>;
+  getRowClickDetails?: (
+    row: Record<string, number | string>,
+  ) => { label: string; expanded: boolean } | undefined;
+  onRowClick?: (row: Record<string, number | string>) => void;
   getRowNameHelpBreadcrumb?: (row: Record<string, number | string>) => string[];
   getRowNameHelpText?: (row: Record<string, number | string>) => string[] | undefined;
   compactRankColumn?: boolean;
@@ -23542,7 +23819,7 @@ function AnalyticsRankingTable({
   }
   const groupedHeaders = getAnalyticsGroupedHeaders(columns);
   const hasGroupedHeaders = groupedHeaders.some((header) => header.group);
-  const totalCells = getAnalyticsTotalCells(columns, rows, getColumnTotalSearchTarget);
+  const totalCells = getAnalyticsTotalCells(columns, totalRows ?? rows, getColumnTotalSearchTarget);
   const showTotalFooter =
     Boolean(onOpenSearchTarget) &&
     totalCells.some((cell, index) => index > 0 && cell.searchTarget && cell.value !== "0");
@@ -23629,18 +23906,42 @@ function AnalyticsRankingTable({
           )}
         </thead>
         <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr
-              key={String(
-                row.relationshipKey ??
-                  row.signature ??
-                  row.uniqueNumber ??
-                  row.name ??
-                  row.fileRef ??
-                  rowIndex,
-              )}
-              className="border-b border-border/60 odd:bg-card even:bg-primary/5 hover:bg-primary/10 last:border-0"
-            >
+          {rows.map((row, rowIndex) => {
+            const rowClickDetails = getRowClickDetails?.(row);
+            const rowIsClickable = Boolean(rowClickDetails && onRowClick);
+            return (
+              <tr
+                key={String(
+                  row.relationshipKey ??
+                    row.signature ??
+                    row.uniqueNumber ??
+                    row.name ??
+                    row.fileRef ??
+                    rowIndex,
+                )}
+                onClick={
+                  rowIsClickable
+                    ? (event) => {
+                        if ((event.target as HTMLElement).closest?.("button, a, input, select")) return;
+                        onRowClick?.(row);
+                      }
+                    : undefined
+                }
+                onKeyDown={
+                  rowIsClickable
+                    ? (event) => {
+                        if (event.target !== event.currentTarget) return;
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        onRowClick?.(row);
+                      }
+                    : undefined
+                }
+                tabIndex={rowIsClickable ? 0 : undefined}
+                aria-expanded={rowIsClickable ? rowClickDetails?.expanded : undefined}
+                aria-label={rowIsClickable ? rowClickDetails?.label : undefined}
+                className={`border-b border-border/60 odd:bg-card even:bg-primary/5 hover:bg-primary/10 last:border-0 ${rowIsClickable ? "group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary" : ""}`}
+              >
               {columns.map((column, columnIndex) => {
                 const value = getAnalyticsRawCellValue(row, column);
                 const renderedValue = column.render
@@ -23719,8 +24020,9 @@ function AnalyticsRankingTable({
                   </td>
                 );
               })}
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
         </tbody>
         {showTotalFooter ? (
           <tfoot>
@@ -23776,10 +24078,7 @@ function getAnalyticsColumnSectionClass(
   const group = column?.group;
   if (!group) return "";
   const tint = getAnalyticsSectionTintClass(group);
-  const divider =
-    previousColumn?.group === group
-      ? ""
-      : "analytics-group-start ";
+  const divider = previousColumn?.group === group ? "" : "analytics-group-start ";
   // The Analytics table stylesheet keeps every column line visible while
   // giving only major group boundaries a slightly stronger tone.
   return `${divider}${tint}`;
@@ -23852,7 +24151,7 @@ function FinanceFirmTypeDistributionTable({
           <col className="w-[30%]" />
           <col className="w-[24%]" />
         </colgroup>
-        <thead className="bg-secondary/40 text-xs uppercase text-muted-foreground">
+        <thead className="bg-secondary/40 text-[0.8125rem] uppercase text-muted-foreground">
           <tr>
             <th className="px-3 py-2 text-left font-medium">Firm type</th>
             <th className="px-3 py-2 text-right font-medium">Value</th>
@@ -23910,7 +24209,7 @@ function FinanceActivityFirmTypeDistributionTable({
 
   return (
     <div className="overflow-x-auto rounded-md border border-border bg-card">
-      <table className="w-full min-w-[620px] border-collapse text-xs">
+      <table className="w-full min-w-[620px] border-collapse text-[0.8125rem]">
         <thead className="bg-secondary text-muted-foreground">
           <tr>
             <th className="border-b border-border px-3 py-2 text-left font-semibold">Firm type</th>
@@ -24126,7 +24425,7 @@ function AnalyticsMiniMetric({
 }) {
   const content = (
     <>
-      <span className="text-[11px] font-medium uppercase text-muted-foreground">{label}</span>
+      <span className="text-[0.6875rem] font-medium uppercase text-muted-foreground">{label}</span>
       <span className="mt-1 block text-xl font-semibold tabular-nums">{value}</span>
       <span className="mt-0.5 block text-xs text-muted-foreground">{helper}</span>
     </>
@@ -24368,7 +24667,10 @@ function MilestoneFlowNode({
     onSupplementaryNormalPendingClick,
     onSupplementaryResubmittedPendingClick,
   });
-  const metricGridClass = "grid grid-cols-2 gap-1.5 sm:grid-cols-3";
+  const metricGridClass =
+    metrics.length === 4
+      ? "grid grid-cols-2 gap-1.5"
+      : "grid grid-cols-2 gap-1.5 sm:grid-cols-3";
 
   return (
     <div className="relative min-w-0">
@@ -24378,11 +24680,11 @@ function MilestoneFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -24403,7 +24705,7 @@ function MilestoneFlowNode({
               fallbackClassName={metricGridClass}
             />
           )}
-        </span>
+        </div>
         <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-background">
           <span
             className={"block h-full rounded-full " + tone.bar}
@@ -24412,7 +24714,7 @@ function MilestoneFlowNode({
         </span>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -24477,22 +24779,22 @@ function PaymentMetricGrid({
     },
   ];
   return (
-    <span className="grid gap-1.5">
+    <div className="grid min-w-0 gap-1.5">
       {rows.map((row, index) => (
-        <span key={index} className="grid gap-1.5">
+        <div key={index} className="grid min-w-0 gap-1.5">
           {row.label ? (
-            <span className="text-[10px] font-semibold uppercase leading-tight text-muted-foreground">
+            <span className="text-[0.625rem] font-semibold uppercase leading-tight text-muted-foreground">
               {row.label}
             </span>
           ) : null}
-          <span className={"grid gap-1.5 " + row.className}>
+          <div className={"grid min-w-0 gap-1.5 " + row.className}>
             {row.metrics.map((metric) => (
               <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
             ))}
-          </span>
-        </span>
+          </div>
+        </div>
       ))}
-    </span>
+    </div>
   );
 }
 
@@ -24609,11 +24911,11 @@ function SupplementaryBillFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -24623,15 +24925,15 @@ function SupplementaryBillFlowNode({
               <span className="block truncate text-sm font-semibold">Supplementary Bill</span>
             </span>
           </span>
-          <span className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+          <div className="grid min-w-0 grid-cols-2 gap-1.5 sm:grid-cols-3">
             {metrics.map((metric) => (
               <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
             ))}
-          </span>
-        </span>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -24656,29 +24958,29 @@ function GroupedStatusMetricGrid({
 
   if (!active || !reviewed || !pending) {
     return (
-      <span className={fallbackClassName}>
+      <div className={fallbackClassName + " min-w-0"}>
         {metrics.map((metric) => (
           <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
         ))}
-      </span>
+      </div>
     );
   }
 
   return (
-    <span className="grid gap-1.5">
+    <div className="grid min-w-0 gap-1.5">
       {remainingMetrics.length ? (
-        <span className="grid grid-cols-2 gap-1.5">
+        <div className="grid min-w-0 grid-cols-2 gap-1.5">
           {remainingMetrics.map((metric) => (
             <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
           ))}
-        </span>
+        </div>
       ) : null}
-      <span className={"grid grid-cols-3 gap-1.5 rounded-md border p-1.5 " + tone.activeGroup}>
+      <div className={"grid min-w-0 grid-cols-3 gap-1.5 rounded-md border p-1.5 " + tone.activeGroup}>
         <MetricButton metric={active} className={tone.activeCount} />
         <MetricButton metric={reviewed} className="bg-card hover:bg-accent" compact />
         <MetricButton metric={pending} className="bg-card hover:bg-accent" compact />
-      </span>
-    </span>
+      </div>
+    </div>
   );
 }
 
@@ -24691,11 +24993,12 @@ function MetricButton({
   className?: string;
   compact?: boolean;
 }) {
+  const tooltip = getStatusMetricTooltip(metric);
   const content = (
     <>
-      <span className="flex items-center justify-center gap-1 text-[9px] font-medium uppercase leading-tight text-muted-foreground">
-        <span>{metric.label}</span>
-        {getStatusMetricTooltip(metric) ? <InlineInfoIcon /> : null}
+      <span className="flex min-w-0 flex-nowrap items-center justify-center gap-1 text-[0.5625rem] font-medium uppercase leading-tight text-muted-foreground">
+        <span className="min-w-0">{metric.label}</span>
+        {tooltip ? <StatusMetricHelpIcon help={tooltip} /> : null}
       </span>
       <span className={(compact ? "text-sm" : "text-base") + " block font-semibold tabular-nums"}>
         {metric.count}
@@ -24703,34 +25006,16 @@ function MetricButton({
     </>
   );
   const baseClass =
-    "min-h-12 rounded-md border border-border px-2 py-1.5 text-center transition hover:ring-2 hover:ring-ring/30 " +
+    "min-h-12 w-full min-w-0 rounded-md border border-border px-2 py-1.5 text-center transition hover:ring-2 hover:ring-ring/30 " +
     (className ?? "bg-card hover:bg-accent");
-  const tooltip = getStatusMetricTooltip(metric);
-  const wrapWithTooltip = (element: ReactElement) =>
-    tooltip ? (
-      <TooltipProvider delayDuration={150}>
-        <Tooltip>
-          <TooltipTrigger asChild>{element}</TooltipTrigger>
-          <TooltipContent
-            side="top"
-            align="center"
-            className="w-fit max-w-[min(48rem,calc(100vw-2rem))] border border-border bg-background p-2 text-foreground shadow-lg text-xs leading-relaxed"
-          >
-            <HelperBulletList items={Array.isArray(tooltip) ? tooltip : [tooltip]} />
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>
-    ) : (
-      element
-    );
 
   if (!metric.onClick) {
-    return wrapWithTooltip(
-      <div className={baseClass.replace(" hover:ring-2 hover:ring-ring/30", "")}>{content}</div>,
+    return (
+      <div className={baseClass.replace(" hover:ring-2 hover:ring-ring/30", "")}>{content}</div>
     );
   }
 
-  return wrapWithTooltip(
+  return (
     <button
       type="button"
       onClick={metric.onClick}
@@ -24738,223 +25023,463 @@ function MetricButton({
       className={baseClass}
     >
       {content}
-    </button>,
+    </button>
   );
 }
 
 function getBgReturnDueHelp(milestoneKey: string): string[] {
   const offsetDays = store.getSettings().bgReturnOffsetDays ?? 60;
   const normalized = normalizeMilestoneName(milestoneKey);
-  const warrantyRule = normalized === "pwb" || normalized === "psbpwb";
+  const bgName = normalized === "psbpwb" ? "combined PSB+PWB" : normalized.toUpperCase();
   return [
-    "Counted when the BG applies to the S.O., has been received, and has no recorded return date.",
-    warrantyRule
-      ? `For this BG type, return becomes due after the warranty period ends plus ${offsetDays} days (the current Settings offset).`
-      : "For PSB, return becomes due when the applicable delivery/job-completion or IR completion condition is met.",
-    "A cancelled S.O. makes its received BG due for return. A short-closed S.O. also makes PSB due for return.",
+    `Counts an applicable, received ${bgName} record with no return date when its return condition is met.`,
+    normalized === "psb"
+      ? "PSB return condition: delivery/job completion is recorded, or IR Receipt is recorded when IR applies. A cancelled or short-closed S.O. can also make PSB return due."
+      : `Warranty BG return condition: Warranty Period Date + ${offsetDays} Settings days has passed. A cancelled S.O. can make the received BG return due immediately.`,
+    "Count unit: BG records, not unique files.",
   ];
 }
 
 function getStatusMetricHelp(milestoneKey: string, label: string): string | string[] | undefined {
   const normalizedLabel = normalizeMilestoneName(label);
-  if (["total", "totalfiles", "totalcases"].includes(normalizedLabel)) {
-    const applicability: Record<string, string> = {
-      highValue: "High Value = Yes",
-      tcec: "TCEC = Yes",
-      ad: "AD = Yes",
-      rqa: "R&QA = Yes",
-      ifa: "IFA = Yes",
-      bidding: "bidding applies and Refloat is not Yes",
-      postTcec: "TCEC = Yes",
-      refloatBidding: "Refloat = Yes",
-      refloatPostTcec: "Refloat = Yes, TCEC = Yes, and Bidding Stage Over = Yes",
-      cnc: "TCEC = Yes",
-    };
-    const appliesWhen = applicability[milestoneKey];
-    return [
-      appliesWhen
-        ? `Includes files where ${appliesWhen}.`
-        : "Includes files in the selected Dashboard scope for this milestone.",
-      "Each file counts once, whether the milestone is pending or complete.",
-    ];
-  }
-  if (normalizedLabel === "due" && milestoneKey !== "payment") {
-    return [
-      "The file is currently at this stage.",
-      "This is a workflow position, not a date-based overdue count.",
-    ];
+  const isTotal = ["total", "totalfiles", "totalcases"].includes(normalizedLabel);
+  const isCompleted = ["completed", "cleared", "received", "placed"].includes(normalizedLabel);
+  const isPending = normalizedLabel === "pending";
+  const isReviewed = normalizedLabel === "reviewed";
+  const isDue = normalizedLabel === "due";
+  const stageRules: Record<
+    string,
+    { stage: string; applies: string; reviewed?: string; completed: string }
+  > = {
+    scrutiny: {
+      stage: "Scrutiny",
+      applies: "all files in the selected Dashboard scope",
+      reviewed: "Scrutiny Date",
+      completed: "Scrutiny Completion Date",
+    },
+    highValue: {
+      stage: "High Value",
+      applies: "High Value = Yes",
+      reviewed: "High Value Meeting Date",
+      completed: "High Value Minutes Date",
+    },
+    tcec: {
+      stage: "Pre-TCEC",
+      applies: "TCEC = Yes",
+      reviewed: "Pre-TCEC Date",
+      completed: "Pre-TCEC Minutes Date",
+    },
+    ad: {
+      stage: "AD",
+      applies: "AD = Yes",
+      reviewed: "AD Sent Date",
+      completed: "AD Vetting Date",
+    },
+    rqa: {
+      stage: "R&QA",
+      applies: "R&QA = Yes",
+      reviewed: "R&QA Sent Date",
+      completed: "R&QA Approval Date",
+    },
+    control: {
+      stage: "Controlling",
+      applies: "all files in the selected Dashboard scope",
+      completed: "Control Date",
+    },
+    ifa: {
+      stage: "IFA",
+      applies: "IFA = Yes",
+      reviewed: "IFA Sent Date",
+      completed: "IFA Final Date",
+    },
+    cfa: {
+      stage: "CFA",
+      applies: "all files in the selected Dashboard scope",
+      reviewed: "CFA Sent Date",
+      completed: "CFA Approval Date",
+    },
+    postTcec: {
+      stage: "Post-TCEC",
+      applies: "TCEC = Yes",
+      reviewed: "Post-TCEC Date",
+      completed: "Post-TCEC Minutes Date",
+    },
+    cnc: {
+      stage: "CNC",
+      applies: "TCEC = Yes",
+      reviewed: "CNC Date",
+      completed: "CNC Approval Date",
+    },
+  };
+
+  if (isTotal) {
+    if (milestoneKey === "bidding") {
+      return "Counts each applicable normal-cycle file once; Bidding applies and Refloat is not Yes.";
+    }
+    if (milestoneKey === "refloatBidding") {
+      return "Counts each file with Refloat = Yes once. The Refloat Bidding Stage Over flag does not control applicability.";
+    }
+    if (milestoneKey === "refloatPostTcec") {
+      return "Counts each file with Refloat = Yes and TCEC = Yes once. Refloat Bidding Stage Over does not control this total.";
+    }
+    if (milestoneKey === "postTcec") {
+      return [
+        "Counts each TCEC file once under the current applicability rule, including files with Refloat = Yes.",
+        "A Refloat TCEC file can also count in Refloat Post-TCEC Total, so these two totals can overlap.",
+      ];
+    }
+    if (milestoneKey === "financialSanction") {
+      return "Counts Financial Sanction order slots in the selected scope; Completed and Pending below count sanction records, while Completed also shows unique files.";
+    }
+    if (milestoneKey === "supplyOrder") {
+      return "Counts each file in the selected scope once. The Placed counter below counts only S.O. records with a recorded placement date.";
+    }
+    if (isBgMilestoneKey(milestoneKey)) {
+      const details: Record<string, string> = {
+        psb: "PSB Applicable = Yes and coverage is PSB or PSB and PWB separately",
+        pwb: "Warranty = Yes and coverage is PWB or PSB and PWB separately",
+        psbpwb: "Warranty = Yes and coverage is PSB+PWB",
+      };
+      return [
+        `Scenario table: Coverage | Applies when | Received field`,
+        `Scenario row: PSB | ${details.psb} | PSB Received Date`,
+        `Scenario row: PWB | ${details.pwb} | PWB Received Date`,
+        `Scenario row: PSB+PWB | ${details.psbpwb} | Combined BG Received Date`,
+        "Counts applicable BG records, one per S.O. coverage record; not unique files.",
+      ];
+    }
+    if (milestoneKey === "payment") {
+      return "Counts payment items in the selected scope; a file can contribute more than one item.";
+    }
+    const rule = stageRules[milestoneKey];
+    return rule ? `Counts each applicable file once when ${rule.applies}.` : undefined;
   }
 
   if (milestoneKey === "bidding") {
     if (normalizedLabel === "live") {
       return [
-        "CFA approval date exists, bidding is applicable, Tender Live is Yes, and Bidding Stage Over is not Yes.",
-        "Files only live on tender portal are not counted unless the file has entered bidding through CFA.",
-        "Cancelled demand and File Closed are excluded from this live counter.",
+        "Normal cycle (Refloat ≠ Yes): Current Milestone = Bidding; bidding applies; Bid Date is today or earlier; Bid Opening Date is today or later; Bid Opened ≠ Yes; Bidding Stage Over ≠ Yes.",
+        "The live window is date-based; a separate Bid Live field is not the counter trigger. Uses normal Bidding dates only.",
+        "Count unit: files.",
       ];
     }
-    if (normalizedLabel === "inprocess") {
+    if (normalizedLabel === "inprocess" || normalizedLabel === "inprogress") {
       return [
-        "CFA approval date exists and Bidding Stage Over is not Yes.",
-        "Tender Live is not Yes and bid opening is not overdue.",
+        "Normal cycle (Refloat ≠ Yes): Current Milestone = Bidding; bidding applies; CFA Approval Date is recorded; Bidding Stage Over ≠ Yes; not in the date-based Live window; Bid Opening Date is not overdue.",
+        "Blank normal bidding dates are allowed and can still count as In process.",
+        "Count unit: files.",
       ];
     }
     if (normalizedLabel === "openingoverdue") {
       return [
-        "Bidding is applicable and bid opening date has passed while Bid Opened is not Yes.",
-        "Bidding remains in progress until Bidding Stage Over is Yes.",
+        "Normal cycle (Refloat ≠ Yes): Current Milestone = Bidding; bidding applies; CFA Approval Date is recorded; Bid Opening Date is before today; Bid Opened ≠ Yes; Bidding Stage Over ≠ Yes.",
+        "Uses normal Bidding fields only. A stale flag is not counted after the current milestone advances.",
+        "Count unit: files.",
       ];
     }
     if (normalizedLabel === "completed") {
-      return "Bidding Stage Over is Yes.";
+      return "Normal Bidding is complete when Bidding Stage Over = Yes. Counts files; Current Milestone need not remain Bidding.";
     }
     if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
-      return "Files eligible for bidding but not yet inside live/in-process/overdue bidding.";
+      return [
+        "Normal Bidding applies and all earlier applicable milestone requirements are complete, including CFA.",
+        "Bidding Stage Over is not Yes; the file is not currently at Bidding, live, or opening overdue.",
+        "The counter does not require Current Milestone = CFA; it covers eligible files not yet at Bidding.",
+      ];
     }
   }
 
   if (milestoneKey === "refloatBidding") {
     if (normalizedLabel === "live") {
       return [
-        "Refloat is Yes, refloat bidding date exists, Tender Live is Yes, and Bidding Stage Over is not Yes.",
-        "Bid Live follows the normal bidding rule and uses refloat dates when present.",
+        "Refloat cycle: Refloat = Yes; Current Milestone = Refloat Bidding; Refloat Bidding Date is today or earlier; Refloat Bid Opening Date is today or later; Refloat Bid Opened ≠ Yes; Refloat Bidding Stage Over ≠ Yes.",
+        "The live window is date-based; a separate Refloat Bid Live field is not the counter trigger. Normal Bidding dates do not affect this counter.",
+        "Count unit: files.",
       ];
     }
-    if (normalizedLabel === "inprocess") {
+    if (normalizedLabel === "inprocess" || normalizedLabel === "inprogress") {
       return [
-        "Refloat is Yes and refloat bidding date exists.",
-        "Tender Live is not Yes, refloat bid opening is not overdue, and Bidding Stage Over is not Yes.",
+        "Refloat cycle: Refloat = Yes; Current Milestone = Refloat Bidding; Refloat Bidding Stage Over ≠ Yes; the date-based Live window is not active; Refloat Bid Opening Date is not overdue.",
+        "A blank Refloat Bidding Date is allowed and can still count as In process.",
+        "Count unit: files.",
       ];
     }
     if (normalizedLabel === "openingoverdue") {
-      return "Refloat bid opening date has passed while bidding is still not over.";
+      return [
+        "Refloat cycle: Refloat = Yes; Current Milestone = Refloat Bidding; Refloat Bid Opening Date is before today; Refloat Bid Opened ≠ Yes; Refloat Bidding Stage Over ≠ Yes.",
+        "Normal Bidding fields do not affect this counter.",
+        "Count unit: files.",
+      ];
+    }
+    if (normalizedLabel === "completed") {
+      return "Refloat Bidding is complete when Refloat Bidding Stage Over = Yes. Counts files; Current Milestone need not remain Refloat Bidding.";
+    }
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return "Not displayed: Refloat Bidding has no separate At previous stage counter.";
+    }
+  }
+
+  if (milestoneKey === "postTcec") {
+    if (isPending || isReviewed || isCompleted) {
+      const rule = isPending
+        ? "Current Milestone = Post-TCEC; Post-TCEC Date and Post-TCEC Minutes Date are blank."
+        : isReviewed
+          ? "Current Milestone = Post-TCEC; Post-TCEC Date is recorded; Post-TCEC Minutes Date is blank."
+          : "Post-TCEC Minutes Date is recorded.";
+      return [
+        `Post-TCEC fields: ${rule}`,
+        "Applies when TCEC = Yes. This counter uses Post-TCEC fields; Refloat Post-TCEC has a separate counter and fields.",
+        "Count unit: files.",
+      ];
+    }
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return [
+        "TCEC = Yes; Refloat ≠ Yes; Current Milestone = Bidding; Bidding Stage Over ≠ Yes.",
+        "All earlier applicable stages are complete; Normal Bidding is the exact predecessor to Post-TCEC. Counts files, not cases.",
+      ];
+    }
+  }
+
+  if (milestoneKey === "refloatPostTcec") {
+    if (isDue || ["inprocess", "inprogress"].includes(normalizedLabel)) {
+      return [
+        "Refloat = Yes; TCEC = Yes; Refloat Bidding Stage Over = Yes; Current Milestone = Refloat Post-TCEC; Refloat Post-TCEC Minutes Date is blank.",
+        "Due includes both Pending and Reviewed cases, so these counters can overlap.",
+        "Count unit: files.",
+      ];
+    }
+    if (normalizedLabel === "pending") {
+      return [
+        "Refloat = Yes; TCEC = Yes; Refloat Bidding Stage Over = Yes; Current Milestone = Refloat Post-TCEC.",
+        "Refloat Post-TCEC Date and Refloat Post-TCEC Minutes Date are both blank.",
+        "Count unit: files.",
+      ];
+    }
+    if (normalizedLabel === "reviewed") {
+      return [
+        "Refloat = Yes; TCEC = Yes; Refloat Bidding Stage Over = Yes; Current Milestone = Refloat Post-TCEC.",
+        "Refloat Post-TCEC Date is recorded; Refloat Post-TCEC Minutes Date is blank.",
+        "Count unit: files.",
+      ];
+    }
+    if (normalizedLabel === "completed") {
+      return "Refloat Post-TCEC is complete when Refloat Post-TCEC Minutes Date is recorded and Refloat Bidding Stage Over = Yes. Counts files; Current Milestone need not remain here.";
+    }
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return "Not displayed: Refloat Post-TCEC has no separate At previous stage counter.";
+    }
+  }
+
+  if (milestoneKey === "cnc") {
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return [
+        "Scenario table: Cycle | Current predecessor | Incomplete condition",
+        "Scenario row: Normal TCEC | Post-TCEC | Earlier applicable stages are complete; Post-TCEC Minutes Date and CNC Approval Date are blank",
+        "Scenario row: Refloat TCEC | Refloat Post-TCEC | Refloat Bidding Stage Over = Yes; Refloat Post-TCEC Minutes Date and CNC Approval Date are blank",
+        "One CNC counter combines both cycles; each row uses its own cycle's predecessor fields.",
+        "Count unit: files.",
+      ];
+    }
+  }
+
+  if (milestoneKey === "ifa") {
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return [
+        "IFA = Yes, Current Milestone = Controlling, all earlier applicable milestones are complete, and the Controlling date is blank.",
+        "Controlling is the exact predecessor to IFA; files at a different milestone are not counted.",
+      ];
+    }
+  }
+
+  if (milestoneKey === "financialSanction") {
+    if (normalizedLabel === "pending") {
+      return [
+        "Current Order Milestone = Financial Sanction; no Financial Sanction Date or completed Financial Sanction milestone is recorded; applicable predecessors are complete.",
+        "Scenario table: File type | Required predecessor completion",
+        "Scenario row: TCEC, Normal bidding | Bidding Stage Over = Yes and CNC Approval Date recorded",
+        "Scenario row: TCEC, Refloat bidding | Refloat Bidding Stage Over = Yes and CNC Approval Date recorded",
+        "Scenario row: TCEC, bidding does not apply | CFA Date and CNC Approval Date recorded",
+        "Scenario row: Non-TCEC, Normal bidding | Bidding Stage Over = Yes",
+        "Scenario row: Non-TCEC, Refloat bidding | Refloat Bidding Stage Over = Yes",
+        "Scenario row: Non-TCEC, non-bidding | CFA Date recorded",
+        "Counts pending Financial Sanction records (order-level where S.O. rows apply).",
+      ];
+    }
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return [
+        "No Financial Sanction Date or completed Financial Sanction milestone is recorded; the order is at its exact incomplete predecessor.",
+        "Scenario table: File type | Current predecessor | Incomplete condition",
+        "Scenario row: TCEC | CNC | CNC Approval Date is blank",
+        "Scenario row: Non-TCEC, Normal bidding | Current Milestone = Bidding | Bidding Stage Over ≠ Yes",
+        "Scenario row: Non-TCEC, Refloat bidding | Current Milestone = Bidding (current predicate) | Refloat Bidding Stage Over ≠ Yes",
+        "Scenario row: Non-TCEC, non-bidding | CFA | CFA Date is blank",
+        "Count unit: files.",
+      ];
+    }
+    if (normalizedLabel === "completed") {
+      return [
+        "A Financial Sanction record is complete when its Financial Sanction Date or completed-milestone record is present.",
+        "The card shows unique files and completed sanction records separately; cancelled S.O.s are excluded.",
+      ];
     }
   }
 
   if (milestoneKey === "supplyOrder") {
+    if (normalizedLabel === "atpreviousstage" || normalizedLabel === "atpreviousstages") {
+      return "Current Order Milestone = Financial Sanction; Financial Sanction is incomplete; the S.O. is not complete or placed. Counts order records.";
+    }
     if (normalizedLabel === "placed" || normalizedLabel === "completed") {
       return [
-        "The first number is files; the second is placed S.O.s.",
-        "A file with several placed S.O.s counts once as a file and once for each S.O.",
-        "Cancelled S.O.s are not counted. Shortclosed S.O.s remain included as placed history.",
+        "An S.O. is placed only when its S.O. Date is today or earlier and recorded on a non-cancelled order.",
+        "The card shows unique files and placed S.O. records separately; a file with multiple placed S.O.s counts once as a file and once per S.O.",
+        "Shortclosed S.O.s remain in placement history.",
       ];
     }
     if (normalizedLabel === "live") {
       return [
-        "S.O. exists and the effective D.P. is still today or later.",
-        "Cancelled S.O. rows are excluded. Shortclosed S.O. rows are treated like concluded S.O.s; only curtailed future delivery/payment work is ignored.",
+        "Counts a completed S.O. with unpaid work/payment remaining, No Further Action ≠ Yes, and no cancellation.",
+        "Count unit: S.O. records.",
       ];
     }
     if (normalizedLabel === "pending") {
-      return "Files currently waiting at Supply Order stage after financial sanction.";
+      return "Current Order Milestone = Supply Order; Financial Sanction is complete; S.O. is incomplete. Cancelled, shortclosed, and No Further Action orders are excluded. Counts order records.";
     }
-  }
-
-  if (milestoneKey === "financialSanction" && normalizedLabel === "completed") {
-    return [
-      "The first number is files; the second is completed Financial Sanctions.",
-      "A file with several S.O.s counts once as a file and once for each completed sanction.",
-      "Cancelled S.O.s are not counted.",
-    ];
   }
 
   if (isBgMilestoneKey(milestoneKey)) {
-    if (normalizedLabel === "tobereceived" || normalizedLabel === "pending") {
-      return "BG is applicable and receipt is still pending for that BG category.";
+    const normalized = normalizeMilestoneName(milestoneKey);
+    const categoryRules: Record<string, { applies: string; received: string; due: string }> = {
+      psb: {
+        applies: "PSB Applicable = Yes and coverage is PSB or PSB and PWB separately",
+        received: "PSB Received Date",
+        due: "S.O. Date is recorded",
+      },
+      pwb: {
+        applies: "Warranty = Yes and coverage is PWB or PSB and PWB separately",
+        received: "PWB Received Date",
+        due: "Job Completion Date for Job Completion workflows; otherwise Material Receipt Date",
+      },
+      psbpwb: {
+        applies: "Warranty = Yes and coverage is PSB+PWB",
+        received: "Combined BG Received Date",
+        due: "S.O. Date is recorded",
+      },
+    };
+    const category = categoryRules[normalized];
+    if (!category) return undefined;
+    if (normalizedLabel === "pending" || normalizedLabel === "tobereceived") {
+      return [
+        `${category.applies}; ${category.received} is blank; ${category.due}. No Further Action = Yes is excluded.`,
+        "Count unit: BG records, one per applicable S.O. coverage record.",
+      ];
+    }
+    if (normalizedLabel === "received" || normalizedLabel === "completed") {
+      return `${category.applies}; ${category.received} or the matching completed-milestone record is present. Counts BG records.`;
     }
     if (normalizedLabel === "expired") {
-      return "BG validity date is before today and the BG has not been returned.";
+      return `${category.applies}; BG is received, its validity date is before today, and it has not been returned. ${normalized === "psb" ? "PSB return-purpose completion is still outstanding." : "Payment is not recorded."} Counts BG records.`;
     }
     if (normalizedLabel === "tobereturned") {
       return getBgReturnDueHelp(milestoneKey);
     }
     if (normalizedLabel === "returned") {
-      return "BG return date is filled.";
+      return `${category.applies}; ${normalized === "psbpwb" ? "Combined BG" : normalized.toUpperCase()} Return Date is recorded. Counts BG records.`;
     }
   }
 
   if (milestoneKey === "payment") {
     if (normalizedLabel === "advancepaid") {
-      return "An advance payment date is recorded. Each advance is counted as a payment case.";
+      return "Counts applicable advance payment items with Payment Date recorded. Count unit: advance payment items.";
     }
     if (normalizedLabel === "advancepending") {
-      return "Advance Payment is applicable, is the current step, and has no payment date.";
+      return "Counts an applicable advance item when Current Milestone = Advance Payment and its Payment Date is blank. No Further Action = Yes is excluded. Count unit: advance payment items.";
     }
     if (normalizedLabel === "billsreturned") {
       return [
-        "Counts payment cases with recorded bill-return history.",
-        "A returned bill may still be awaiting resubmission, may have been resubmitted, or may already be paid.",
+        "Counts payment items with any recorded bill-return history, whether awaiting resubmission, resubmitted, or paid.",
+        "Count unit: payment items; cancelled S.O.s are excluded.",
       ];
     }
     if (normalizedLabel === "returnpending") {
-      return "The latest return cycle is open and awaiting resubmission.";
+      return "Counts payment items whose latest bill-return cycle is open and awaiting resubmission. No Further Action = Yes and cancelled S.O.s are excluded. Count unit: payment items.";
     }
     if (normalizedLabel === "returnedpaid") {
-      return "The latest return cycle was resubmitted, and a payment date is recorded.";
+      return "Counts payment items with a completed return/resubmission cycle and a Payment Date. Cancelled S.O.s are excluded. Count unit: payment items.";
     }
     if (normalizedLabel === "supplementarysubmittedtotal") {
-      return "Counts supplementary bills with a bill-sent date, whether paid or unpaid.";
+      return supplementaryBillMetricHelp.submitted;
     }
     if (normalizedLabel === "suppreturnedtotal") {
-      return "Counts supplementary bills with recorded return-cycle details; it does not mean each is still awaiting resubmission.";
+      return supplementaryBillMetricHelp.returned;
     }
     if (normalizedLabel === "suppreturnpending") {
-      return "A supplementary bill's latest return cycle is open and awaiting resubmission.";
+      return supplementaryBillMetricHelp.returnPending;
     }
     if (normalizedLabel === "suppresubmittedtotal") {
-      return "Counts supplementary bills with a completed return-and-resubmission cycle, whether paid or unpaid.";
+      return supplementaryBillMetricHelp.resubmitted;
     }
     if (normalizedLabel === "suppreturnedpaid") {
-      return "A supplementary bill was resubmitted after return and its payment date is recorded.";
+      return supplementaryBillMetricHelp.returnedPaid;
     }
     if (normalizedLabel === "normalsupplementarypaid") {
-      return "A supplementary bill has a payment date and no recorded return history.";
+      return supplementaryBillMetricHelp.normalPaid;
     }
     if (normalizedLabel === "supplementarypending") {
-      return "A supplementary bill has been submitted for payment and has no payment date.";
+      return supplementaryBillMetricHelp.pending;
     }
     if (normalizedLabel === "due") {
       return [
-        "Payment workflow has become due, but bill preparation date and bill sent for payment date are still blank.",
-        "For physical delivery/inspection files, due starts after material receipt.",
-        "For Goods & Services where IR is No, due starts after Job Completion Received Date.",
-        "For Group B (Contract), payment is due the day after the effective D.P. expires. A shortclosed S.O. uses Job Completion Received Date as its payment trigger.",
-        "One file can contribute more than one payment case when it has multiple payable stages.",
-        "Bills already sent to the payment authority are counted separately under Submitted and unpaid.",
+        "Scenario table: Workflow | Payment trigger",
+        "Scenario row: Physical delivery / inspection | Material Receipt Date (latest stage receipt when stage delivery uses one common payment)",
+        "Scenario row: Goods & Services, IR = No | Job Completion Date",
+        "Scenario row: Group B (Contract) | Day after effective D.P. expires; short-closed S.O. uses Job Completion Date",
+        "Due also requires Payment Date, Bill Preparation Date, and Bill Sent for Payment Date to be blank, with no bill-return history. Count unit: payment items; a file can contribute more than one.",
       ];
     }
     if (normalizedLabel === "inprocess") {
-      return "Bill preparation date exists but bill sent for payment date is still blank.";
+      return "Counts payment items with Bill Preparation Date recorded, Bill Sent for Payment Date blank, Payment Date blank, and no return history. Count unit: payment items.";
     }
     if (normalizedLabel === "submitted" || normalizedLabel === "submittedandunpaid") {
       return [
-        "Counts regular or stage payment items where the Bill Sent for Payment date exists and the payment date is still blank.",
-        "Bills with return history appear under Return pending or Resubmitted and unpaid instead.",
-        "Cancelled S.O.s and No Further Action items are excluded.",
-        "This counts payment items, not unique files.",
+        "Counts regular or stage payment items with Bill Sent for Payment Date recorded, Payment Date blank, and no return history.",
+        "Count unit: payment items, not unique files.",
       ];
     }
     if (normalizedLabel === "completed") {
-      return "Payment date exists.";
+      return "Counts payment items with Payment Date recorded. Count unit: payment items.";
     }
   }
 
-  if (normalizedLabel === "total" || normalizedLabel === "totalfiles") {
-    return "Applicable files/cases for this milestone under the selected Dashboard filters.";
-  }
-  if (normalizedLabel === "completed" || normalizedLabel === "cleared") {
-    return "Files/cases where this milestone is already completed.";
-  }
-  if (normalizedLabel === "pending") {
-    return "Files/cases currently pending at this milestone.";
-  }
-  if (normalizedLabel === "reviewed") {
-    return "Review/sent date exists but final completion for the milestone is still pending.";
-  }
-  if (normalizedLabel === "atpreviousstage") {
-    return "Eligible files that have not yet reached this milestone.";
+  const rule = stageRules[milestoneKey];
+  if (rule) {
+    if (isDue) {
+      return `${rule.applies}; Current Milestone = ${rule.stage}. This is a workflow-position count, not an overdue calculation, and can overlap Reviewed or Pending. ${rule.completed} is tracked separately.`;
+    }
+    if (isReviewed && rule.reviewed) {
+      return `${rule.applies}; Current Milestone = ${rule.stage}; ${rule.reviewed} is recorded; ${rule.completed} is blank. Counts files.`;
+    }
+    if (isPending) {
+      return `${rule.applies}; Current Milestone = ${rule.stage}; ${rule.completed} is blank${rule.reviewed ? ` and ${rule.reviewed} is blank` : ""}. Counts files.`;
+    }
+    if (isCompleted) {
+      return `${rule.applies}; ${rule.completed} is recorded. Counts files; the file may already have moved to a later milestone.`;
+    }
   }
   return undefined;
+}
+
+function getPreBidMeetingStatusHelp(refloat: boolean, state: "due" | "completed") {
+  const cycle = refloat ? "Refloat" : "Normal";
+  const bucket = state === "due" ? "today or later" : "before today";
+  return [
+    "Scenario table: Cycle | Required fields | Date bucket",
+    "Scenario row: Normal | Bidding applies; Pre-Bid Meeting = Yes; Pre-Bid Meeting Date is recorded | Due when today or later; Completed when before today",
+    "Scenario row: Refloat | Bidding applies; Refloat = Yes; Refloat Pre-Bid Meeting = Yes; Refloat Pre-Bid Meeting Date is recorded | Due when today or later; Completed when before today",
+    `This counter uses only the ${cycle} row and counts files. Its meeting date is ${bucket}.`,
+    state === "completed"
+      ? "A past scheduled date is a date bucket; it does not itself confirm that the meeting was held."
+      : "A blank meeting date is not counted.",
+  ];
 }
 
 function getStatusMetrics({
@@ -25088,12 +25613,12 @@ function getStatusMetrics({
     label: milestone.completedLabel,
     count:
       milestone.key === "supplyOrder"
-        ? (milestone.supplyOrderPlacedFiles ?? milestone.cleared)
+        ? (milestone.supplyOrderPlacedFiles ?? 0)
         : milestone.cleared,
     countUnit: milestone.key === "supplyOrder" ? "Files" : undefined,
     detail:
       milestone.key === "supplyOrder"
-        ? `${milestone.supplyOrderPlacedCount ?? milestone.cleared} S.O.`
+        ? `${milestone.supplyOrderPlacedCount ?? 0} S.O.`
         : undefined,
     onClick: onClearedClick,
     statusKind: "history" as const,
@@ -25169,7 +25694,7 @@ function getStatusMetrics({
   }
 
   if (milestone.key === "refloatPostTcec") {
-    return [total, completed, previous, active, reviewed, pending];
+    return [total, completed, active, reviewed, pending];
   }
 
   if (["ad", "rqa"].includes(milestone.key)) {
@@ -25338,37 +25863,42 @@ function getStatusMetrics({
         count: milestone.advancePaid ?? 0,
         onClick: onAdvancePaidClick,
         statusKind: "history",
+        help: getStatusMetricHelp(milestone.key, "Advance Paid"),
       },
       {
         label: "Advance Pending",
         count: milestone.advancePending ?? 0,
         onClick: onAdvancePendingClick,
         statusKind: "live",
+        help: getStatusMetricHelp(milestone.key, "Advance Pending"),
       },
       {
         label: "Bills returned",
         count: milestone.billsReturnedForCorrection ?? 0,
         onClick: onBillsReturnedClick,
         statusKind: "history",
+        help: getStatusMetricHelp(milestone.key, "Bills returned"),
       },
       {
         label: "Return pending",
         count: milestone.returnedBillsPending ?? 0,
         onClick: onReturnedBillsPendingClick,
         statusKind: "live",
+        help: getStatusMetricHelp(milestone.key, "Return pending"),
       },
       {
         label: "Resubmitted and Unpaid",
         count: milestone.returnedBillsResubmitted ?? 0,
         onClick: onReturnedBillsResubmittedClick,
         statusKind: "live",
-        help: "The latest return cycle has been resubmitted and the bill remains unpaid. No Further Action = Yes stops this pending follow-up.",
+        help: "Counts payment items whose latest return cycle is resubmitted, Payment Date is blank, and No Further Action ≠ Yes. Cancelled S.O.s are excluded.",
       },
       {
         label: "Returned paid",
         count: milestone.returnedBillsPaid ?? 0,
         onClick: onReturnedBillsPaidClick,
         statusKind: "history",
+        help: getStatusMetricHelp(milestone.key, "Returned paid"),
       },
       {
         label: "Supplementary submitted total",
@@ -25484,11 +26014,11 @@ function DeliveryPeriodFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -25500,7 +26030,7 @@ function DeliveryPeriodFlowNode({
               </span>
             </span>
           </span>
-          <span className="grid grid-cols-3 gap-1.5">
+          <div className="grid min-w-0 grid-cols-3 gap-1.5">
             <DeliveryPeriodMetricButton
               label="Valid"
               count={milestone.valid}
@@ -25520,11 +26050,11 @@ function DeliveryPeriodFlowNode({
               onClick={onExtendedClick}
               help={deliveryPeriodMetricHelpers.extended}
             />
-          </span>
-        </span>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -25553,11 +26083,11 @@ function DeliveryPeriodMetricButton({
             type="button"
             onClick={onClick}
             className={
-              "rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
+              "min-h-12 w-full min-w-0 rounded-md px-2 py-1 text-center hover:ring-2 hover:ring-ring/30 " +
               (className ?? "border border-border bg-card hover:bg-accent")
             }
           >
-            <span className="block text-[9px] font-medium uppercase leading-tight text-muted-foreground">
+            <span className="block text-[0.5625rem] font-medium uppercase leading-tight text-muted-foreground">
               <span className="inline-flex items-center justify-center gap-1">
                 <span>{label}</span>
                 <InlineInfoIcon />
@@ -25660,11 +26190,11 @@ function DeliveryFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -25676,8 +26206,8 @@ function DeliveryFlowNode({
               </span>
             </span>
           </span>
-          <span className="flex flex-col gap-1.5">
-            <span className="grid grid-cols-3 gap-1.5">
+          <div className="flex min-w-0 flex-col gap-1.5">
+            <div className="grid min-w-0 grid-cols-3 gap-1.5">
               {metrics.map((metric) => (
                 <StatusMetricBox
                   key={metric.label}
@@ -25690,12 +26220,12 @@ function DeliveryFlowNode({
                   }
                 />
               ))}
-            </span>
-          </span>
-        </span>
+            </div>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -25729,9 +26259,8 @@ function JobCompletionFlowNode({
       onClick: onJobDueClick,
       statusKind: "live",
       help: [
-        "Includes work/service S.O. rows where job completion is still pending and the contract/job period is valid today or later.",
-        "Today is counted as valid.",
-        "Completed jobs and cancelled S.O. rows are excluded. Shortclosed S.O. rows remain due only if pending work still exists.",
+        "Counts work/service S.O. rows with an S.O. date, effective D.P. before today, and Job Completion Date blank.",
+        "Cancelled and short-closed S.O.s and No Further Action items are excluded. Count unit: S.O. rows.",
       ],
     },
     {
@@ -25740,9 +26269,8 @@ function JobCompletionFlowNode({
       onClick: onJobCompletedClick,
       statusKind: "history",
       help: [
-        "Includes work/service S.O. rows where job completion is recorded.",
-        "Cancelled demand files are excluded.",
-        "Cancelled S.O. rows are excluded. Shortclosed S.O. rows remain included when job completion history exists.",
+        "Counts work/service S.O. rows with an S.O. date and Job Completion Date recorded.",
+        "Cancelled S.O.s are excluded; short-closed S.O.s remain in completion history. Count unit: S.O. rows.",
       ],
     },
   ];
@@ -25755,11 +26283,11 @@ function JobCompletionFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -25771,7 +26299,7 @@ function JobCompletionFlowNode({
               </span>
             </span>
           </span>
-          <span className="grid grid-cols-2 gap-1.5">
+          <div className="grid min-w-0 grid-cols-2 gap-1.5">
             {metrics.map((metric) => (
               <StatusMetricBox
                 key={metric.label}
@@ -25782,11 +26310,11 @@ function JobCompletionFlowNode({
                 tone={tone}
               />
             ))}
-          </span>
-        </span>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -25830,12 +26358,20 @@ function JobCompletionIrFlowNode({
       count: milestone.jobLive,
       onClick: onJobDueClick,
       statusKind: "live",
+      help: [
+        "Counts work/service S.O. rows with an S.O. date, effective D.P. before today, and Job Completion Date blank.",
+        "Cancelled and short-closed S.O.s and No Further Action items are excluded. Count unit: S.O. rows.",
+      ],
     },
     {
       label: "Job Completion Done",
       count: milestone.jobCompleted,
       onClick: onJobCompletedClick,
       statusKind: "history",
+      help: [
+        "Counts work/service S.O. rows with an S.O. date and Job Completion Date recorded.",
+        "Cancelled S.O.s are excluded; short-closed S.O.s remain in completion history. Count unit: S.O. rows.",
+      ],
     },
   ];
   const irMetrics: StatusMetric[] = [
@@ -25844,18 +26380,30 @@ function JobCompletionIrFlowNode({
       count: milestone.irPreparationPending,
       onClick: onIrPreparationPendingClick,
       statusKind: "live",
+      help: [
+        "Counts S.O. rows when IR applies and IR = Yes, the S.O. date and Material Receipt date are recorded, and IR Preparation Date is blank.",
+        "Cancelled and short-closed S.O.s are excluded. Count unit: S.O. rows.",
+      ],
     },
     {
       label: "IR Receipt Pending",
       count: milestone.irReceiptPending,
       onClick: onIrReceiptPendingClick,
       statusKind: "live",
+      help: [
+        "Counts S.O. rows when IR applies and IR = Yes, IR Preparation Date is recorded, and IR Receipt Date is blank.",
+        "Cancelled and short-closed S.O.s are excluded. Count unit: S.O. rows.",
+      ],
     },
     {
       label: "IR Completed",
       count: milestone.irCompleted,
       onClick: onIrCompletedClick,
       statusKind: "history",
+      help: [
+        "Counts S.O. rows when IR applies, IR = Yes, and IR Receipt Date is recorded.",
+        "Cancelled S.O.s are excluded. Count unit: S.O. rows.",
+      ],
     },
   ];
 
@@ -25867,11 +26415,11 @@ function JobCompletionIrFlowNode({
           tone.card
         }
       >
-        <span className="flex flex-col gap-2">
+        <div className="flex min-w-0 flex-col gap-2">
           <span className="flex min-w-0 items-center gap-2 border-b border-border/60 pb-2">
             <span
               className={
-                "grid size-7 shrink-0 place-items-center rounded-md text-[11px] font-bold " +
+                "grid size-7 shrink-0 place-items-center rounded-md text-[0.6875rem] font-bold " +
                 tone.step
               }
             >
@@ -25881,22 +26429,22 @@ function JobCompletionIrFlowNode({
               <span className="block truncate text-sm font-semibold">Job Completion / IR</span>
             </span>
           </span>
-          <span className="grid gap-1.5">
-            <span className="grid grid-cols-2 gap-1.5">
+          <div className="grid min-w-0 gap-1.5">
+            <div className="grid min-w-0 grid-cols-2 gap-1.5">
               {jobMetrics.map((metric) => (
                 <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
               ))}
-            </span>
-            <span className="grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+            </div>
+            <div className="grid min-w-0 grid-cols-1 gap-1.5 sm:grid-cols-3">
               {irMetrics.map((metric) => (
                 <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
               ))}
-            </span>
-          </span>
-        </span>
+            </div>
+          </div>
+        </div>
       </div>
       {!isLast ? (
-        <div className="pointer-events-none absolute right-3 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
+        <div className="pointer-events-none absolute right-0 top-1/2 hidden -translate-y-1/2 translate-x-1/2 rounded-full border border-border bg-card p-1 text-muted-foreground xl:block">
           <ArrowRight className="size-4" />
         </div>
       ) : null}
@@ -26423,6 +26971,32 @@ function getCalendarMonthSummaryRows(
   });
 }
 
+function getExpandableFiscalScheduleRows(
+  fiscalYearRows: Array<Record<string, string | number>>,
+  datedRows: Array<Record<string, string | number>>,
+  dateKey: string,
+  metricKeys: string[],
+  expandedFiscalYears: Set<string>,
+  monthRowFields: Record<string, string | number> = {},
+) {
+  return fiscalYearRows.flatMap((row) => {
+    const fiscalYear = String(row.fiscalYear ?? row.name ?? "");
+    const expanded = expandedFiscalYears.has(fiscalYear);
+    const yearRow = { ...row, expandable: 1, expanded: expanded ? 1 : 0 };
+    if (!expanded || !fiscalYear) return [yearRow];
+    const monthRows = getCalendarMonthSummaryRows(datedRows, dateKey, metricKeys, fiscalYear).map(
+      (month) => ({
+        ...month,
+        ...monthRowFields,
+        monthDrilldown: 1,
+        fiscalYear,
+        parentFiscalYear: fiscalYear,
+      }),
+    );
+    return [yearRow, ...monthRows];
+  });
+}
+
 function getMonthlyCalendarDays(
   rows: Array<Record<string, string | number>>,
   monthKey: string,
@@ -26479,10 +27053,7 @@ function getPreBidCalendarDays(
 function getBidOpeningCalendarDays(
   rows: BidOpeningScheduleDailyRow[],
   monthKey: string,
-  onMetricClick: (
-    date: string,
-    status: "due" | "opened" | "overdue",
-  ) => void,
+  onMetricClick: (date: string, status: "due" | "opened" | "overdue") => void,
 ): MonthlyCalendarDay[] {
   const today = getFinanceSnapshotDate();
   return rows
@@ -26531,8 +27102,7 @@ function combinePreBidScheduleRows<T extends PreBidMeetingRow>(rows: T[]): T[] {
   return rows.map((row) => ({
     ...row,
     preBidDue: Number(row.preBidDue ?? 0) + Number(row.refloatPreBidDue ?? 0),
-    preBidCompleted:
-      Number(row.preBidCompleted ?? 0) + Number(row.refloatPreBidCompleted ?? 0),
+    preBidCompleted: Number(row.preBidCompleted ?? 0) + Number(row.refloatPreBidCompleted ?? 0),
   }));
 }
 
@@ -27337,6 +27907,10 @@ function getFinance1Summary(
     if (!cancelledLive && !closedLive) addDrillFile(`${fileTypeKey}:liveActive`, file);
 
     const immsDoneByFyEnd = isDateOnOrBefore(file.immsDate, cutoffDate);
+    const immsDoneInSelectedActivityRange = isDateWithinRange(file.immsDate, {
+      start: range.start,
+      end: cutoffDate,
+    });
     const soRowsByFyEnd = fileSupplyOrders(file).filter(
       (order) =>
         hasFilledString(order.soDate) &&
@@ -27429,7 +28003,7 @@ function getFinance1Summary(
       addFinance1Amount(summary.intendedAtFyEnd, demandCapital, demandRevenue);
       addDrillFile("intendedAtFyEnd", file);
     }
-    if (!cancelledByFyEnd && immsDoneByFyEnd && !hasSoByFyEnd) {
+    if (!cancelledByFyEnd && immsDoneInSelectedActivityRange && !hasSoByFyEnd) {
       summary.immsDoneSoNotPlacedByFyEnd += 1;
       addFinance1Amount(summary.bookedAtFyEnd, demandCapital, demandRevenue);
       addDrillFile("bookedAtFyEnd", file);
@@ -28245,19 +28819,24 @@ function getMilestoneClearingDurationRows(
 ) {
   if (definition.name === "GeM Undertaking") {
     return files
-      .filter(
-        (file) =>
-          isYes(file.gem) && (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison",
-      )
       .flatMap((file) => {
         const rows: MilestoneClearingDurationRow[] = [];
-        const normalRow = getMilestoneClearingDurationRow(
-          file,
-          file.cfaDate,
-          file.gemUndertakingDate,
-        );
-        if (normalRow) rows.push(normalRow);
-        if (isYes(file.refloat)) {
+        if (
+          isYes(file.gem) &&
+          (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison"
+        ) {
+          const normalRow = getMilestoneClearingDurationRow(
+            file,
+            file.cfaDate,
+            file.gemUndertakingDate,
+          );
+          if (normalRow) rows.push(normalRow);
+        }
+        if (
+          isYes(file.gem) &&
+          isYes(file.refloat) &&
+          (file.refloatGemBiddingMode ?? "").trim().toLowerCase() !== "comparison"
+        ) {
           const refloatStart = isYes(file.tcec)
             ? file.postTcecDate
             : file.refloatRecommendationDate;
@@ -28272,23 +28851,60 @@ function getMilestoneClearingDurationRows(
       });
   }
   if (definition.name === "RFP Vetting") {
-    return files
-      .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
-      .map((file) => {
+    return files.flatMap((file) => {
+      const rows: MilestoneClearingDurationRow[] = [];
+      if (isYes(file.rfpVetting)) {
         const gemUndertakingApplies =
           isYes(file.gem) &&
           (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
           hasFilledString(file.cfaDate);
-        return getMilestoneClearingDurationRow(
+        const normalRow = getMilestoneClearingDurationRow(
           file,
           gemUndertakingApplies ? file.gemUndertakingDate : file.cfaDate,
           file.rfpVettingApprovalDate,
         );
-      })
-      .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
+        if (normalRow) rows.push(normalRow);
+      }
+      if (isYes(file.refloat) && isYes(file.refloatRfpVetting)) {
+        const refloatRow = getMilestoneClearingDurationRow(
+          file,
+          file.refloatRfpVettingInitiationDate,
+          file.refloatRfpVettingApprovalDate,
+        );
+        if (refloatRow) rows.push(refloatRow);
+      }
+      return rows;
+    });
   }
   if (definition.name === "Bidding") {
     return files.flatMap((file) => getMilestoneClearingBiddingDurationRows(file));
+  }
+  if (definition.name === "Pre Post-TCEC") {
+    return files.flatMap((file) => {
+      if (!isYes(file.tcec)) return [];
+      const rows: MilestoneClearingDurationRow[] = [];
+      if (isYes(file.biddingStageOver) && isBiddingApplicableForFile(file)) {
+        const normalRow = getMilestoneClearingDurationRow(
+          file,
+          file.bidOpeningDate,
+          file.postTcecDate,
+        );
+        if (normalRow) rows.push(normalRow);
+      }
+      if (
+        isYes(file.refloat) &&
+        isYes(file.refloatBiddingStageOver) &&
+        isRefloatBiddingApplicableForFile(file)
+      ) {
+        const refloatRow = getMilestoneClearingDurationRow(
+          file,
+          file.refloatBidOpeningDate,
+          file.refloatPostTcecDate,
+        );
+        if (refloatRow) rows.push(refloatRow);
+      }
+      return rows;
+    });
   }
   if (definition.name === "Post-TCEC") {
     return files
@@ -28314,7 +28930,11 @@ function getMilestoneClearingDurationRows(
     return files
       .filter((file) => isMilestoneClearingDefinitionApplicable(file, definition))
       .map((file) =>
-        getMilestoneClearingDurationRow(file, file.postTcecMinutesDate, file.cncApprovalDate),
+        getMilestoneClearingDurationRow(
+          file,
+          isYes(file.refloat) ? file.refloatPostTcecMinutesDate : file.postTcecMinutesDate,
+          file.cncApprovalDate,
+        ),
       )
       .filter((row): row is MilestoneClearingDurationRow => Boolean(row));
   }
@@ -28605,30 +29225,17 @@ function isMilestoneClearingDefinitionApplicable(
   return applies ? applies(file) : true;
 }
 
-function getMilestoneClearingBiddingStartDate(file: FileRecord) {
-  if (isYes(file.refloat) && isYes(file.tcec)) {
-    return hasFilledString(file.postTcecMinutesDate) ? file.postTcecMinutesDate : undefined;
-  }
-  if (!isYes(file.tcec)) return file.cfaDate;
-  if (!hasFilledString(file.cfaDate)) return undefined;
-  const gemUndertakingApplies =
-    isYes(file.gem) && (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison";
-  if (gemUndertakingApplies && !hasFilledString(file.gemUndertakingDate)) return undefined;
-  if (isYes(file.rfpVetting) && !hasFilledString(file.rfpVettingApprovalDate)) return undefined;
-  const candidates = [
-    file.cfaDate,
-    gemUndertakingApplies ? file.gemUndertakingDate : undefined,
-    isYes(file.rfpVetting) ? file.rfpVettingApprovalDate : undefined,
-  ].filter((value): value is string => hasFilledString(value));
-  return candidates.sort((a, b) => (parseLocalDateTime(b) ?? 0) - (parseLocalDateTime(a) ?? 0))[0];
-}
-
 function getGeMUndertakingEndDate(file: FileRecord) {
+  const refloatStartDate = isYes(file.tcec)
+    ? file.postTcecDate
+    : file.refloatRecommendationDate;
   if (
-    !isYes(file.tcec) &&
+    isYes(file.gem) &&
     isYes(file.refloat) &&
-    hasFilledString(file.refloatRecommendationDate) &&
-    hasFilledString(file.refloatGemUndertakingDate)
+    (file.refloatGemBiddingMode ?? "").trim().toLowerCase() !== "comparison" &&
+    hasFilledString(refloatStartDate) &&
+    hasFilledString(file.refloatGemUndertakingDate) &&
+    file.refloatGemUndertakingDate! >= refloatStartDate!
   ) {
     return file.refloatGemUndertakingDate;
   }
@@ -28636,41 +29243,31 @@ function getGeMUndertakingEndDate(file: FileRecord) {
 }
 
 function getMilestoneClearingBiddingEndDate(file: FileRecord) {
-  if (!isYes(file.tcec)) {
-    return isYes(file.refloat) && hasFilledString(file.refloatBiddingDate)
-      ? file.refloatBiddingDate
-      : file.bidDate;
-  }
-  return isYes(file.refloat) ? file.refloatPostTcecDate : file.postTcecDate;
+  return isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
 }
 
 function getMilestoneClearingBiddingDurationRows(file: FileRecord) {
-  if (!isBiddingApplicableForFile(file)) return [];
-  if (!isYes(file.tcec)) {
-    const rows: MilestoneClearingDurationRow[] = [];
+  const rows: MilestoneClearingDurationRow[] = [];
+  if (isBiddingApplicableForFile(file) && (!isYes(file.tcec) || isYes(file.biddingStageOver))) {
     const normalRow = getMilestoneClearingDurationRow(file, file.cfaDate, file.bidDate);
     if (normalRow) rows.push(normalRow);
-    if (
-      isYes(file.refloat) &&
-      isYes(file.biddingStageOver) &&
-      hasFilledString(file.refloatRecommendationDate)
-    ) {
-      const refloatRow = getMilestoneClearingDurationRow(
-        file,
-        file.refloatRecommendationDate,
-        file.refloatBiddingDate,
-      );
-      if (refloatRow) rows.push(refloatRow);
-    }
-    return rows;
   }
-  if (!isYes(file.biddingStageOver)) return [];
-  const row = getMilestoneClearingDurationRow(
-    file,
-    getMilestoneClearingBiddingStartDate(file),
-    getMilestoneClearingBiddingEndDate(file),
-  );
-  return row ? [row] : [];
+  if (
+    isYes(file.refloat) &&
+    isYes(file.refloatBiddingStageOver) &&
+    isRefloatBiddingApplicableForFile(file)
+  ) {
+    const refloatStart = isYes(file.tcec)
+      ? file.postTcecMinutesDate
+      : file.refloatRecommendationDate;
+    const refloatRow = getMilestoneClearingDurationRow(
+      file,
+      refloatStart,
+      file.refloatBiddingDate,
+    );
+    if (refloatRow) rows.push(refloatRow);
+  }
+  return rows;
 }
 
 function getPreviousApplicableMilestoneCompletionDate(
@@ -29169,25 +29766,37 @@ const milestoneClearingDefinitions = [
     name: "GeM Undertaking",
     getEndDate: (file: FileRecord) => getGeMUndertakingEndDate(file),
     applies: (file: FileRecord) =>
-      isYes(file.gem) && (file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison",
+      isYes(file.gem) &&
+      ((file.gemBiddingMode ?? "").trim().toLowerCase() !== "comparison" ||
+        (isYes(file.refloat) &&
+          (file.refloatGemBiddingMode ?? "").trim().toLowerCase() !== "comparison")),
   },
   {
     name: "RFP Vetting",
-    getEndDate: (file: FileRecord) => file.rfpVettingApprovalDate,
-    applies: (file: FileRecord) => isYes(file.rfpVetting),
+    getEndDate: (file: FileRecord) =>
+      isYes(file.refloat) && isYes(file.refloatRfpVetting)
+        ? file.refloatRfpVettingApprovalDate
+        : file.rfpVettingApprovalDate,
+    applies: (file: FileRecord) =>
+      isYes(file.rfpVetting) || (isYes(file.refloat) && isYes(file.refloatRfpVetting)),
   },
   {
     name: "Bidding",
     getEndDate: (file: FileRecord) => getMilestoneClearingBiddingEndDate(file),
     applies: (file: FileRecord) =>
       isBiddingApplicableForFile(file) &&
-      (!isYes(file.tcec) ||
-        (isYes(file.biddingStageOver) && Boolean(getMilestoneClearingBiddingStartDate(file)))),
+      (!isYes(file.tcec) || isYes(file.biddingStageOver)),
   },
   {
     name: "Non-TCEC Technical Evaluation",
     getEndDate: (file: FileRecord) => getNonTcecTechnicalEvaluationEndDate(file),
     applies: (file: FileRecord) => !isYes(file.tcec) && isBiddingApplicableForFile(file),
+  },
+  {
+    name: "Pre Post-TCEC",
+    getStartDate: (file: FileRecord) => file.bidOpeningDate,
+    getEndDate: (file: FileRecord) => file.postTcecDate,
+    applies: (file: FileRecord) => isYes(file.tcec),
   },
   {
     name: "Post-TCEC",
@@ -29203,7 +29812,8 @@ const milestoneClearingDefinitions = [
   },
   {
     name: "CNC",
-    getStartDate: (file: FileRecord) => file.postTcecMinutesDate,
+    getStartDate: (file: FileRecord) =>
+      isYes(file.refloat) ? file.refloatPostTcecMinutesDate : file.postTcecMinutesDate,
     getEndDate: (file: FileRecord) => file.cncApprovalDate,
     applies: (file: FileRecord) => isYes(file.tcec),
   },
@@ -29570,7 +30180,7 @@ const milestoneDefinitions = [
     totalLabel: "Total cases",
     completedLabel: "Completed",
     pendingLabel: "In progress",
-    current: "biddingStageOver",
+    current: "refloatBiddingStageOver",
     applies: (file) => isYes(file.refloat),
   },
   {
@@ -29579,7 +30189,7 @@ const milestoneDefinitions = [
     totalLabel: "Total cases",
     reviewed: "refloatPostTcecDate",
     current: "refloatPostTcecMinutesDate",
-    applies: (file) => isYes(file.refloat) && isYes(file.tcec) && isYes(file.biddingStageOver),
+    applies: (file) => isYes(file.refloat) && isYes(file.tcec),
   },
   {
     key: "cnc",
@@ -29932,9 +30542,10 @@ function getManualMilestoneCurrentCount(files: FileRecord[], name: string) {
     return files.filter(
       (file) =>
         !isCancelledFile(file) &&
+        isCurrentRefloatPostTcecMilestone(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
-        isYes(file.biddingStageOver) &&
+        isYes(file.refloatBiddingStageOver) &&
         !hasFilledField(file, "refloatPostTcecMinutesDate"),
     ).length;
   }
@@ -29970,6 +30581,7 @@ function getManualMilestoneCompletedCount(files: FileRecord[], name: string) {
         !isCancelledFile(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
+        isYes(file.refloatBiddingStageOver) &&
         hasFilledField(file, "refloatPostTcecMinutesDate"),
     ).length;
   }
@@ -29991,7 +30603,8 @@ function isFinancialSanctionPreviousStageFile(file: FileRecord) {
   const current = normalizeMilestoneName(file.currentMilestone);
   if (isYes(file.tcec)) return current === "cnc" && !hasFilledField(file, "cncApprovalDate");
   return isBiddingApplicableForFile(file)
-    ? current === "bidding" && !isYes(file.biddingStageOver)
+    ? current === "bidding" &&
+        !isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
     : current === "cfa" && !hasFilledField(file, "cfaDate");
 }
 
@@ -29999,7 +30612,6 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
   const flow = milestoneDefinitions.map((milestone) => {
     const applicableFiles = files.filter((file) => isMilestoneApplicable(file, milestone));
     const processFiles = applicableFiles.filter((file) => !isCancelledFile(file));
-    const reachedFiles = processFiles.filter((file) => isEligibleMilestone(file, milestone));
     const activeFiles = processFiles.filter((file) => isManualActiveMilestone(file, milestone));
     const reviewedFiles = activeFiles.filter((file) => isMilestoneReviewed(file, milestone));
     const clearedFiles = processFiles.filter((file) => isMilestoneComplete(file, milestone));
@@ -30024,8 +30636,10 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         hasReviewed: false,
         cleared,
         activeLabel: "In progress",
-        liveBids: processFiles.filter((file) => isYes(file.refloat) && isFileTenderLive(file))
-          .length,
+        liveBids: processFiles.filter(
+          (file) =>
+            isCurrentRefloatBiddingMilestone(file) && isYes(file.refloat) && isFileTenderLive(file),
+        ).length,
         overdueBids: inProgressFiles.filter(isRefloatBidOverdue).length,
         inProcessBids: inProgressFiles.filter(
           (file) => !isFileTenderLive(file) && !isRefloatBidOverdue(file),
@@ -30034,10 +30648,16 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     }
 
     if (milestone.key === "refloatPostTcec") {
-      const pendingRefloatPostTcec = processFiles.filter(
-        (file) => !hasFilledField(file, "refloatPostTcecMinutesDate"),
+      const openRefloatPostTcec = processFiles.filter(
+        (file) =>
+          isCurrentRefloatPostTcecMilestone(file) &&
+          isYes(file.refloatBiddingStageOver) &&
+          !hasFilledField(file, "refloatPostTcecMinutesDate"),
       );
-      const reviewedRefloatPostTcec = pendingRefloatPostTcec.filter((file) =>
+      const pendingRefloatPostTcec = openRefloatPostTcec.filter(
+        (file) => !hasFilledField(file, "refloatPostTcecDate"),
+      );
+      const reviewedRefloatPostTcec = openRefloatPostTcec.filter((file) =>
         hasFilledField(file, "refloatPostTcecDate"),
       );
       return {
@@ -30047,14 +30667,8 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
         totalLabel: milestone.totalLabel ?? "Total",
         pendingLabel: milestone.pendingLabel ?? getMilestonePendingLabel(milestone),
         total,
-        underProcess: files.filter(
-          (file) =>
-            !isCancelledFile(file) &&
-            isYes(file.refloat) &&
-            isYes(file.tcec) &&
-            !isYes(file.biddingStageOver),
-        ).length,
-        active: pendingRefloatPostTcec.length,
+        underProcess: 0,
+        active: openRefloatPostTcec.length,
         pending: pendingRefloatPostTcec.length,
         reviewed: reviewedRefloatPostTcec.length,
         hasReviewed: Boolean(milestone.reviewed),
@@ -30098,10 +30712,7 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
     }
 
     if (milestone.key === "supplyOrder") {
-      const supplyOrderPreviousStage = countCurrentSupplyOrderMilestoneStatuses(
-        applicableFiles,
-        "financialsanction",
-      );
+      const supplyOrderPreviousStage = countSupplyOrderPreviousStageStatuses(applicableFiles);
       return {
         key: milestone.key,
         label: milestone.label,
@@ -30232,7 +30843,12 @@ function getMilestoneFlow(files: ReturnType<typeof useAccessibleFiles>) {
       activeLabel: getMilestoneActiveLabel(milestone.key),
       liveBids:
         milestone.key === "bidding"
-          ? processFiles.filter((file) => !isYes(file.refloat) && isFileTenderLive(file)).length
+          ? processFiles.filter(
+              (file) =>
+                isCurrentNormalBiddingMilestone(file) &&
+                !isYes(file.refloat) &&
+                isFileTenderLive(file),
+            ).length
           : undefined,
       overdueBids:
         milestone.key === "bidding"
@@ -30334,6 +30950,10 @@ function countAtPreviousStageFiles(
 }
 
 function isAtPreviousStageFile(file: FileRecord, milestone: (typeof milestoneDefinitions)[number]) {
+  if (milestone.key === "ifa") return isIfaAtPreviousStageFile(file);
+  if (milestone.key === "postTcec") return isPostTcecAtPreviousStageFile(file);
+  if (milestone.key === "refloatPostTcec") return false;
+  if (milestone.key === "cnc") return isCncAtPreviousStageFile(file);
   if (!isEligibleMilestone(file, milestone)) return false;
   if (isMilestoneComplete(file, milestone)) return false;
   if (isManualActiveMilestone(file, milestone)) return false;
@@ -30345,6 +30965,51 @@ function isAtPreviousStageFile(file: FileRecord, milestone: (typeof milestoneDef
     if (countCompletedSupplyOrderMilestoneStatuses([file], normalized) > 0) return false;
   }
   return true;
+}
+
+function isIfaAtPreviousStageFile(file: FileRecord) {
+  const controlling = milestoneDefinitions.find((item) => item.key === "control");
+  return Boolean(
+    controlling &&
+    !isCancelledFile(file) &&
+    isYes(file.ifa) &&
+    normalizeMilestoneName(file.currentMilestone) === "controlling" &&
+    isPreviousApplicableMilestoneComplete(file, controlling) &&
+    !isMilestoneComplete(file, controlling),
+  );
+}
+
+function isPostTcecAtPreviousStageFile(file: FileRecord) {
+  const bidding = milestoneDefinitions.find((item) => item.key === "bidding");
+  return Boolean(
+    bidding &&
+    !isCancelledFile(file) &&
+    isYes(file.tcec) &&
+    !isYes(file.refloat) &&
+    normalizeMilestoneName(file.currentMilestone) === "bidding" &&
+    isMilestoneApplicable(file, bidding) &&
+    isPreviousApplicableMilestoneComplete(file, bidding) &&
+    !isMilestoneComplete(file, bidding),
+  );
+}
+
+function isCncAtPreviousStageFile(file: FileRecord) {
+  const refloat = isYes(file.refloat);
+  const predecessorKey = refloat ? "refloatPostTcec" : "postTcec";
+  const predecessor = milestoneDefinitions.find((item) => item.key === predecessorKey);
+  const current = normalizeMilestoneName(file.currentMilestone);
+  return Boolean(
+    predecessor &&
+    !isCancelledFile(file) &&
+    isYes(file.tcec) &&
+    !hasFilledString(file.cncApprovalDate) &&
+    current === predecessorKey.toLowerCase() &&
+    (refloat
+      ? isYes(file.refloatBiddingStageOver) && !hasFilledString(file.refloatPostTcecMinutesDate)
+      : isMilestoneApplicable(file, predecessor) &&
+        isPreviousApplicableMilestoneComplete(file, predecessor) &&
+        !hasFilledString(file.postTcecMinutesDate)),
+  );
 }
 
 function getMilestonePendingLabel(milestone: (typeof milestoneDefinitions)[number]) {
@@ -30435,6 +31100,14 @@ function isMilestoneComplete(file: FileRecord, milestone: (typeof milestoneDefin
   }
   if (milestone.key === "refloatBidding") {
     return isYes(file.refloat) && isRefloatBiddingStageComplete(file);
+  }
+  if (milestone.key === "refloatPostTcec") {
+    return (
+      isYes(file.refloat) &&
+      isYes(file.tcec) &&
+      isYes(file.refloatBiddingStageOver) &&
+      hasFilledString(file.refloatPostTcecMinutesDate)
+    );
   }
   return hasMilestoneDate(file, milestone.current);
 }
@@ -30644,7 +31317,9 @@ function countEffectiveSupplyOrders(files: FileRecord[]) {
 function countPlacedSupplyOrders(files: FileRecord[]) {
   return rawSupplyOrderEntries(files).filter(
     ({ file, order }) =>
-      isSupplyOrderTabComplete(file, order) && !isSupplyOrderCancelled(file, order),
+      hasDate(order.soDate) &&
+      !isDateAfterToday(order.soDate) &&
+      !isSupplyOrderCancelled(file, order),
   ).length;
 }
 
@@ -31501,8 +32176,12 @@ function isNo(value: string | undefined) {
 function isFileTenderLive(file: FileRecord) {
   const bidDate = isYes(file.refloat) ? file.refloatBiddingDate : file.bidDate;
   const bidOpeningDate = isYes(file.refloat) ? file.refloatBidOpeningDate : file.bidOpeningDate;
+  const opened = isYes(file.refloat)
+    ? isYes(file.refloatBidOpened) || isYes(file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
   return (
     isBiddingApplicableForFile(file) &&
+    !opened &&
     hasFilledField(file, isYes(file.refloat) ? "refloatBiddingDate" : "bidDate") &&
     hasFilledField(file, isYes(file.refloat) ? "refloatBidOpeningDate" : "bidOpeningDate") &&
     !isDateAfterToday(bidDate) &&
@@ -31510,10 +32189,23 @@ function isFileTenderLive(file: FileRecord) {
   );
 }
 
+function isCurrentNormalBiddingMilestone(file: FileRecord) {
+  return normalizeMilestoneName(file.currentMilestone) === "bidding";
+}
+
+function isCurrentRefloatBiddingMilestone(file: FileRecord) {
+  return normalizeMilestoneName(file.currentMilestone) === "refloatbidding";
+}
+
+function isCurrentRefloatPostTcecMilestone(file: FileRecord) {
+  return normalizeMilestoneName(file.currentMilestone) === "refloatposttcec";
+}
+
 function isBiddingInProgressFile(file: FileRecord) {
   return (
     isBiddingApplicableForFile(file) &&
     !isYes(file.refloat) &&
+    isCurrentNormalBiddingMilestone(file) &&
     hasFilledString(file.cfaDate) &&
     !isYes(file.biddingStageOver)
   );
@@ -31521,15 +32213,14 @@ function isBiddingInProgressFile(file: FileRecord) {
 
 function isRefloatBiddingInProgressFile(file: FileRecord) {
   return (
-    isBiddingApplicableForFile(file) &&
     isYes(file.refloat) &&
-    hasFilledString(file.refloatBiddingDate) &&
+    isCurrentRefloatBiddingMilestone(file) &&
     !isRefloatBiddingStageComplete(file)
   );
 }
 
 function isRefloatBiddingStageComplete(file: FileRecord) {
-  return isYes(isYes(file.tcec) ? file.biddingStageOver : file.refloatBiddingStageOver);
+  return isYes(file.refloatBiddingStageOver);
 }
 
 function getEffectiveBidOpeningDate(file: FileRecord) {
@@ -31537,13 +32228,22 @@ function getEffectiveBidOpeningDate(file: FileRecord) {
 }
 
 function isRefloatBidOverdue(file: FileRecord) {
-  return isNo(file.bidOpened) && isDateBeforeToday(file.refloatBidOpeningDate);
+  return (
+    isYes(file.refloat) &&
+    !isYes(file.refloatBidOpened) &&
+    !isYes(file.refloatBiddingStageOver) &&
+    isDateBeforeToday(file.refloatBidOpeningDate)
+  );
 }
 
 function isBidOverdue(file: FileRecord) {
+  const refloat = isYes(file.refloat);
+  const opened = refloat
+    ? isYes(file.refloatBidOpened) || isYes(file.refloatBiddingStageOver)
+    : isYes(file.bidOpened) || isYes(file.biddingStageOver);
   return (
     isBiddingApplicableForFile(file) &&
-    isNo(file.bidOpened) &&
+    !opened &&
     isDateBeforeToday(getEffectiveBidOpeningDate(file))
   );
 }
@@ -32670,8 +33370,74 @@ function isIrCompleted(file: FileRecord) {
 }
 
 function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
-  if (normalizeMilestoneName(milestone) === "supplementarybill") {
+  const milestoneKey = normalizeMilestoneName(milestone);
+  if (milestoneKey === "deliveryperiod" || milestoneKey === "deliveryperiodmilestone") {
+    const deliveryPeriodFilters: Record<string, string> = {
+      Valid: "deliveryPeriodValid",
+      Expired: "deliveryPeriodExpired",
+      Extended: "deliveryPeriodExtended",
+    };
+    if (deliveryPeriodFilters[stage]) return deliveryPeriodFilters[stage];
+  }
+  if (milestoneKey === "delivery") {
+    const deliveryFilters: Record<string, string> = {
+      Completed: "deliveryCompleted",
+      Pending: "deliveryDue",
+      Due: "deliveryDue",
+      Overdue: "deliveryOverdue",
+    };
+    if (deliveryFilters[stage]) return deliveryFilters[stage];
+  }
+  if (milestoneKey === "jobcompletion") {
+    const jobCompletionFilters: Record<string, string> = {
+      Due: "jobCompletionDue",
+      Done: "jobCompletionCompleted",
+      Completed: "jobCompletionCompleted",
+    };
+    if (jobCompletionFilters[stage]) return jobCompletionFilters[stage];
+  }
+  if (milestoneKey === "advancepayment") {
+    const advancePaymentFilters: Record<string, string> = {
+      Pending: "advancePending",
+      Completed: "advancePaid",
+      Paid: "advancePaid",
+    };
+    if (advancePaymentFilters[stage]) return advancePaymentFilters[stage];
+  }
+  if (milestoneKey === "irpreparation" && stage === "Pending") return "irPreparationPending";
+  if (milestoneKey === "irreceipt") {
+    if (stage === "Pending") return "irReceiptPending";
+    if (stage === "Completed") return "irCompleted";
+  }
+  if (milestoneKey === "billpreparation" || milestoneKey === "billsentforpayment") {
+    const billStageFilters: Record<string, string> = {
+      Total: `milestoneTotal:${milestoneKey}`,
+      Completed: `milestoneCleared:${milestoneKey}`,
+      "In process": `milestoneActive:${milestoneKey}`,
+      Due: `milestoneActive:${milestoneKey}`,
+      Pending: `milestoneActive:${milestoneKey}`,
+      "At previous stage": `milestoneUnderProcess:${milestoneKey}`,
+      "At previous stages": `milestoneUnderProcess:${milestoneKey}`,
+    };
+    if (billStageFilters[stage]) return billStageFilters[stage];
+  }
+  if (milestoneKey === "returnedbills" || milestoneKey === "billreturnedforcorrection") {
+    const returnedBillFilters: Record<string, string> = {
+      "Bills returned": "billReturn:any",
+      "Return pending": "billReturn:pendingRegular",
+      "Resubmitted and Unpaid": "billReturn:resubmittedUnpaid",
+      "Returned paid": "billReturn:paid",
+    };
+    if (returnedBillFilters[stage]) return returnedBillFilters[stage];
+  }
+  if (milestoneKey === "supplementarybill") {
     const supplementaryFilters: Record<string, string> = {
+      "Supplementary submitted total": "supplementaryBill:submitted",
+      "Supp. returned total": "supplementaryBill:any",
+      "Supp. return pending": "supplementaryBill:returnPendingUnpaid",
+      "Supp. resubmitted total": "supplementaryBill:resubmitted",
+      "Supp. returned paid": "supplementaryBill:returnPaid",
+      "Normal supplementary paid": "supplementaryBill:normalPaid",
       "Submitted and unpaid": "supplementaryBill:normalPending",
       "Return pending": "supplementaryBill:returnPendingUnpaid",
       "Resubmitted and unpaid": "supplementaryBill:resubmittedPending",
@@ -32680,9 +33446,24 @@ function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
   }
   if (
     normalizeMilestoneName(milestone) === "payment" &&
-    ["totalpending", "allpaymentpending"].includes(normalizeMilestoneName(stage))
+    ["totalpending", "paymentpending", "allpaymentpending"].includes(normalizeMilestoneName(stage))
   ) {
     return "analyticsPaymentPending";
+  }
+  if (normalizeMilestoneName(milestone) === "payment") {
+    const paymentFilters: Record<string, string> = {
+      "Advance Paid": "advancePaid",
+      "Advance Pending": "advancePending",
+      "Bills returned": "billReturn:any",
+      "Return pending": "billReturn:pendingRegular",
+      "Resubmitted and Unpaid": "billReturn:resubmittedUnpaid",
+      "Returned paid": "billReturn:paid",
+      Due: "paymentDueOnly",
+      "In process": "paymentInProcess",
+      "Submitted and unpaid": "paymentSubmittedNoReturn",
+      Completed: "milestoneCleared:payment",
+    };
+    if (paymentFilters[stage]) return paymentFilters[stage];
   }
   if (
     normalizeMilestoneName(milestone) === "payment" &&
@@ -32691,6 +33472,82 @@ function getStatusSummaryDashboardFilter(milestone: string, stage: string) {
     // Keep the Payment clicker aligned with Status-1. Returned bills have
     // their own counters and must not be duplicated here.
     return "paymentSubmittedNoReturn";
+  }
+  if (isBgMilestoneKey(normalizeMilestoneName(milestone))) {
+    const bgKey = normalizeMilestoneName(milestone);
+    const bgFilters: Record<string, string> = {
+      Received: `milestoneCleared:${bgKey}`,
+      Pending: `milestonePending:${bgKey}`,
+      Expired: `bgExpired:${bgKey}`,
+      "To be returned": `bgToBeReturned:${bgKey}`,
+      Returned: `bgReturned:${bgKey}`,
+    };
+    if (bgFilters[stage]) return bgFilters[stage];
+  }
+  if (normalizeMilestoneName(milestone) === "financialsanction") {
+    const financialSanctionFilters: Record<string, string> = {
+      Completed: "manualMilestoneCompleted:Financial Sanction",
+      Pending: "manualMilestoneCurrent:Financial Sanction",
+      "At previous stage": "milestoneUnderProcess:financialSanction",
+    };
+    if (financialSanctionFilters[stage]) return financialSanctionFilters[stage];
+  }
+  if (normalizeMilestoneName(milestone) === "supplyorder") {
+    const supplyOrderFilters: Record<string, string> = {
+      Placed: "milestoneCleared:supplyOrder",
+      Live: "liveSupplyOrders",
+      Pending: "milestonePending:supplyOrder",
+      "At Previous Stage": "statusSummary:Supply Order:At Previous Stage",
+    };
+    if (supplyOrderFilters[stage]) return supplyOrderFilters[stage];
+  }
+  if (normalizeMilestoneName(milestone) === "prebidmeeting") {
+    const preBidFilters: Record<string, string> = {
+      Due: "preBidMeeting:due",
+      Completed: "preBidMeeting:completed",
+      "Refloat Due": "refloatPreBidMeeting:due",
+      "Refloat Completed": "refloatPreBidMeeting:completed",
+    };
+    if (preBidFilters[stage]) return preBidFilters[stage];
+  }
+  if (normalizeMilestoneName(milestone) === "refloatbidding") {
+    const refloatBiddingFilters: Record<string, string> = {
+      Live: "statusSummary:Refloat bidding:Live",
+      "In process": "statusSummary:Refloat bidding:In process",
+      "Opening overdue": "statusSummary:Refloat bidding:Opening overdue",
+      Completed: "milestoneCleared:refloatBidding",
+    };
+    if (refloatBiddingFilters[stage]) return refloatBiddingFilters[stage];
+  }
+  if (normalizeMilestoneName(milestone) === "bidding") {
+    const biddingFilters: Record<string, string> = {
+      Live: "liveBids",
+      "In process": "milestoneActive:bidding",
+      "Opening overdue": "bidOverdue",
+      Completed: "milestoneCleared:bidding",
+      "At previous stages": "milestoneUnderProcess:bidding",
+    };
+    if (biddingFilters[stage]) return biddingFilters[stage];
+  }
+  const statusMilestone = milestoneDefinitions.find(
+    (item) => normalizeMilestoneName(item.label) === normalizeMilestoneName(milestone),
+  );
+  if (statusMilestone) {
+    const statusKey = statusMilestone.key;
+    if (stage === "Total" || stage === "Total files" || stage === "Total cases") {
+      return `milestoneTotal:${statusKey}`;
+    }
+    if (stage === "Completed") {
+      return statusKey === "cfa" ? "cfaCompleted" : `milestoneCleared:${statusKey}`;
+    }
+    if (stage === "In process" || stage === "Due") {
+      return `milestoneActive:${statusKey}`;
+    }
+    if (stage === "Reviewed") return `milestoneReviewed:${statusKey}`;
+    if (stage === "Pending") return `milestonePending:${statusKey}`;
+    if (stage === "At previous stage" || stage === "At previous stages") {
+      return `milestoneUnderProcess:${statusKey}`;
+    }
   }
   if (milestone === "Miscellaneous") {
     const miscFilters: Record<string, string> = {
@@ -32990,9 +33847,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     if (normalized === "refloatposttcec") {
       return (
         !isCancelledFile(file) &&
+        isCurrentRefloatPostTcecMilestone(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
-        isYes(file.biddingStageOver) &&
+        isYes(file.refloatBiddingStageOver) &&
         !hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
@@ -33022,6 +33880,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
         !isCancelledFile(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
+        isYes(file.refloatBiddingStageOver) &&
         hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
@@ -33047,7 +33906,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   if (filter === "rqaVetting") return isYes(file.rqa);
   if (filter === "ifaConcurrence") return isYes(file.ifa);
   if (filter === "liveBids") {
-    return !isYes(file.refloat) && isFileTenderLive(file);
+    return isCurrentNormalBiddingMilestone(file) && !isYes(file.refloat) && isFileTenderLive(file);
   }
   if (filter === "bidOverdue") return isBiddingInProgressFile(file) && isBidOverdue(file);
   if (filter.startsWith("preBidMeetingCombined:")) {
@@ -33213,13 +34072,12 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
   }
   if (filter.startsWith("milestoneUnderProcess:")) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(22));
-    if (milestone?.key === "refloatPostTcec") {
-      return isYes(file.refloat) && isYes(file.tcec) && !isYes(file.biddingStageOver);
-    }
+    if (milestone?.key === "ifa") return isIfaAtPreviousStageFile(file);
+    if (milestone?.key === "postTcec") return isPostTcecAtPreviousStageFile(file);
+    if (milestone?.key === "refloatPostTcec") return false;
+    if (milestone?.key === "cnc") return isCncAtPreviousStageFile(file);
     if (milestone?.key === "refloatBidding") return false;
-    if (milestone?.key === "supplyOrder") {
-      return countExpectedSupplyOrderRows(file) > 0 && !hasOrderFinancialSanctionCompleted(file);
-    }
+    if (milestone?.key === "supplyOrder") return hasSupplyOrderAtPreviousStage(file);
     return milestone
       ? isMilestoneApplicable(file, milestone) && !isEligibleMilestone(file, milestone)
       : true;
@@ -33239,9 +34097,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     }
     if (milestone.key === "refloatPostTcec") {
       return (
+        isCurrentRefloatPostTcecMilestone(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
-        isYes(file.biddingStageOver) &&
+        isYes(file.refloatBiddingStageOver) &&
         !hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
@@ -33260,9 +34119,10 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     const milestone = milestoneDefinitions.find((item) => item.key === filter.slice(18));
     if (milestone?.key === "refloatPostTcec") {
       return (
+        isCurrentRefloatPostTcecMilestone(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
-        isYes(file.biddingStageOver) &&
+        isYes(file.refloatBiddingStageOver) &&
         hasFilledField(file, "refloatPostTcecDate") &&
         !hasFilledField(file, "refloatPostTcecMinutesDate")
       );
@@ -33276,9 +34136,11 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
     }
     if (milestone?.key === "refloatPostTcec") {
       return (
+        isCurrentRefloatPostTcecMilestone(file) &&
         isYes(file.refloat) &&
         isYes(file.tcec) &&
-        isYes(file.biddingStageOver) &&
+        isYes(file.refloatBiddingStageOver) &&
+        !hasFilledField(file, "refloatPostTcecDate") &&
         !hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
@@ -33299,6 +34161,7 @@ function matchesDashboardFilter(file: FileRecord, filter: string) {
       return (
         isYes(file.refloat) &&
         isYes(file.tcec) &&
+        isYes(file.refloatBiddingStageOver) &&
         hasFilledField(file, "refloatPostTcecMinutesDate")
       );
     }
@@ -33487,12 +34350,7 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
       return matchesCompletedSupplyOrderDrivenMilestone(file, "supplyorder");
     if (stageKey === "live") return hasLiveSupplyOrderRow(file);
     if (stageKey === "pending") return hasCurrentSupplyOrderMilestoneRow(file);
-    if (stageKey === "atpreviousstage") {
-      return (
-        matchesCurrentSupplyOrderDrivenMilestone(file, "financialsanction") &&
-        !matchesCompletedSupplyOrderDrivenMilestone(file, "supplyorder")
-      );
-    }
+    if (stageKey === "atpreviousstage") return hasSupplyOrderAtPreviousStage(file);
   }
 
   if (milestoneKey === "financialsanction") {
@@ -33502,6 +34360,7 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
     if (stageKey === "atpreviousstage") return isFinancialSanctionPreviousStageFile(file);
     if (stageKey === "pending") return pending;
   }
+  if (milestoneKey === "cfa" && stageKey === "completed") return hasAny(file, ["cfaDate"]);
 
   if (milestoneKey === "advancepayment") {
     if (stageKey === "completed") return hasAdvancePaymentPaid(file);
@@ -33581,7 +34440,12 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
   if (milestoneKey === "bidding") {
     const biddingInProgress = isBiddingInProgressFile(file);
     if (stageKey === "live") {
-      return !isCancelledFile(file) && !isYes(file.refloat) && isFileTenderLive(file);
+      return (
+        !isCancelledFile(file) &&
+        isCurrentNormalBiddingMilestone(file) &&
+        !isYes(file.refloat) &&
+        isFileTenderLive(file)
+      );
     }
     if (stageKey === "inprocess") {
       return biddingInProgress && !isFileTenderLive(file) && !isBidOverdue(file);
@@ -33642,12 +34506,16 @@ function matchesStatusSummaryFilter(file: FileRecord, milestoneLabel: string, st
 
   const applicable = isMilestoneApplicable(file, milestone);
   const inProcess = applicable && !isCancelledFile(file);
-  const reached = inProcess && isEligibleMilestone(file, milestone);
 
   if (milestone.key === "refloatBidding") {
     const refloatInProgress = isRefloatBiddingInProgressFile(file);
     if (stageKey === "live") {
-      return !isCancelledFile(file) && isYes(file.refloat) && isFileTenderLive(file);
+      return (
+        !isCancelledFile(file) &&
+        isCurrentRefloatBiddingMilestone(file) &&
+        isYes(file.refloat) &&
+        isFileTenderLive(file)
+      );
     }
     if (stageKey === "inprocess")
       return refloatInProgress && !isFileTenderLive(file) && !isRefloatBidOverdue(file);
@@ -33688,7 +34556,10 @@ function normalizeStatusStage(value: string | undefined) {
 
 function hasPlacedSupplyOrder(file: FileRecord) {
   return rawSupplyOrders(file).some(
-    (order) => isSupplyOrderTabComplete(file, order) && !isSupplyOrderCancelled(file, order),
+    (order) =>
+      hasDate(order.soDate) &&
+      !isDateAfterToday(order.soDate) &&
+      !isSupplyOrderCancelled(file, order),
   );
 }
 
@@ -33703,6 +34574,10 @@ function hasLiveSupplyOrderRow(file: FileRecord) {
 
 function hasCurrentSupplyOrderMilestoneRow(file: FileRecord) {
   return rawSupplyOrders(file).some((order) => isSupplyOrderPendingOrder(file, order));
+}
+
+function hasSupplyOrderAtPreviousStage(file: FileRecord) {
+  return expectedSupplyOrders(file).some((order) => isSupplyOrderAtPreviousStage(file, order));
 }
 
 function getStatusPageExportRows(
@@ -33862,7 +34737,7 @@ async function downloadStatusSummaryGroups(
     description,
     tables: groups.map((group) => ({
       title: group.title,
-      headers: ["S.No.", "Milestone", ...group.columns],
+      headers: ["S.No.", "", ...group.columns],
       rows: group.rows.map((row, index) => [
         index + 1,
         getWorkflowDisplayLabel(row.milestone),
@@ -33878,7 +34753,7 @@ function getStatusSummaryGroupHtml(group: StatusSummaryTableGroup) {
       <thead>
         <tr>
           <th>S.No.</th>
-          <th>Milestone</th>
+          <th></th>
           ${group.columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("")}
         </tr>
       </thead>
@@ -34189,6 +35064,7 @@ function exportFinanceRowsToExcel(
   firmTypeDistributionRows: FinanceFirmTypeDistributionExportRow[],
   firmTypeDistributionLabel: string,
   description?: string,
+  additionalTables: ExportTable[] = [],
 ) {
   void downloadFinanceRows(
     rows,
@@ -34197,6 +35073,7 @@ function exportFinanceRowsToExcel(
     firmTypeDistributionLabel,
     "excel",
     description,
+    additionalTables,
   );
 }
 
@@ -34313,6 +35190,7 @@ function printFinanceRowsToPdf(
   firmTypeDistributionRows: FinanceFirmTypeDistributionExportRow[],
   firmTypeDistributionLabel: string,
   description?: string,
+  additionalTables: ExportTable[] = [],
 ) {
   void downloadFinanceRows(
     rows,
@@ -34321,6 +35199,7 @@ function printFinanceRowsToPdf(
     firmTypeDistributionLabel,
     "pdf",
     description,
+    additionalTables,
   );
 }
 
@@ -34331,6 +35210,7 @@ async function downloadFinanceRows(
   firmTypeDistributionLabel: string,
   format: "excel" | "pdf",
   description?: string,
+  additionalTables: ExportTable[] = [],
 ) {
   await downloadBackendExport({
     format,
@@ -34365,6 +35245,7 @@ async function downloadFinanceRows(
             },
           ]
         : []),
+      ...additionalTables,
     ],
   });
 }
@@ -34482,7 +35363,9 @@ function getDashboardFilterTitle(filter: string) {
     const key = filter.slice("analyticsMilestoneClearing:".length);
     const labelByKey: Record<string, string> = {
       bidding: "Bidding",
+      prePostTcec: "Pre Post-TCEC",
       rfpVetting: "RFP Vetting",
+      refloatRfpVetting: "Refloat RFP Vetting",
       nonTcecTechnicalEvaluation: "Non-TCEC Technical Evaluation",
       gemUndertaking: "GeM Undertaking",
       payment: "Payment cycle (PCDA)",
@@ -34496,9 +35379,12 @@ function getDashboardFilterTitle(filter: string) {
     const labelByKey: Record<string, string> = {
       workflowNotStarted: "Workflow Not Started",
       gemUndertaking: "GeM Undertaking",
+      rfpVetting: "Normal RFP Vetting",
+      refloatRfpVetting: "Refloat RFP Vetting",
       bidding: "Bidding",
       refloatBidding: "Refloat bidding",
       nonTcecTechnicalEvaluation: "Non-TCEC Technical Evaluation",
+      prePostTcec: "Pre Post-TCEC",
       scrutiny: "Scrutiny",
       highValue: "High Value",
       preTcec: "Pre-TCEC",

@@ -21,6 +21,10 @@ const helperSectionRules = [
     match: /^\s*example-[123](?:\s|:|,|$)/i,
   },
   {
+    title: "Scenarios",
+    match: /^\s*scenario\s+(?:table|row)(?:\s|:|,|$)/i,
+  },
+  {
     title: "Filter",
     match:
       /\b(global filter|file initiation year|subfilter|date range|division filter|file type filter|current filters|filter(?:s|ed|ing)? apply|selected fy)\b/i,
@@ -43,6 +47,7 @@ const helperSectionRules = [
 
 const defaultSectionOrder = [
   "What it does",
+  "Scenarios",
   "Examples",
   "Filter",
   "What is counted",
@@ -102,7 +107,7 @@ export function HelperContent({
   const groups = groupHelperLines(lines, sectionOrder);
   const contentRef = useRef<HTMLDivElement>(null);
   return (
-    <div className="pr-1 text-[13px] leading-relaxed">
+    <div className="pr-1 text-[0.8125rem] leading-relaxed">
       {groups.length && showPdfExport ? (
         <div className="mb-2 flex justify-end">
           <HelperPdfButton contentRef={contentRef} breadcrumb={breadcrumb} />
@@ -124,6 +129,8 @@ export function HelperContent({
             <h3 className="mb-1.5 text-base font-semibold text-foreground">{title}</h3>
             {title === "Examples" ? (
               <ExampleRows items={items} />
+            ) : title === "Scenarios" ? (
+              <ScenarioRows items={items} />
             ) : (
               <ul className="list-disc space-y-1 pl-4 text-popover-foreground">
                 {items.map((item, index) => (
@@ -234,7 +241,7 @@ export function HelperPdfButton({
           tables,
         });
       }}
-      className="inline-flex h-7 items-center gap-1 rounded border border-border bg-background px-2 text-[11px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+      className="inline-flex h-7 items-center gap-1 rounded border border-border bg-background px-2 text-[0.6875rem] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
     >
       <FileDown className="size-3.5" />
       PDF
@@ -413,6 +420,68 @@ function ExampleRows({ items }: { items: string[] }) {
               <td className="border-b border-primary/15 px-3 py-2 align-top">{result}</td>
             </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ScenarioRows({ items }: { items: string[] }) {
+  const headerLine = items.find((item) => /^Scenario table:/i.test(item));
+  const headers = headerLine
+    ? headerLine
+        .replace(/^Scenario table:\s*/i, "")
+        .split("|")
+        .map((cell) => cell.trim())
+    : [];
+  const rows = items.filter((item) => /^Scenario row:/i.test(item));
+  if (!headers.length || !rows.length) {
+    return (
+      <ul className="list-disc space-y-1 pl-4">
+        {items.map((item) => (
+          <li key={item}>{item}</li>
+        ))}
+      </ul>
+    );
+  }
+  return (
+    <div className="overflow-x-auto rounded-sm border border-primary/20 bg-background/70">
+      <table className="w-full min-w-[38rem] border-collapse text-left text-xs text-popover-foreground">
+        <thead className="bg-primary/10">
+          <tr>
+            {headers.map((header, index) => (
+              <th
+                key={`${header}-${index}`}
+                scope="col"
+                className="border-b border-r border-primary/15 px-3 py-2 font-semibold last:border-r-0"
+              >
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((item, rowIndex) => {
+            const cells = item
+              .replace(/^Scenario row:\s*/i, "")
+              .split("|")
+              .map((cell) => cell.trim());
+            return (
+              <tr
+                key={`scenario-${rowIndex}`}
+                className={rowIndex % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}
+              >
+                {headers.map((_, columnIndex) => (
+                  <td
+                    key={`scenario-${rowIndex}-${columnIndex}`}
+                    className="break-words whitespace-pre-line border-b border-r border-primary/15 px-3 py-2 align-top last:border-r-0"
+                  >
+                    {renderExampleCell(cells[columnIndex] ?? "")}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

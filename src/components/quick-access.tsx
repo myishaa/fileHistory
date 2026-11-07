@@ -2,6 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { store, useActiveUser, useSettings, type FileRecord } from "@/lib/files-store";
 import { formatIndiaMonth } from "@/lib/india-date";
 import { delayMilestoneOptions } from "@/lib/delay-status-options";
+import { useSettingsDraftContext } from "@/lib/settings-draft";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { QuickEntryExcelExportList } from "@/components/quick-entry-excel";
 import { UrgentMessageTicker, UrgentMessagesPanel } from "@/components/urgent-messages";
@@ -1257,6 +1259,7 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
   const [saveError, setSaveError] = useState("");
   const personalHasChanges =
     JSON.stringify(personal) !== JSON.stringify(readArray<AccessItem>(personalKey));
+  useUnsavedChanges(`quick-access-favorites:${user?.id ?? "anonymous"}`, personalHasChanges);
   const updateFavorites = (target: "shared" | "personal", next: AccessItem[]) => {
     if (target === "shared") {
       setSaveError("");
@@ -1354,6 +1357,7 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
 
 function NoticeBoardEditor() {
   const user = useActiveUser();
+  const draft = useSettingsDraftContext();
   const userId = user?.id ?? "anonymous";
   const personalPreferences = usePersonalNoticeBoardPreferences(userId);
   const [saving, setSaving] = useState(false);
@@ -1479,6 +1483,23 @@ function NoticeBoardEditor() {
     );
     setSaveError("");
   };
+  const savePersonalSettingsRef = useRef(savePersonalSettings);
+  const cancelPersonalSettingsRef = useRef(cancelPersonalSettings);
+  savePersonalSettingsRef.current = savePersonalSettings;
+  cancelPersonalSettingsRef.current = cancelPersonalSettings;
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: () => savePersonalSettingsRef.current(),
+      cancel: () => cancelPersonalSettingsRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(personalHasChanges);
+  }, [draft?.setLocalDirty, personalHasChanges]);
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap gap-6 border-t border-border pt-4">

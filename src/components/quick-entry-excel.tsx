@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileSpreadsheet, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { DeleteConfirmation } from "@/components/delete-confirmation";
 import { downloadQuickEntryExcelExport } from "@/lib/export-download";
 import {
   useAccessibleDivisions,
@@ -9,6 +10,8 @@ import {
   store,
 } from "@/lib/files-store";
 import { Textarea } from "@/components/ui/textarea";
+import { useSettingsDraftContext } from "@/lib/settings-draft";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import {
   quickEntryExcelFieldGroups,
   quickEntryExcelFieldLabels,
@@ -317,6 +320,7 @@ function getLocalExportTimestamp() {
 
 export function QuickEntryExcelSettings() {
   const user = useActiveUser();
+  const draft = useSettingsDraftContext();
   const settings = useSettings();
   const storeStatus = useStoreStatus();
   const userId = user?.id ?? "anonymous";
@@ -331,6 +335,9 @@ export function QuickEntryExcelSettings() {
   const [editingId, setEditingId] = useState("");
   const [editingNoteId, setEditingNoteId] = useState("");
   const [noteDraft, setNoteDraft] = useState("");
+  const [editorDirty, setEditorDirty] = useState(false);
+  const [noteDirty, setNoteDirty] = useState(false);
+  useUnsavedChanges("quick-entry-excel-settings", editorDirty || noteDirty);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const legacyImportStarted = useRef(false);
@@ -378,6 +385,17 @@ export function QuickEntryExcelSettings() {
     setSelectedFields((current) =>
       current.includes(field) ? current.filter((item) => item !== field) : [...current, field],
     );
+    setEditorDirty(true);
+  };
+
+  const cancelEditor = () => {
+    setEditingId("");
+    setName("");
+    setSelectedFields([]);
+    setScopeMode("fy");
+    setFinancialYear(defaultYear);
+    setError("");
+    setEditorDirty(false);
   };
 
   const persistPresets = async (next: QuickEntryExcelPreset[]) => {
@@ -441,6 +459,7 @@ export function QuickEntryExcelSettings() {
     setSelectedFields([]);
     setEditingId("");
     setError("");
+    setEditorDirty(false);
     if (scopeMode === "so" && !selectedFields.includes("soDate")) {
       setSelectedFields((current) => [...current, "soDate"]);
     }
@@ -453,14 +472,18 @@ export function QuickEntryExcelSettings() {
     setScopeMode(preset.scopeMode ?? "fy");
     setFinancialYear(preset.financialYear || defaultYear);
     setError("");
+    setEditorDirty(false);
   };
 
   const removePreset = async (id: string) => {
     const next = presets.filter((preset) => preset.id !== id);
-    if (!(await persistPresets(next))) return;
+    if (!(await persistPresets(next))) {
+      throw new Error("Could not remove the saved export preset.");
+    }
     if (editingNoteId === id) {
       setEditingNoteId("");
       setNoteDraft("");
+      setNoteDirty(false);
     }
     if (editingId === id) {
       setEditingId("");
@@ -468,6 +491,7 @@ export function QuickEntryExcelSettings() {
       setSelectedFields([]);
       setScopeMode("fy");
       setFinancialYear(defaultYear);
+      setEditorDirty(false);
     }
   };
 
@@ -478,7 +502,32 @@ export function QuickEntryExcelSettings() {
     if (!(await persistPresets(next))) return;
     setEditingNoteId("");
     setNoteDraft("");
+    setNoteDirty(false);
   };
+
+  const cancelNote = () => {
+    setEditingNoteId("");
+    setNoteDraft("");
+    setNoteDirty(false);
+  };
+  const cancelLocalDraftsRef = useRef(() => undefined);
+  cancelLocalDraftsRef.current = () => {
+    cancelEditor();
+    cancelNote();
+  };
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: async () => undefined,
+      cancel: () => cancelLocalDraftsRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(editorDirty || noteDirty);
+  }, [draft?.setLocalDirty, editorDirty, noteDirty]);
 
   return (
     <section className="space-y-4">
@@ -500,7 +549,10 @@ export function QuickEntryExcelSettings() {
             <span className="mb-1.5 block text-sm font-medium">Excel file name</span>
             <input
               value={name}
-              onChange={(event) => setName(event.target.value)}
+              onChange={(event) => {
+                setName(event.target.value);
+                setEditorDirty(true);
+              }}
               placeholder="For example, Monthly review"
               className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
             />
@@ -521,6 +573,7 @@ export function QuickEntryExcelSettings() {
                     aria-pressed={scopeMode === mode}
                     onClick={() => {
                       setScopeMode(mode);
+                      setEditorDirty(true);
                       if (mode === "so" && !selectedFields.includes("soDate")) {
                         setSelectedFields((current) => [...current, "soDate"]);
                       }
@@ -540,7 +593,10 @@ export function QuickEntryExcelSettings() {
               <span className="mb-1.5 block text-sm font-medium">Financial year</span>
               <select
                 value={financialYear}
-                onChange={(event) => setFinancialYear(event.target.value)}
+                onChange={(event) => {
+                  setFinancialYear(event.target.value);
+                  setEditorDirty(true);
+                }}
                 className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
               >
                 {settings.financialYears.map((year) => (
@@ -572,6 +628,7 @@ export function QuickEntryExcelSettings() {
                 onClick={() => {
                   setSelectedFields(scopeMode === "so" ? ["soDate"] : []);
                   setError("");
+                  setEditorDirty(true);
                 }}
                 title="Reset selected fields"
                 className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium hover:bg-accent"
@@ -639,15 +696,13 @@ export function QuickEntryExcelSettings() {
             {saving ? null : editingId ? null : <Plus className="size-4" />}
             {saving ? "Saving..." : editingId ? "Save changes" : "Add Excel export"}
           </button>
-          {editingId ? (
+          {editorDirty || editingId ? (
             <button
               type="button"
               onClick={() => {
-                setEditingId("");
-                setName("");
-                setSelectedFields([]);
-                setError("");
+                cancelEditor();
               }}
+              disabled={saving}
               className="ml-2 inline-flex h-9 items-center rounded-md border border-border px-3 text-sm font-medium hover:bg-accent"
             >
               Cancel
@@ -673,7 +728,10 @@ export function QuickEntryExcelSettings() {
                     <div className="mt-2 space-y-2">
                       <Textarea
                         value={noteDraft}
-                        onChange={(event) => setNoteDraft(event.target.value)}
+                        onChange={(event) => {
+                          setNoteDraft(event.target.value);
+                          setNoteDirty(true);
+                        }}
                         maxLength={300}
                         rows={2}
                         placeholder="Add a note about this configured export"
@@ -692,8 +750,7 @@ export function QuickEntryExcelSettings() {
                         <button
                           type="button"
                           onClick={() => {
-                            setEditingNoteId("");
-                            setNoteDraft("");
+                            cancelNote();
                           }}
                           disabled={saving}
                           className="inline-flex h-8 items-center rounded-md border border-border px-2.5 text-xs font-medium hover:bg-accent"
@@ -716,6 +773,7 @@ export function QuickEntryExcelSettings() {
                         onClick={() => {
                           setEditingNoteId(preset.id);
                           setNoteDraft(preset.note ?? "");
+                          setNoteDirty(false);
                         }}
                         className="shrink-0 text-xs font-medium text-primary hover:underline"
                       >
@@ -745,16 +803,17 @@ export function QuickEntryExcelSettings() {
                 >
                   <Pencil className="size-4" />
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void removePreset(preset.id)}
-                  disabled={saving}
-                  title={`Remove ${preset.name}`}
-                  aria-label={`Remove ${preset.name}`}
-                  className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                >
-                  <Trash2 className="size-4" />
-                </button>
+                <DeleteConfirmation onConfirm={() => removePreset(preset.id)}>
+                  <button
+                    type="button"
+                    disabled={saving}
+                    title={`Remove ${preset.name}`}
+                    aria-label={`Remove ${preset.name}`}
+                    className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </DeleteConfirmation>
               </div>
             ))
           ) : (

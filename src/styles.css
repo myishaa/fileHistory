@@ -147,11 +147,20 @@
   box-shadow: var(--shadow-card);
 }
 
+/* Settings option cards should not stack the shared report accent with the
+   selected-section styling. Keep their colour differentiation in the fill,
+   text, and selected navigation state instead. */
+.settings-page :where([class~="bg-secondary/35"][class~="border"][class~="border-border"]) {
+  border-left: 0;
+}
+
 /* Most settings/report surfaces use this shared utility combination. Keep
    those section cards consistent even when a route does not need a custom
    wrapper class. */
 :where(
-  [class~="bg-secondary/35"][class~="border"][class~="border-border"][class~="shadow-[var(--shadow-card)]"]:not(.analytics-result-card)
+  [class~="bg-secondary/35"][class~="border"][class~="border-border"][class~="shadow-[var(--shadow-card)]"]:not(
+      .analytics-result-card
+    )
 ) {
   border-left: 4px solid color-mix(in srgb, var(--primary) 45%, transparent);
 }
@@ -545,11 +554,13 @@ button.bg-primary:hover:not(:disabled) {
      group dividers. Major groups remain subtly distinct from subcolumns. */
   #analytics-group-panel table th + th,
   #analytics-group-panel table td + td {
-    border-inline-start: 1px solid color-mix(in srgb, var(--color-border) 80%, var(--color-foreground) 20%);
+    border-inline-start: 1px solid
+      color-mix(in srgb, var(--color-border) 80%, var(--color-foreground) 20%);
   }
 
   #analytics-group-panel table .analytics-group-start {
-    border-inline-start: 1px solid color-mix(in srgb, var(--color-border) 70%, var(--color-foreground) 30%);
+    border-inline-start: 1px solid
+      color-mix(in srgb, var(--color-border) 70%, var(--color-foreground) 30%);
   }
 
   body {
@@ -583,4 +594,51 @@ button.bg-primary:hover:not(:disabled) {
    active, including the brief render window before React state settles. */
 html[data-notice-board-rotation="active"] [data-urgent-message-prompt="true"] {
   display: none !important;
+}
+
+/* Font-size changes must reflow content instead of allowing grid and flex
+   children to preserve their desktop minimum-content widths. */
+[data-font-scale] main,
+[data-font-scale] main > *,
+[data-font-scale] main :where(.grid, .flex) > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Keep the login card at its original compact width when the application font
+   scale is increased. */
+[data-font-scale] main.login-screen > form {
+  max-width: 476px;
+}
+
+[data-font-scale] main :where(p, h1, h2, h3, h4, h5, h6, label, span) {
+  overflow-wrap: anywhere;
+}
+
+[data-font-scale="125"] main :where(button, [role="button"]),
+[data-font-scale="140"] main :where(button, [role="button"]),
+[data-font-scale="150"] main :where(button, [role="button"]),
+[data-font-scale="160"] main :where(button, [role="button"]) {
+  max-width: 100%;
+  white-space: normal;
+}
+
+/* The protected-backup tabs contain long action labels and status cards. At
+   enlarged font sizes, stack these grids before their text can force the
+   page wider than the viewport. */
+[data-font-scale="125"] main .protected-backup-action-grid,
+[data-font-scale="140"] main .protected-backup-action-grid,
+[data-font-scale="150"] main .protected-backup-action-grid,
+[data-font-scale="160"] main .protected-backup-action-grid,
+[data-font-scale="125"] main .protected-backup-status-grid,
+[data-font-scale="140"] main .protected-backup-status-grid,
+[data-font-scale="150"] main .protected-backup-status-grid,
+[data-font-scale="160"] main .protected-backup-status-grid {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+[data-font-scale] main .protected-backup-settings,
+[data-font-scale] main .protected-backup-settings :where(.grid, .flex) > * {
+  min-width: 0;
+  max-width: 100%;
 }

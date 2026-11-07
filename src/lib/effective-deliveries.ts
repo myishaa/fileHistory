@@ -241,7 +241,9 @@ export function isSupplyOrderMilestoneCurrent(
     isSupplyOrderMilestoneApplicable(file, order, normalized);
   if (normalized === "financialsanction")
     return isFinancialSanctionPendingOrder(file, order) || storedCurrent;
-  if (normalized === "supplyorder") return isSupplyOrderPendingOrder(order) || storedCurrent;
+  if (normalized === "supplyorder") {
+    return isSupplyOrderPendingOrder(order) && storedCurrent;
+  }
   if (normalized === "deliveryperiod") return isDeliveryPeriodCurrentOrder(file, order);
   if (normalized === "billreturnedforcorrection") return hasOpenBillReturn(order) || storedCurrent;
   if (normalized === "jobcompletion") return isJobCompletionCurrentOrder(file, order);
@@ -259,6 +261,17 @@ export function isSupplyOrderMilestoneCurrent(
   }
   if (normalized === "payment") return isPaymentCurrentOrder(file, order) || storedCurrent;
   return storedCurrent;
+}
+
+export function isSupplyOrderAtPreviousStage(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    !isYes(file.demandCancelled) &&
+    !isYes(order.soCancelled) &&
+    normalizeMilestoneName(order.currentMilestone) === "financialsanction" &&
+    isSupplyOrderMilestoneApplicable(file, order, "financialsanction") &&
+    !isFinancialSanctionCompletedOrder(order) &&
+    !isSupplyOrderComplete(order)
+  );
 }
 
 export function isValidDeliveryPeriodEntry(file: FileRecord, order: SupplyOrderDetail) {
@@ -514,7 +527,9 @@ function isJobCompletionWorkflow(file: FileRecord) {
 
 function isFinancialSanctionReached(file: FileRecord) {
   return (
-    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
+    (isBiddingApplicableForFile(file)
+      ? isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
+      : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }

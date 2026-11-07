@@ -54,8 +54,23 @@ function hasValue(value: string | undefined) {
   return Boolean(value?.trim());
 }
 
+export function normalizeBgCoverageType(value: string | undefined) {
+  const normalized = (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+  if (!normalized) return undefined;
+  if (normalized === "none") return "None";
+  if (normalized === "psb") return "PSB";
+  if (normalized === "pwb") return "PWB";
+  if (normalized === "psbpwb") return "PSB+PWB";
+  if (normalized === "psbandpwbseparately") return "PSB and PWB separately";
+  return undefined;
+}
+
 export function clearInapplicableBgCoverageFields<T extends BgCoverageFields>(order: T): T {
-  const coverage = order.bgCoverageType ?? "None";
+  const normalizedCoverage = normalizeBgCoverageType(order.bgCoverageType);
+  const coverage = normalizedCoverage ?? order.bgCoverageType?.trim() ?? "None";
   const psbApplies =
     order.psbApplicable === "Yes" &&
     (coverage === "PSB" || coverage === "PSB and PWB separately");
@@ -63,6 +78,9 @@ export function clearInapplicableBgCoverageFields<T extends BgCoverageFields>(or
   const combinedApplies = coverage === "PSB+PWB";
 
   const next = { ...order };
+  if (normalizedCoverage && normalizedCoverage !== order.bgCoverageType) {
+    next.bgCoverageType = normalizedCoverage;
+  }
   if (!psbApplies) {
     for (const [key] of psbFields) next[key] = "";
   }

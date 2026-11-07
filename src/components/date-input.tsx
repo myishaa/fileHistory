@@ -27,6 +27,7 @@ type DateInputProps = Omit<
   min?: string;
   max?: string;
   calendar?: boolean;
+  widthClass?: string;
 };
 
 export const DateInput = forwardRef<HTMLInputElement, DateInputProps>(function DateInput(
@@ -38,6 +39,7 @@ export const DateInput = forwardRef<HTMLInputElement, DateInputProps>(function D
     placeholder = "DD-MM-YYYY",
     inputMode = "numeric",
     calendar = true,
+    widthClass,
     ...props
   },
   ref,
@@ -119,7 +121,7 @@ export const DateInput = forwardRef<HTMLInputElement, DateInputProps>(function D
         "text-foreground",
         className,
         calendar ? "pr-14" : undefined,
-        "w-[160px] min-w-[160px]",
+        widthClass ?? "w-[160px] min-w-[160px]",
       )}
       value={displayValue}
       placeholder={placeholder}
@@ -154,7 +156,13 @@ export const DateInput = forwardRef<HTMLInputElement, DateInputProps>(function D
   const disabled = Boolean(props.disabled);
 
   return (
-    <div ref={calendarRef} className="relative inline-block w-[160px] min-w-[160px] max-w-[160px]">
+    <div
+      ref={calendarRef}
+      className={cn(
+        "relative inline-block",
+        widthClass ?? "w-[160px] min-w-[160px] max-w-[160px]",
+      )}
+    >
       <div className="relative">
         {input}
         {displayValue || value ? (

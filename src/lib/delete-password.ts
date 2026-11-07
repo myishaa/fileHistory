@@ -14,17 +14,21 @@ export function promptPassword(message: string) {
   return showPasswordPrompt(message, title);
 }
 
-export async function requestDeletionPassword(action: string) {
+export async function requestVerifiedDeletionPassword(action: string) {
   const entered = await promptDeletionPassword(action);
   if (entered === null) return false;
   try {
     await store.verifyDeletionPassword(entered);
-    return true;
+    return entered;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Deletion password verification failed.";
     alert(message === "Invalid deletion password." ? "Incorrect deletion password." : message);
     return false;
   }
+}
+
+export async function requestDeletionPassword(action: string) {
+  return (await requestVerifiedDeletionPassword(action)) !== false;
 }
 
 function showPasswordPrompt(message: string, title: string) {

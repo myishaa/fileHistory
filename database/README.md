@@ -64,6 +64,10 @@ psql "$DATABASE_URL" -f database/091_file_message_recipients.sql
 psql "$DATABASE_URL" -f database/092_backup_schedule.sql
 psql "$DATABASE_URL" -f database/093_backup_run_log.sql
 psql "$DATABASE_URL" -f database/094_protected_backup_restore_authorization.sql
+psql "$DATABASE_URL" -f database/095_protected_backup_recovery_password.sql
+psql "$DATABASE_URL" -f database/096_refloat_bidding_fields.sql
+psql "$DATABASE_URL" -f database/097_master_firm_name_required.sql
+psql "$DATABASE_URL" -f database/098_permanent_message_deletion_and_nested_row_ids.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.
@@ -140,7 +144,7 @@ The file endpoints accept and return the current frontend-style camelCase shape.
 - `app_settings`: workspace settings used by the frontend and backend.
 - `backup_schedule_settings`: administrator-controlled server-side full recovery backup schedule and run status.
 - `backup_run_log`: persistent success/failure history for local, full-recovery, and scheduled backups.
-- `protected_backup_settings`: hashed restore-authorization password for protected backup restores.
+- `protected_backup_settings`: hashed Upload password and six-digit recovery password for protected backup restores.
 - `financial_years`: saved financial years shown in year dropdowns.
 - `file_firms`: invited and bidder firm rows.
 - `supply_orders`: multiple supply order rows for a file.

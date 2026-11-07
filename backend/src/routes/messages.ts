@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
+import { visibleFileSql } from "../utils/qa-data.js";
 import type { FileMessage, FileMessageReply } from "../types.js";
 import {
   canAccessDivision,
@@ -191,7 +192,7 @@ async function loadMessages(whereSql: string, values: unknown[]) {
        recipient.name as recipient_user_name, m.created_by_name, m.created_by_role,
        m.created_at, m.resolved_by_name, m.resolved_at, m.viewed_at
      from file_messages m
-     join files f on f.id = m.file_id and f.archived_at is null
+     join files f on f.id = m.file_id and f.archived_at is null and ${visibleFileSql("f")}
      left join divisions d on d.id = m.division_id
      left join app_users recipient on recipient.id = m.recipient_user_id
      ${whereSql}
@@ -283,7 +284,7 @@ messagesRouter.post(
       `select f.division_id, d.messages_enabled
        from files f
        left join divisions d on d.id = f.division_id
-       where f.id = $1 and f.archived_at is null`,
+       where f.id = $1 and f.archived_at is null and ${visibleFileSql("f")}`,
       [fileId],
     );
     const divisionId = file.rows[0]?.division_id;
@@ -489,7 +490,7 @@ messagesRouter.delete(
     if (!canAccessDivision(user, existing.rows[0].division_id)) {
       throw new HttpError(403, "You cannot delete this message.");
     }
-    await pool.query("update file_messages set deleted_at = now() where id = $1", [id]);
+    await pool.query("delete from file_messages where id = $1", [id]);
     response.json({ deleted: true });
   }),
 );

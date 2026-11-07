@@ -39,6 +39,7 @@ import {
   type AuthRequest,
 } from "../utils/auth.js";
 import { cacheTtl, clearDashboardReportCaches, getCached } from "../utils/cache.js";
+import { isQaLabelSql, visibleFileSql } from "../utils/qa-data.js";
 import { asyncHandler, HttpError } from "../utils/http.js";
 import {
   ensureFinancialYearArchiveSchema,
@@ -304,6 +305,7 @@ type ReportsSummaryPayload = {
     psbPwb: number;
     count: number;
   }>;
+  bgCustodyCounts: { psb: number; pwb: number; psbpwb: number };
   warrantyBgMismatchRows: Array<{
     bufferDays: number;
     label: string;
@@ -513,7 +515,7 @@ const reportMilestoneDefinitions = [
     key: "refloatBidding",
     label: "Refloat bidding",
     totalLabel: "Total cases",
-    currentColumn: "f.bidding_stage_over",
+    currentColumn: "f.refloat_bidding_stage_over",
     appliesColumn: "f.refloat",
     yesComplete: true,
   },
@@ -1225,6 +1227,8 @@ async function loadCashOutGoPlanAllocation(financialYear: string, divisionId: st
      left join division_year_allocations a
        on a.division_id = d.id and a.financial_year = $1
      where d.archived_at is null
+       and lower(trim(coalesce(d.name, ''))) <> 'trial'
+       and not ${isQaLabelSql("d.name")}
        ${divisionCondition}`,
     params,
   );
@@ -1255,6 +1259,8 @@ async function loadCashOutGoPlanAllocationForUser(
      left join division_year_allocations a
        on a.division_id = d.id and a.financial_year = $1
      where d.archived_at is null
+       and lower(trim(coalesce(d.name, ''))) <> 'trial'
+       and not ${isQaLabelSql("d.name")}
        and d.id = any($2::uuid[])`,
     params,
   );
@@ -2507,7 +2513,7 @@ function readOptionalFileCategories(value: unknown) {
 }
 
 function appendReportWhereClause(whereSql: string, extraConditions: string[] = []) {
-  const conditions = ["f.archived_at is null", ...extraConditions];
+  const conditions = ["f.archived_at is null", visibleFileSql("f"), ...extraConditions];
   if (!whereSql.trim()) return `where ${conditions.join(" and ")}`;
   return `${whereSql} and ${conditions.join(" and ")}`;
 }
@@ -2531,7 +2537,10 @@ function isNo(value: string | undefined) {
 function bidOpeningOverdueExpression() {
   const openingDate = `(case when ${isYesExpression("f.refloat")}
     then f.refloat_bid_opening_date else f.bid_opening_date end)`;
-  return `${isNoExpression("f.bid_opened")} and ${openingDate} is not null and ${openingDate} < current_date`;
+  const opened = `(case when ${isYesExpression("f.refloat")}
+    then (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
+    else (${isYesExpression("f.bid_opened")} or ${isYesExpression("f.bidding_stage_over")}) end)`;
+  return `not ${opened} and ${openingDate} is not null and ${openingDate} < current_date`;
 }
 
 function biddingDelayBreakupKeyExpression() {
@@ -2540,6 +2549,9 @@ function biddingDelayBreakupKeyExpression() {
     then f.refloat_bidding_date else f.bid_date end)`;
   const bidOpeningDate = `(case when ${refloat}
     then f.refloat_bid_opening_date else f.bid_opening_date end)`;
+  const bidOpened = `(case when ${refloat}
+    then (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
+    else (${isYesExpression("f.bid_opened")} or ${isYesExpression("f.bidding_stage_over")}) end)`;
   return `(case
     when ${isYesExpression("f.gem")} and not ${refloat} and not ${hasFilledExpression("f.gem_undertaking_date")}
       then 'gemUndertakingPending'
@@ -2547,9 +2559,9 @@ function biddingDelayBreakupKeyExpression() {
       then 'tenderLivePending'
     when ${hasFilledExpression(bidOpeningDate)}
       and ${bidOpeningDate} < current_date
-      and not ${isYesExpression("f.bid_opened")}
+      and not ${bidOpened}
       then 'bidOpeningOverdue'
-    when ${isYesExpression("f.bid_opened")}
+    when ${bidOpened}
       then 'biddingStageCompletionPending'
     when ${hasFilledExpression(bidDate)}
       then 'tenderLivePending'
@@ -2558,7 +2570,9 @@ function biddingDelayBreakupKeyExpression() {
 }
 
 function refloatBidOpeningOverdueExpression() {
-  return `${isNoExpression("f.bid_opened")} and f.refloat_bid_opening_date is not null and f.refloat_bid_opening_date < current_date`;
+  return `not (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
+    and f.refloat_bid_opening_date is not null
+    and f.refloat_bid_opening_date < current_date`;
 }
 
 function hasFilledExpression(column: string) {
@@ -2620,6 +2634,10 @@ function workflowNotStartedExpression() {
     { applies: isYesExpression("f.ifa"), dates: ["ifa_sent_date", "ifa_final_date"] },
     { applies: isYesExpression("f.gem"), dates: ["gem_undertaking_date"] },
     { applies: isYesExpression("f.rfp_vetting"), dates: ["rfp_vetting_initiation_date", "rfp_vetting_approval_date"] },
+    {
+      applies: `(${isYesExpression("f.refloat")} and ${isYesExpression("f.refloat_rfp_vetting")})`,
+      dates: ["refloat_rfp_vetting_initiation_date", "refloat_rfp_vetting_approval_date"],
+    },
     {
       applies: `(${biddingApplicableExpression()} and ${isYesExpression("f.pre_bid_meeting")})`,
       dates: ["pre_bid_meeting_date"],
@@ -2765,10 +2783,11 @@ function financialSanctionCompleteExpression() {
   )}`;
 }
 
-function biddingApplicableExpression() {
+function biddingApplicableExpression(refloatCycle = false) {
+  const gemModeColumn = refloatCycle ? "f.refloat_gem_bidding_mode" : "f.gem_bidding_mode";
   return `upper(trim(coalesce(f.mode, ''))) <> 'LPC'
     and lower(trim(coalesce(f.file_type, ''))) not in ('cars', 'capsi')
-    and not (${isYesExpression("f.gem")} and lower(trim(coalesce(f.gem_bidding_mode, ''))) = 'comparison')`;
+    and not (${isYesExpression("f.gem")} and lower(trim(coalesce(${gemModeColumn}, ''))) = 'comparison')`;
 }
 
 function biddingLiveExpression() {
@@ -2788,16 +2807,16 @@ function biddingTenderLiveWindowExpression() {
 function refloatTenderLiveWindowExpression() {
   return `${hasFilledExpression("f.refloat_bidding_date")}
     and ${hasFilledExpression("f.refloat_bid_opening_date")}
-    and not ${isYesExpression("f.bid_opened")}
+    and not (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
     and current_date between f.refloat_bidding_date and f.refloat_bid_opening_date`;
 }
 
 function refloatBiddingLiveExpression() {
-  const stageOver = `(case when ${isYesExpression("f.tcec")} then ${isYesExpression("f.bidding_stage_over")} else ${isYesExpression("f.refloat_bidding_stage_over")} end)`;
+  const cycleComplete = `(${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})`;
   return `${biddingApplicableExpression()}
     and ${isYesExpression("f.refloat")}
     and ${hasFilledExpression("f.refloat_bidding_date")}
-    and not ${stageOver}`;
+    and not ${cycleComplete}`;
 }
 
 function fileClosedExpression() {
@@ -2829,7 +2848,7 @@ function reportAppliesExpression(milestone: (typeof reportMilestoneDefinitions)[
   if (milestone.key === "bidding")
     return `${biddingApplicableExpression()} and not ${isYesExpression("f.refloat")}`;
   if (milestone.key === "refloatPostTcec")
-    return `${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")} and ${isYesExpression("f.bidding_stage_over")}`;
+    return `${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")} and ${isYesExpression("f.refloat_bidding_stage_over")}`;
   return "appliesColumn" in milestone && milestone.appliesColumn
     ? isYesExpression(milestone.appliesColumn)
     : "true";
@@ -2837,7 +2856,7 @@ function reportAppliesExpression(milestone: (typeof reportMilestoneDefinitions)[
 
 function reportCompleteExpression(milestone: (typeof reportMilestoneDefinitions)[number]) {
   if (milestone.key === "refloatBidding") {
-    return `(case when ${isYesExpression("f.tcec")} then ${isYesExpression("f.bidding_stage_over")} else ${isYesExpression("f.refloat_bidding_stage_over")} end)`;
+    return isYesExpression("f.refloat_bidding_stage_over");
   }
   if ("yesComplete" in milestone && milestone.yesComplete)
     return isYesExpression(milestone.currentColumn);
@@ -2872,7 +2891,7 @@ function reportReviewedExpression(milestone: (typeof reportMilestoneDefinitions)
 function refloatBiddingDelayActiveExpression() {
   const openingOverdue = `${hasFilledExpression("f.refloat_bid_opening_date")}
     and ${dateCastExpression("f.refloat_bid_opening_date")} < current_date
-    and not ${isYesExpression("f.bid_opened")}`;
+    and not (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})`;
   const nonTcecRestart = `${isYesExpression("f.refloat")}
     and not ${isYesExpression("f.tcec")}
     and ${isYesExpression("f.bidding_stage_over")}
@@ -2884,11 +2903,11 @@ function refloatBiddingDelayActiveExpression() {
     and ((${nonTcecRestart}) or (
       ${isYesExpression("f.refloat")}
       and ${isYesExpression("f.tcec")}
-      and not ${isYesExpression("f.bidding_stage_over")}
+      and not ${isYesExpression("f.refloat_bidding_stage_over")}
       and (
         not ${hasFilledExpression("f.refloat_bidding_date")}
         or (${openingOverdue})
-        or ${isYesExpression("f.bid_opened")}
+        or ${isYesExpression("f.refloat_bid_opened")}
       )
     ))`;
 }
@@ -2897,11 +2916,19 @@ function reportActiveExpression(milestone: (typeof reportMilestoneDefinitions)[n
   if (milestone.key === "refloatBidding") {
     return `not ${isCancelledExpression()} and ${refloatBiddingLiveExpression()}`;
   }
+  if (milestone.key === "postTcec") {
+    return `not ${isCancelledExpression()}
+      and not (${fileClosedExpression()})
+      and ${isYesExpression("f.tcec")}
+      and ${biddingApplicableExpression()}
+      and ${isYesExpression("f.bidding_stage_over")}`;
+  }
   if (milestone.key === "refloatPostTcec") {
     return `not ${isCancelledExpression()}
+      and not (${fileClosedExpression()})
       and ${isYesExpression("f.refloat")}
       and ${isYesExpression("f.tcec")}
-      and ${isYesExpression("f.bidding_stage_over")}
+      and ${isYesExpression("f.refloat_bidding_stage_over")}
       and not ${hasFilledExpression("f.refloat_post_tcec_minutes_date")}`;
   }
   if (milestone.key === "financialSanction") {
@@ -2975,7 +3002,8 @@ function allApplicableReportMilestonesCompleteExpression(
 
 function supplyOrderPlacedExpression() {
   return supplyOrderChildExpression(
-    hasFilledExpression("so.so_date"),
+    `${hasFilledExpression("so.so_date")}
+      and so.so_date <= (now() at time zone 'Asia/Kolkata')::date`,
     hasFilledExpression("f.so_date"),
   );
 }
@@ -3187,7 +3215,7 @@ function financialSanctionPreviousStageExpression() {
         and (
           (${biddingApplicableExpression()}
             and ${normalizeMilestoneExpression("f.current_milestone")} = 'bidding'
-            and not ${isYesExpression("f.bidding_stage_over")})
+            and not (${financialSanctionBiddingCompleteExpression()}))
           or (not ${biddingApplicableExpression()}
             and ${normalizeMilestoneExpression("f.current_milestone")} = 'cfa'
             and not ${hasFilledExpression("f.cfa_date")})
@@ -3198,9 +3226,15 @@ function financialSanctionPreviousStageExpression() {
     )`;
 }
 
+function financialSanctionBiddingCompleteExpression() {
+  return `(case when ${isYesExpression("f.refloat")}
+    then ${isYesExpression("f.refloat_bidding_stage_over")}
+    else ${isYesExpression("f.bidding_stage_over")} end)`;
+}
+
 function financialSanctionReachedExpression() {
   return `not ${isCancelledExpression()}
-    and ((${biddingApplicableExpression()} and ${isYesExpression("f.bidding_stage_over")})
+    and ((${biddingApplicableExpression()} and ${financialSanctionBiddingCompleteExpression()})
       or (not ${biddingApplicableExpression()} and ${hasFilledExpression("f.cfa_date")}))
     and (not ${isYesExpression("f.tcec")} or ${hasFilledExpression("f.cnc_approval_date")})`;
 }
@@ -3686,16 +3720,14 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
     const active = `${process} and ${reportActiveExpression(milestone)}`;
     const reviewed = reportReviewedExpression(milestone);
     const pending =
-      milestone.key === "refloatPostTcec"
-        ? `${process} and not (${complete})`
-        : "reviewedColumn" in milestone && milestone.reviewedColumn
-          ? `${active} and not (${reviewed}) and not (${complete})`
-          : `${active} and not (${complete})`;
+      "reviewedColumn" in milestone && milestone.reviewedColumn
+        ? `${active} and not (${reviewed}) and not (${complete})`
+        : `${active} and not (${complete})`;
     const previousStage =
       milestone.key === "refloatBidding"
         ? "false"
         : milestone.key === "refloatPostTcec"
-          ? `${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")} and not ${isYesExpression("f.bidding_stage_over")}`
+          ? `${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")} and not ${isYesExpression("f.refloat_bidding_stage_over")}`
           : `${process} and (${reached}) and not (${active}) and not (${reviewed}) and not (${complete})`;
 
     if (isBgStatusKey(milestone.key)) {
@@ -3793,7 +3825,7 @@ async function loadStatusSummaryGroups(whereSql: string, values: unknown[]) {
       addRow(milestone.label, milestone.totalLabel ?? "Total", process);
       addRow(milestone.label, "Completed", `${process} and ${complete}`);
       addRow(milestone.label, "At previous stage", previousStage);
-      addRow(milestone.label, "In process", pending);
+      addRow(milestone.label, "In process", `${active} and not (${complete})`);
       addRow(milestone.label, "Reviewed", `${active} and ${reviewed} and not (${complete})`);
       addRow(milestone.label, "Pending", pending);
       return;
@@ -4828,8 +4860,17 @@ function delayStageStartExpression(
   index: number,
   excludedPreviousMilestoneKeys: string[] = [],
 ) {
+  if (milestone.key === "postTcec") {
+    return dateCastExpression("f.post_tcec_date");
+  }
+  if (milestone.key === "refloatPostTcec") {
+    return dateCastExpression("f.refloat_post_tcec_date");
+  }
   if (milestone.key === "cnc") {
-    return dateCastExpression("f.post_tcec_minutes_date");
+    return `(case when ${isYesExpression("f.refloat")}
+      then ${dateCastExpression("f.refloat_post_tcec_minutes_date")}
+      else ${dateCastExpression("f.post_tcec_minutes_date")}
+    end)`;
   }
   if (milestone.key === "supplyOrder") {
     return dateCastExpression("f.cnc_approval_date");
@@ -4870,9 +4911,9 @@ function delayStageStartExpression(
       when not ${hasFilledExpression("f.refloat_bidding_date")} then (${refloatStartDate})
       when ${hasFilledExpression("f.refloat_bid_opening_date")}
         and ${refloatBidOpeningDate} < current_date
-        and not ${isYesExpression("f.bid_opened")}
+        and not (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
         then ${refloatBidOpeningDate}
-      when ${isYesExpression("f.bid_opened")}
+      when ${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")}
         then coalesce(${refloatBidOpeningDate}, ${refloatBiddingDate}, (${refloatStartDate}))
       else null::date
     end)`;
@@ -4983,6 +5024,8 @@ function lastFilledDateExpression() {
     (f.refloat_recommendation_date),
     (f.rfp_vetting_initiation_date),
     (f.rfp_vetting_approval_date),
+    (f.refloat_rfp_vetting_initiation_date),
+    (f.refloat_rfp_vetting_approval_date),
     (f.bid_date),
     (f.bid_opening_date),
     (f.refloat_bidding_date),
@@ -5244,6 +5287,8 @@ function effectiveOrderDelayRowsSource(
         (f.refloat_gem_undertaking_date),
         (f.rfp_vetting_initiation_date),
         (f.rfp_vetting_approval_date),
+    (f.refloat_rfp_vetting_initiation_date),
+    (f.refloat_rfp_vetting_approval_date),
         (f.bid_date),
         (f.bid_opening_date),
         (f.refloat_bidding_date),
@@ -5360,21 +5405,6 @@ function orderDelayRowsSelects(
         and not effective_order.job_completion_done
         and effective_order.payment_due_start_date is not null
         and (current_date - effective_order.payment_due_start_date::date) > ${thresholdPlaceholder}::integer)`;
-      const pendingWarrantyBgCondition = `(
-        (${bgCategoryExpression("effective_order", "pwb")}
-          and not ${hasFilledExpression("effective_order.pwb_bg_received_date")})
-        or (${bgCategoryExpression("effective_order", "psbPwb")}
-          and not ${hasFilledExpression("effective_order.combined_bg_received_date")})
-      )`;
-      const afterWarrantyBgCondition = [
-        "irPreparation",
-        "irReceipt",
-        "billPreparation",
-        "billSentForPayment",
-        "payment",
-      ].includes(milestone.key)
-        ? `not ${pendingWarrantyBgCondition}`
-        : "true";
       const currentCondition = isBgStatusKey(milestone.key)
         ? `(('${normalizedBgKey}' in ('psb', 'psbpwb')
           and ${hasFilledExpression("effective_order.so_date")})
@@ -5388,9 +5418,17 @@ function orderDelayRowsSelects(
           : milestone.key === "jobCompletion"
             ? `${startDate} is not null and not ${contractPaymentDelay}`
             : `${normalizeMilestoneExpression(currentMilestoneExpression)} = '${milestone.current}'`;
-      const activeFollowUpCondition = isBgStatusKey(milestone.key)
-        ? "true"
-        : `not ${isYesExpression("effective_order.no_further_action")}`;
+      const paymentFollowUpMilestones = [
+        "advancePayment",
+        "billPreparation",
+        "billSentForPayment",
+        "billReturnedForCorrection",
+        "payment",
+      ];
+      const activeFollowUpCondition =
+        isBgStatusKey(milestone.key) || !paymentFollowUpMilestones.includes(milestone.key)
+          ? "true"
+          : `not ${isYesExpression("effective_order.no_further_action")}`;
       return `select
           f.id::text as "fileId",
           coalesce(nullif(f.imms, ''), '') as "fileRef",
@@ -5415,7 +5453,6 @@ function orderDelayRowsSelects(
           activeFollowUpCondition,
           applies,
           currentCondition,
-          afterWarrantyBgCondition,
           `${completeDate} is null`,
           `${startDate} is not null`,
           `(current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`,
@@ -5587,13 +5624,10 @@ async function loadDelayRows(
       const active = milestone.key === "refloatBidding"
         ? refloatBiddingDelayActiveExpression()
         : milestone.key === "postTcec"
-        ? `${reportActiveExpression(milestone)}
-          and ${isYesExpression("f.bidding_stage_over")}
-          and ${hasFilledExpression("f.bid_opening_date")}`
+        ? reportActiveExpression(milestone)
         : milestone.key === "refloatPostTcec"
           ? `${reportActiveExpression(milestone)}
-            and ${isYesExpression("f.bidding_stage_over")}
-            and ${hasFilledExpression("f.refloat_bid_opening_date")}`
+            and ${biddingApplicableExpression(true)}`
           : reportActiveExpression(milestone);
       const lastFilled = lastFilledDateExpression();
       const biddingBreakupKey =
@@ -5626,6 +5660,66 @@ async function loadDelayRows(
           `(current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`,
         ])}`;
     });
+  const prePostTcecSelects = selectedMilestoneKey === "all" || selectedMilestoneKey === "prePostTcec"
+    ? (() => {
+        const selectCycle = (args: {
+          startDate: string;
+          postDate: string;
+          minutesDate: string;
+          stageOver: string;
+          focusTarget: string;
+          applicable: string;
+          extraConditions?: string[];
+        }) => `select
+            f.id::text as "fileId",
+            coalesce(nullif(f.imms, ''), '') as "fileRef",
+            coalesce(d.name, '') as division,
+            coalesce(f.indentor, '') as indentor,
+            coalesce(f.demand_description, '') as description,
+            'prePostTcec' as "milestoneKey",
+            'Pre Post-TCEC' as milestone,
+            (${args.startDate})::text as "stageStartDate",
+            (current_date - (${args.startDate})::date)::integer as "daysInStage",
+            null::integer as "cumulativeDelayDays",
+            coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
+            'Milestones' as "focusSection",
+            '${args.focusTarget}' as "focusTarget",
+            null::text as "biddingBreakupKey"
+          from files f
+          left join divisions d on d.id = f.division_id
+          ${appendReportWhereClause(whereSql, [
+            `not ${isCancelledExpression()}`,
+            `not (${fileClosedExpression()})`,
+            isYesExpression("f.tcec"),
+            args.applicable,
+            ...(args.extraConditions ?? []),
+            args.stageOver,
+            `${args.startDate} is not null`,
+            `not ${hasFilledExpression(args.postDate)}`,
+            `not ${hasFilledExpression(args.minutesDate)}`,
+            `(current_date - (${args.startDate})::date) > ${thresholdPlaceholder}::integer`,
+          ])}`;
+        return [
+          selectCycle({
+            startDate: dateCastExpression("f.bid_opening_date"),
+            postDate: "f.post_tcec_date",
+            minutesDate: "f.post_tcec_minutes_date",
+            stageOver: isYesExpression("f.bidding_stage_over"),
+            focusTarget: "postTcecDate",
+            applicable: biddingApplicableExpression(),
+          }),
+          selectCycle({
+            startDate: dateCastExpression("f.refloat_bid_opening_date"),
+            postDate: "f.refloat_post_tcec_date",
+            minutesDate: "f.refloat_post_tcec_minutes_date",
+            stageOver: isYesExpression("f.refloat_bidding_stage_over"),
+            focusTarget: "refloatPostTcecDate",
+            applicable: biddingApplicableExpression(true),
+            extraConditions: [isYesExpression("f.refloat")],
+          }),
+        ];
+      })()
+    : [];
   const biddingMilestone = reportMilestoneDefinitions.find((milestone) => milestone.key === "bidding");
   const biddingFileSelects = biddingMilestone &&
     (selectedMilestoneKey === "all" ||
@@ -5678,6 +5772,10 @@ async function loadDelayRows(
       ? (() => {
           const refloatTcec = `(${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")})`;
           const refloatNonTcec = `(${isYesExpression("f.refloat")} and not ${isYesExpression("f.tcec")})`;
+          const activeCycleBiddingApplicable = `(case
+            when ${isYesExpression("f.refloat")} then ${biddingApplicableExpression(true)}
+            else ${biddingApplicableExpression()}
+          end)`;
           const startDate = `(case
             when ${refloatTcec} then ${dateCastExpression("f.post_tcec_date")}
             when ${refloatNonTcec} then ${dateCastExpression("f.refloat_recommendation_date")}
@@ -5719,13 +5817,77 @@ async function loadDelayRows(
               `not ${isCancelledExpression()}`,
               `not (${fileClosedExpression()})`,
               isYesExpression("f.gem"),
-              biddingApplicableExpression(),
+              activeCycleBiddingApplicable,
               pending,
               `(${startDate}) is not null`,
               `(current_date - (${startDate})::date) > ${thresholdPlaceholder}::integer`,
             ])}`,
           ];
         })()
+      : [];
+  const rfpVettingSelects =
+    selectedMilestoneKey === "all" || selectedMilestoneKey === "rfpVetting"
+      ? [
+          `select
+              f.id::text as "fileId",
+              coalesce(nullif(f.imms, ''), '') as "fileRef",
+              coalesce(d.name, '') as division,
+              coalesce(f.indentor, '') as indentor,
+              coalesce(f.demand_description, '') as description,
+              'rfpVetting' as "milestoneKey",
+              'Normal RFP Vetting' as milestone,
+              f.rfp_vetting_initiation_date::text as "stageStartDate",
+              (current_date - f.rfp_vetting_initiation_date)::integer as "daysInStage",
+              null::integer as "cumulativeDelayDays",
+              coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
+              'Bidding details' as "focusSection",
+              'rfpVettingApprovalDate' as "focusTarget",
+              null::text as "biddingBreakupKey"
+            from files f
+            left join divisions d on d.id = f.division_id
+            ${appendReportWhereClause(whereSql, [
+              `not ${isCancelledExpression()}`,
+              `not (${fileClosedExpression()})`,
+              `not ${isYesExpression("f.refloat")}`,
+              isYesExpression("f.rfp_vetting"),
+              biddingApplicableExpression(),
+              `${dateCastExpression("f.rfp_vetting_initiation_date")} is not null`,
+              `${dateCastExpression("f.rfp_vetting_approval_date")} is null`,
+              `(current_date - f.rfp_vetting_initiation_date) > ${thresholdPlaceholder}::integer`,
+            ])}`,
+        ]
+      : [];
+  const refloatRfpVettingSelects =
+    selectedMilestoneKey === "all" || selectedMilestoneKey === "refloatRfpVetting"
+      ? [
+          `select
+              f.id::text as "fileId",
+              coalesce(nullif(f.imms, ''), '') as "fileRef",
+              coalesce(d.name, '') as division,
+              coalesce(f.indentor, '') as indentor,
+              coalesce(f.demand_description, '') as description,
+              'refloatRfpVetting' as "milestoneKey",
+              'Refloat RFP Vetting' as milestone,
+              f.refloat_rfp_vetting_initiation_date::text as "stageStartDate",
+              (current_date - f.refloat_rfp_vetting_initiation_date)::integer as "daysInStage",
+              null::integer as "cumulativeDelayDays",
+              coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
+              'Bidding details' as "focusSection",
+              'refloatRfpVettingApprovalDate' as "focusTarget",
+              null::text as "biddingBreakupKey"
+            from files f
+            left join divisions d on d.id = f.division_id
+            ${appendReportWhereClause(whereSql, [
+              `not ${isCancelledExpression()}`,
+              `not (${fileClosedExpression()})`,
+              isYesExpression("f.refloat"),
+              isYesExpression("f.refloat_rfp_vetting"),
+              biddingApplicableExpression(true),
+              `${dateCastExpression("f.refloat_rfp_vetting_initiation_date")} is not null`,
+              `${dateCastExpression("f.refloat_rfp_vetting_approval_date")} is null`,
+              `(current_date - f.refloat_rfp_vetting_initiation_date) > ${thresholdPlaceholder}::integer`,
+            ])}`,
+        ]
       : [];
   const financialSanctionFileSelects =
     selectedMilestoneKey === "all" || selectedMilestoneKey === "financialSanction"
@@ -5846,7 +6008,10 @@ async function loadDelayRows(
   const selects = [
     ...workflowNotStartedSelects,
     ...fileSelects,
+    ...prePostTcecSelects,
     ...gemUndertakingSelects,
+    ...rfpVettingSelects,
+    ...refloatRfpVettingSelects,
     ...biddingFileSelects,
     ...nonTcecTechnicalEvaluationSelects,
     ...financialSanctionFileSelects,
@@ -5887,7 +6052,7 @@ async function loadDelayRows(
   );
 }
 
-function getDelaySummary(rows: DelayStatusRow[], selectedMilestoneKey: string) {
+function getDelaySummary(rows: DelayStatusRow[]) {
   const totalDays = rows.reduce((sum, row) => sum + row.daysInStage, 0);
   const counts = new Map<
     string,
@@ -5904,24 +6069,6 @@ function getDelaySummary(rows: DelayStatusRow[], selectedMilestoneKey: string) {
     current.fileIds.add(row.fileId);
     counts.set(row.milestoneKey, current);
   });
-  if (selectedMilestoneKey === "all") {
-    if (!counts.has("gemUndertaking")) {
-      counts.set("gemUndertaking", {
-        key: "gemUndertaking",
-        label: "GeM Undertaking",
-        caseCount: 0,
-        fileIds: new Set<string>(),
-      });
-    }
-    if (!counts.has("bidding")) {
-      counts.set("bidding", {
-        key: "bidding",
-        label: "Bidding",
-        caseCount: 0,
-        fileIds: new Set<string>(),
-      });
-    }
-  }
   return {
     averageDays: rows.length ? Math.round(totalDays / rows.length) : 0,
     longestDays: rows.reduce((max, row) => Math.max(max, row.daysInStage), 0),
@@ -6144,7 +6291,8 @@ reportsRouter.put(
     const advancePaymentDateUpdates = Array.isArray(record.advancePaymentDateUpdates)
       ? record.advancePaymentDateUpdates
       : [];
-    const canSaveSettings = canSaveCashOutGoPlanSettings(user);
+    const canSaveSettings =
+      canSaveCashOutGoPlanSettings(user) && record.saveSettings !== false;
     const existingSettings = canSaveSettings ? undefined : await loadCashOutGoPlanSettings(scopeKey);
     const settingsForRows: CashOutGoPlanSettings = existingSettings ?? {
       billOffsetDays: submittedBillOffsetDays,
@@ -6388,7 +6536,7 @@ reportsRouter.put(
     const client = await pool.connect();
     try {
       await client.query("begin");
-      if (canSavePreSoStageOffsets(user)) {
+      if (record.saveStageOffsets !== false && canSavePreSoStageOffsets(user)) {
         await client.query("delete from pre_so_cash_outgo_stage_offsets where scope_key = $1", [
           scopeKey,
         ]);
@@ -6646,9 +6794,10 @@ async function buildReportsSummarySql({
     monthWiseCompletedDeliveries: [],
     monthWiseBgExpiry: [],
     bgReceiptDelayRows: [],
+    bgCustodyCounts: { psb: 0, pwb: 0, psbpwb: 0 },
     warrantyBgMismatchRows: [],
     delayRows,
-    delaySummary: getDelaySummary(delayRows, delayMilestone),
+    delaySummary: getDelaySummary(delayRows),
     delayMilestoneOptions,
   };
 }

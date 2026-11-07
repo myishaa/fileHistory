@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { pool } from "../db/pool.js";
 import type { Division } from "../types.js";
+import { isQaLabelSql, visibleFileSql } from "../utils/qa-data.js";
 import {
   canUseAllDivisions,
   requireAdmin,
@@ -167,6 +168,8 @@ divisionsRouter.get(
        left join division_year_allocations a
          on a.division_id = d.id and a.financial_year = $1
        where d.archived_at is null
+         and lower(trim(coalesce(d.name, ''))) <> 'trial'
+         and not ${isQaLabelSql("d.name")}
          and coalesce(a.active, true) = true
        order by d.name asc`,
       [financialYear],
@@ -202,6 +205,8 @@ divisionsRouter.get(
              on a.division_id = d.id and a.financial_year = $1
            where ($2::boolean or coalesce(a.active, false))
              and ($3::boolean or d.archived_at is null)
+             and lower(trim(coalesce(d.name, ''))) <> 'trial'
+             and not ${isQaLabelSql("d.name")}
            order by d.name asc`,
           [financialYear, includeInactive, includeArchived],
         );
@@ -396,6 +401,7 @@ divisionsRouter.post(
              select f.id, f.division_id
              from files f
              where f.archived_at is null
+               and ${visibleFileSql("f")}
                and f.division_id = any($2::uuid[])
                and (
                  f.year = $1
@@ -668,6 +674,7 @@ divisionsRouter.post(
            select f.id, f.division_id
            from files f
            where f.archived_at is null
+             and ${visibleFileSql("f")}
              and f.division_id = $2
              and f.indentor = any($3::text[])
              and (
@@ -863,6 +870,8 @@ divisionsRouter.get(
        left join division_year_allocations a
          on a.division_id = d.id and a.financial_year = $1
        where d.archived_at is not null
+         and lower(trim(coalesce(d.name, ''))) <> 'trial'
+         and not ${isQaLabelSql("d.name")}
        order by d.archived_at desc, d.name asc`,
       [financialYear],
     );

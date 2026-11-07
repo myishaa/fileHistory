@@ -6,10 +6,18 @@ import {
   useRouter,
   useNavigate,
   useRouterState,
+  useBlocker,
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { type CSSProperties, type FormEvent, useEffect, useState } from "react";
+import {
+  type CSSProperties,
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import appCss from "../styles.css?url";
 import { chartColorVariables } from "@/lib/chart-colors";
@@ -17,6 +25,12 @@ import { TopBar } from "@/components/top-bar";
 import { UrgentMessagePrompt } from "@/components/urgent-messages";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
+import { defaultAppFontScale, normalizeAppFontScale } from "@/lib/font-scale";
+import {
+  getUnsavedChangesSnapshot,
+  hasUnsavedChanges,
+  subscribeToUnsavedChanges,
+} from "@/lib/unsaved-changes";
 
 function NotFoundComponent() {
   return (
@@ -132,13 +146,31 @@ function RootShell({ children }: { children: React.ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
+  const unsavedChanges = useSyncExternalStore(
+    subscribeToUnsavedChanges,
+    getUnsavedChangesSnapshot,
+    () => false,
+  );
+  const shouldBlockNavigation = useCallback(() => hasUnsavedChanges(), []);
+  const navigationBlocker = useBlocker({
+    shouldBlockFn: ({ current, next }) =>
+      hasUnsavedChanges() &&
+      (current.pathname !== next.pathname ||
+        (current.pathname === "/add" &&
+          (current.search as { fileId?: unknown }).fileId !==
+            (next.search as { fileId?: unknown }).fileId)),
+    enableBeforeUnload: shouldBlockNavigation,
+    withResolver: true,
+  });
   const settings = useSettings();
   const activeUser = useActiveUser();
   const storeStatus = useStoreStatus();
+  const fontScale = normalizeAppFontScale(settings.fontScale ?? defaultAppFontScale);
   const [filterScopeWarningActive, setFilterScopeWarningActive] = useState(false);
-  const [noticeBoardRotationActive, setNoticeBoardRotationActive] = useState(() =>
-    typeof document !== "undefined" &&
-    document.documentElement.dataset.noticeBoardRotation === "active",
+  const [noticeBoardRotationActive, setNoticeBoardRotationActive] = useState(
+    () =>
+      typeof document !== "undefined" &&
+      document.documentElement.dataset.noticeBoardRotation === "active",
   );
   const themeClass = settings.theme === "dark" ? "dark" : "";
   const tintClass = `theme-tint-${settings.themeTint}`;
@@ -159,6 +191,13 @@ function RootComponent() {
     !isPublicLivePage &&
     !activeUser &&
     (!storeStatus.authChecked || storeStatus.loading || Boolean(storeStatus.error));
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = `${fontScale}%`;
+    return () => {
+      document.documentElement.style.removeProperty("font-size");
+    };
+  }, [fontScale]);
 
   useEffect(() => {
     const updateWarning = (event: Event) => {
@@ -189,6 +228,7 @@ function RootComponent() {
           `${themeClass} ${tintClass} ${fontClass} min-h-screen w-full overflow-x-clip overflow-y-auto overscroll-x-none text-foreground ` +
           (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
         }
+        data-font-scale={fontScale}
         style={
           {
             "--chart-bar-color":
@@ -254,6 +294,44 @@ function RootComponent() {
         ) : (
           <LoginScreen />
         )}
+        {unsavedChanges && navigationBlocker.status === "blocked" ? (
+          <div
+            className="fixed inset-0 z-[100] grid place-items-center bg-foreground/35 p-4"
+            role="presentation"
+          >
+            <section
+              aria-labelledby="unsaved-changes-title"
+              aria-describedby="unsaved-changes-description"
+              aria-modal="true"
+              role="alertdialog"
+              className="w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-[var(--shadow-elevated)]"
+            >
+              <h2 id="unsaved-changes-title" className="text-lg font-semibold">
+                Unsaved changes
+              </h2>
+              <p id="unsaved-changes-description" className="mt-2 text-sm text-muted-foreground">
+                You have changes that haven’t been saved. If you leave this page, those changes
+                will be lost.
+              </p>
+              <div className="mt-6 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={navigationBlocker.reset}
+                  className="h-9 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent"
+                >
+                  Stay on this page
+                </button>
+                <button
+                  type="button"
+                  onClick={navigationBlocker.proceed}
+                  className="h-9 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90"
+                >
+                  Leave without saving
+                </button>
+              </div>
+            </section>
+          </div>
+        ) : null}
       </div>
     </QueryClientProvider>
   );
@@ -329,13 +407,15 @@ function LoginScreen() {
   };
 
   return (
-    <main className="grid min-h-screen place-items-center bg-background px-4">
+    <main className="login-screen grid min-h-screen place-items-center bg-background px-4">
       <form
         onSubmit={submit}
         className="w-full max-w-[476px] rounded-lg border border-border bg-card p-5 shadow-[var(--shadow-card)]"
       >
         <div className="mb-5">
-          <h1 className="text-lg font-semibold sm:whitespace-nowrap">MMG (BU), Advanced Systems Laboratory</h1>
+          <h1 className="text-lg font-semibold sm:whitespace-nowrap">
+            MMG (BU), Advanced Systems Laboratory
+          </h1>
           <p className="mt-1 text-sm text-muted-foreground">Your IP address is {ipAddress}</p>
         </div>
         <div className="mb-4 grid grid-cols-2 gap-2 rounded-md border border-border bg-secondary/30 p-1">

@@ -27,13 +27,16 @@ const tcecExportFields = new Set([
   "refloatPostTcecMinutesDate", "refloatPostTcecCommitteeNo",
 ]);
 const refloatExportFields = new Set([
-  "refloatPreBidMeeting", "refloatPreBidMeetingDate", "refloatBiddingDate",
+  "refloatGemBiddingMode", "refloatGemUndertakingDate", "refloatRfpVetting",
+  "refloatRfpVettingInitiationDate", "refloatRfpVettingApprovalDate", "refloatBidNumber",
+  "refloatTenderLive", "refloatBidOpened", "refloatPreBidMeeting", "refloatPreBidMeetingDate", "refloatBiddingDate",
   "refloatBidOpeningDate", "refloatPostTcecDate", "refloatPostTcecMinutesDate",
   "refloatPostTcecCommitteeNo", "refloatRecommendationDate", "refloatBiddingStageOver",
 ]);
 const biddingDetailExportFields = new Set([
   "preBidMeetingDate", "bidNumber", "bidDate", "bidOpeningDate", "tenderLive",
-  "bidOpened", "refloatPreBidMeeting", "refloatPreBidMeetingDate", "refloatBiddingDate",
+  "bidOpened", "refloatBidNumber", "refloatTenderLive", "refloatBidOpened",
+  "refloatPreBidMeeting", "refloatPreBidMeetingDate", "refloatBiddingDate",
   "refloatBidOpeningDate", "rst", "biddingStageOver", "refloatBiddingStageOver",
 ]);
 const psbExportFields = new Set([
@@ -73,13 +76,18 @@ export function isQuickEntryExportFieldApplicable(
   if ((key === "adSentDate" || key === "adVettingDate") && !isYes(file.ad)) return false;
   if ((key === "rqaSentDate" || key === "rqaApprovalDate") && !isYes(file.rqa)) return false;
   if ((key === "ifaSentDate" || key === "ifaFinalDate") && !isYes(file.ifa)) return false;
+  if ((key === "gemBiddingMode" || key === "gemUndertakingDate") && !isYes(file.gem)) return false;
   if (
-    (key === "gemBiddingMode" || key === "gemUndertakingDate" || key === "refloatGemUndertakingDate") &&
-    !isYes(file.gem)
+    (key === "refloatGemBiddingMode" || key === "refloatGemUndertakingDate") &&
+    (!isYes(file.gem) || !isYes(file.refloat))
   ) return false;
-  if (key === "refloatGemUndertakingDate" && !isYes(file.refloat)) return false;
+  if (key === "refloatRfpVetting" && !isYes(file.refloat)) return false;
+  if (
+    (key === "refloatRfpVettingInitiationDate" || key === "refloatRfpVettingApprovalDate") &&
+    (!isYes(file.refloat) || !isYes(file.refloatRfpVetting))
+  ) return false;
   if (key === "refloatRecommendationDate" && (!isYes(file.refloat) || isYes(file.tcec))) return false;
-  if (key === "refloatBiddingStageOver" && (!isYes(file.refloat) || isYes(file.tcec))) return false;
+  if (key === "refloatBiddingStageOver" && !isYes(file.refloat)) return false;
   if ((key === "rfpVettingInitiationDate" || key === "rfpVettingApprovalDate") && !isYes(file.rfpVetting)) return false;
 
   if (psbExportFields.has(key)) {

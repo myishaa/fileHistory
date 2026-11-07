@@ -281,7 +281,9 @@ export function isSupplyOrderMilestoneCurrent(
     isSupplyOrderMilestoneApplicable(file, order, normalized);
   if (normalized === "financialsanction")
     return isFinancialSanctionPendingOrder(file, order) || storedCurrent;
-  if (normalized === "supplyorder") return isSupplyOrderPendingOrder(order) || storedCurrent;
+  if (normalized === "supplyorder") {
+    return isSupplyOrderPendingOrder(order) && storedCurrent;
+  }
   if (normalized === "deliveryperiod") return isDeliveryPeriodCurrentOrder(file, order);
   if (normalized === "billreturnedforcorrection") return hasOpenBillReturn(order) || storedCurrent;
   if (normalized === "jobcompletion") return isJobCompletionCurrentOrder(file, order);
@@ -299,6 +301,17 @@ export function isSupplyOrderMilestoneCurrent(
   }
   if (normalized === "payment") return isPaymentCurrentOrder(file, order) || storedCurrent;
   return storedCurrent;
+}
+
+export function isSupplyOrderAtPreviousStage(file: FileRecord, order: SupplyOrderDetail) {
+  return (
+    !isYes(file.demandCancelled) &&
+    !isYes(order.soCancelled) &&
+    normalizeMilestoneName(order.currentMilestone) === "financialsanction" &&
+    isSupplyOrderMilestoneApplicable(file, order, "financialsanction") &&
+    !isFinancialSanctionCompletedOrder(order) &&
+    !isSupplyOrderComplete(order)
+  );
 }
 
 export function isValidDeliveryPeriodEntry(file: FileRecord, order: SupplyOrderDetail) {
@@ -461,6 +474,7 @@ function getAdvancePaymentOrder(order: SupplyOrderDetail): SupplyOrderDetail | u
 
 function hasFilledObjectValue(value: Record<string, unknown>): boolean {
   return Object.entries(value).some(([key, item]) => {
+    if (key === "id" || key === "includeInPaymentTiming") return false;
     if (Array.isArray(item)) {
       return item.some((row) => hasFilledObjectValue(row as Record<string, unknown>));
     }
@@ -469,6 +483,9 @@ function hasFilledObjectValue(value: Record<string, unknown>): boolean {
     }
     const text = String(item ?? "").trim();
     if (!text) return false;
+    if (key === "bgCoverageType" && ["none", "pwb"].includes(text.toLowerCase())) {
+      return false;
+    }
     return !isDefaultNoField(key, text);
   });
 }
@@ -481,6 +498,7 @@ function isDefaultNoField(key: string, value: string) {
       "demandCancelled",
       "dpExtension",
       "ld",
+      "noFurtherAction",
       "soCancelled",
       "shortclosure",
       "stageDelivery",
@@ -558,7 +576,9 @@ function isJobCompletionWorkflow(file: FileRecord) {
 
 function isFinancialSanctionReached(file: FileRecord) {
   return (
-    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasFilledString(file.cfaDate)) &&
+    (isBiddingApplicableForFile(file)
+      ? isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
+      : hasFilledString(file.cfaDate)) &&
     (!isYes(file.tcec) || hasFilledString(file.cncApprovalDate))
   );
 }

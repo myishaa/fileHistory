@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { raw, Router } from "express";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
 import { constants as fsConstants, createReadStream, createWriteStream } from "node:fs";
 import { promises as fs } from "node:fs";
@@ -10,6 +10,7 @@ import { pool } from "../db/pool.js";
 import type {
   AppSettings,
   AppFontFamily,
+  AppFontScale,
   AppearancePreset,
   FinancialYearStatus,
   AppTheme,
@@ -63,6 +64,7 @@ const protectedBackupVersion = 1;
 const protectedBackupSchemaVersion = 2;
 const fullBackupFormat = "recordkeeper-full-recovery-backup";
 const fullBackupVersion = 1;
+let fullRecoveryRestoreInProgress = false;
 
 type PublicTableSchema = {
   tableName: string;
@@ -119,7 +121,7 @@ function decryptProtectedBackup(envelope: unknown, password: string) {
     ]).toString("utf8");
     return JSON.parse(plaintext) as Record<string, unknown>;
   } catch {
-    throw new HttpError(400, "Backup password is incorrect or the file is damaged.");
+    throw new HttpError(400, "Backup encryption password is incorrect or the file is damaged.");
   }
 }
 
@@ -262,6 +264,205 @@ async function encryptRecoveryArchive(
   await fs.appendFile(outputPath, cipher.getAuthTag());
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function packageRelativePath(packageRoot: string, value: unknown, label: string) {
+  if (typeof value !== "string" || !value.trim() || isAbsolute(value)) {
+    throw new HttpError(400, `Recovery package ${label} path is invalid.`);
+  }
+  const resolved = join(packageRoot, value);
+  if (dirname(resolved) !== packageRoot && !resolved.startsWith(`${packageRoot}/`)) {
+    throw new HttpError(400, `Recovery package ${label} path is invalid.`);
+  }
+  return resolved;
+}
+
+async function decryptRecoveryPackage(
+  encryptedPath: string,
+  archivePath: string,
+  password: string,
+) {
+  const encrypted = await fs.readFile(encryptedPath);
+  const headerEnd = encrypted.indexOf(0x0a);
+  if (headerEnd < 0) throw new HttpError(400, "Recovery package header is missing.");
+  let header: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(encrypted.subarray(0, headerEnd).toString("utf8"));
+    if (!isRecord(parsed)) throw new Error("header is not an object");
+    header = parsed;
+  } catch {
+    throw new HttpError(400, "Recovery package header is invalid.");
+  }
+  if (header.format !== fullBackupFormat || header.version !== fullBackupVersion) {
+    throw new HttpError(400, "Unsupported recovery package format.");
+  }
+  if (typeof header.salt !== "string" || typeof header.iv !== "string") {
+    throw new HttpError(400, "Recovery package encryption metadata is incomplete.");
+  }
+  const tagLength = 16;
+  if (encrypted.length <= headerEnd + 1 + tagLength) {
+    throw new HttpError(400, "Recovery package is empty.");
+  }
+  const ciphertext = encrypted.subarray(headerEnd + 1, encrypted.length - tagLength);
+  const tag = encrypted.subarray(encrypted.length - tagLength);
+  try {
+    const decipher = createDecipheriv(
+      "aes-256-gcm",
+      scryptSync(password, Buffer.from(header.salt, "base64"), 32),
+      Buffer.from(header.iv, "base64"),
+    );
+    decipher.setAuthTag(tag);
+    const archive = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    await fs.writeFile(archivePath, archive, { mode: 0o600 });
+  } catch {
+    throw new HttpError(400, "Recovery PIN is incorrect or the package is damaged.");
+  }
+}
+
+async function validateRecoveryPackage(packageRoot: string) {
+  const manifestPath = join(packageRoot, "manifest.json");
+  let manifest: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8"));
+    if (!isRecord(parsed)) throw new Error("manifest is not an object");
+    manifest = parsed;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, "Recovery package manifest is missing or invalid.");
+  }
+  if (manifest.format !== fullBackupFormat || manifest.version !== fullBackupVersion) {
+    throw new HttpError(400, "Unsupported recovery package manifest.");
+  }
+  const checksums = manifest.checksums;
+  if (!isRecord(checksums)) throw new HttpError(400, "Recovery package checksums are missing.");
+  for (const [fileName, expected] of Object.entries(checksums)) {
+    const filePath = packageRelativePath(packageRoot, fileName, "checksum");
+    if (typeof expected !== "string" || !/^[a-f0-9]{64}$/i.test(expected)) {
+      throw new HttpError(400, `Recovery package checksum for ${fileName} is invalid.`);
+    }
+    const actual = await sha256File(filePath).catch(() => null);
+    if (!actual || actual.toLowerCase() !== expected.toLowerCase()) {
+      throw new HttpError(400, `Recovery package checksum failed for ${fileName}.`);
+    }
+  }
+  const requiredFields = ["databaseDump", "postgresGlobals", "applicationBackup"] as const;
+  for (const field of requiredFields) {
+    const filePath = packageRelativePath(packageRoot, manifest[field], field);
+    const stat = await fs.stat(filePath).catch(() => undefined);
+    if (!stat?.isFile()) throw new HttpError(400, `Recovery package ${field} is missing.`);
+  }
+  return manifest;
+}
+
+async function restoreConfiguredExternalStorage(
+  packageRoot: string,
+  manifest: Record<string, unknown>,
+) {
+  const archiveReference = manifest.externalStorage;
+  if (!archiveReference) {
+    return { restored: false, warning: null as string | null };
+  }
+  const externalStorageDir = process.env.EXTERNAL_STORAGE_DIR?.trim();
+  if (!externalStorageDir) {
+    return {
+      restored: false,
+      warning: "The package contains external storage, but EXTERNAL_STORAGE_DIR is not configured on this server.",
+    };
+  }
+  const archivePath = packageRelativePath(packageRoot, archiveReference, "external storage");
+  const archiveStat = await fs.stat(archivePath).catch(() => undefined);
+  if (!archiveStat?.isFile()) throw new HttpError(400, "Recovery package external storage archive is missing.");
+  const targetName = basename(externalStorageDir);
+  const targetParent = dirname(externalStorageDir);
+  if (!targetName || targetName === "." || externalStorageDir === "/") {
+    throw new HttpError(503, "EXTERNAL_STORAGE_DIR is not a safe restore directory.");
+  }
+  await fs.mkdir(targetParent, { recursive: true });
+  const stagingRoot = join(targetParent, `.${targetName}.restore-${randomBytes(6).toString("hex")}`);
+  const rollbackPath = join(targetParent, `.${targetName}.previous-${randomBytes(6).toString("hex")}`);
+  let movedCurrent = false;
+  try {
+    await fs.mkdir(stagingRoot, { recursive: true, mode: 0o700 });
+    await runBackupCommand(
+      process.env.TAR_PATH?.trim() || "tar",
+      ["-xzf", archivePath, "--no-absolute-names", "--no-same-owner", "-C", stagingRoot],
+      "External storage restore",
+    );
+    const stagedStorage = join(stagingRoot, targetName);
+    const stagedStat = await fs.stat(stagedStorage).catch(() => undefined);
+    if (!stagedStat?.isDirectory()) {
+      throw new HttpError(400, "Recovery package external storage archive has an unexpected directory.");
+    }
+    const currentStat = await fs.stat(externalStorageDir).catch(() => undefined);
+    if (currentStat) {
+      await fs.rename(externalStorageDir, rollbackPath);
+      movedCurrent = true;
+    }
+    await fs.rename(stagedStorage, externalStorageDir);
+    if (movedCurrent) await fs.rm(rollbackPath, { recursive: true, force: true });
+    return { restored: true, warning: null as string | null };
+  } catch (error) {
+    if (movedCurrent) {
+      await fs.rm(externalStorageDir, { recursive: true, force: true }).catch(() => undefined);
+      await fs.rename(rollbackPath, externalStorageDir).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function restoreConfiguredDeploymentFiles(
+  packageRoot: string,
+  manifest: Record<string, unknown>,
+) {
+  const warnings: string[] = [];
+  const files = [
+    {
+      manifestField: "deploymentConfig",
+      environmentField: "RECORDKEEPER_BACKUP_CONFIG_FILE",
+      label: "deployment configuration",
+    },
+    {
+      manifestField: "deploymentSecrets",
+      environmentField: "RECORDKEEPER_BACKUP_SECRETS_FILE",
+      label: "deployment secrets",
+    },
+  ] as const;
+
+  for (const file of files) {
+    const sourceReference = manifest[file.manifestField];
+    if (!sourceReference) continue;
+    const targetPath = process.env[file.environmentField]?.trim();
+    if (!targetPath) {
+      warnings.push(
+        `The package contains ${file.label}, but ${file.environmentField} is not configured on this server.`,
+      );
+      continue;
+    }
+    if (!isAbsolute(targetPath)) {
+      warnings.push(`${file.environmentField} must be an absolute path; ${file.label} was not restored.`);
+      continue;
+    }
+    const sourcePath = packageRelativePath(packageRoot, sourceReference, file.label);
+    const sourceStat = await fs.stat(sourcePath).catch(() => undefined);
+    if (!sourceStat?.isFile()) throw new HttpError(400, `Recovery package ${file.label} is missing.`);
+    const targetDirectory = dirname(targetPath);
+    await fs.mkdir(targetDirectory, { recursive: true, mode: 0o700 });
+    const stagedTarget = `${targetPath}.restore-${randomBytes(6).toString("hex")}`;
+    try {
+      await fs.copyFile(sourcePath, stagedTarget);
+      await fs.chmod(stagedTarget, 0o600);
+      await fs.rename(stagedTarget, targetPath);
+    } finally {
+      await fs.rm(stagedTarget, { force: true }).catch(() => undefined);
+    }
+  }
+  return warnings;
+}
+
 async function readPublicTableSchema(query: QueryRunner): Promise<PublicTableSchema[]> {
   const result = await query(`
     select t.table_name, c.column_name
@@ -342,8 +543,11 @@ function ensureProtectedBackupAuthorizationSchema() {
       create table if not exists protected_backup_settings (
         id boolean primary key default true check (id),
         restore_authorization_password_hash text not null default '',
+        restore_authorization_recovery_pin_hash text not null default '',
         updated_at timestamptz not null default now()
       );
+      alter table protected_backup_settings
+        add column if not exists restore_authorization_recovery_pin_hash text not null default '';
       insert into protected_backup_settings (id)
       values (true)
       on conflict (id) do nothing;
@@ -354,6 +558,7 @@ function ensureProtectedBackupAuthorizationSchema() {
 
 const maxRestoreAuthorizationPasswordLength = 128;
 const minRestoreAuthorizationPasswordLength = 8;
+const restoreAuthorizationRecoveryPinLength = 6;
 
 function readRestoreAuthorizationPassword(value: unknown, fieldName: string) {
   if (typeof value !== "string" || !value.trim()) {
@@ -374,18 +579,36 @@ function readRestoreAuthorizationPassword(value: unknown, fieldName: string) {
   return value;
 }
 
+function readRestoreAuthorizationRecoveryPin(value: unknown, fieldName: string) {
+  if (typeof value !== "string" || !/^\d{6}$/.test(value)) {
+    throw new HttpError(
+      400,
+      `${fieldName} must be exactly ${restoreAuthorizationRecoveryPinLength} numeric digits.`,
+    );
+  }
+  return value;
+}
+
 async function saveRestoreAuthorizationPassword(
   currentPasswordValue: unknown,
   passwordValue: unknown,
   confirmationValue: unknown,
+  recoveryPinValue: unknown,
+  recoveryPinConfirmationValue: unknown,
 ) {
-  const password = readRestoreAuthorizationPassword(passwordValue, "Restore authorization password");
-  const confirmation = readRestoreAuthorizationPassword(
-    confirmationValue,
-    "Confirm restore authorization password",
+  const passwordDraftProvided =
+    (typeof passwordValue === "string" && passwordValue.length > 0) ||
+    (typeof confirmationValue === "string" && confirmationValue.length > 0);
+  const recoveryPin = readRestoreAuthorizationRecoveryPin(
+    recoveryPinValue,
+    "Upload password Recovery PIN",
   );
-  if (password !== confirmation) {
-    throw new HttpError(400, "Restore authorization passwords do not match.");
+  const recoveryPinConfirmation = readRestoreAuthorizationRecoveryPin(
+    recoveryPinConfirmationValue,
+    "Confirm Upload password Recovery PIN",
+  );
+  if (recoveryPin !== recoveryPinConfirmation) {
+    throw new HttpError(400, "Upload password Recovery PINs do not match.");
   }
   await ensureProtectedBackupAuthorizationSchema();
   const existing = await pool.query<{ password_hash: string }>(
@@ -397,21 +620,50 @@ async function saveRestoreAuthorizationPassword(
   if (currentHash) {
     const currentPassword = readRestoreAuthorizationPassword(
       currentPasswordValue,
-      "Current restore authorization password",
+      "Current Upload password",
     );
     const verification = await pool.query<{ valid: boolean }>(
       `select $1 = crypt($2, $1) as valid`,
       [currentHash, currentPassword],
     );
     if (!verification.rows[0]?.valid) {
-      throw new HttpError(403, "Current restore authorization password is incorrect.");
+      throw new HttpError(403, "Current Upload password is incorrect.");
+    }
+  } else if (!passwordDraftProvided) {
+    throw new HttpError(400, "Set an Upload password before saving the Recovery PIN.");
+  }
+
+  let password: string | undefined;
+  if (passwordDraftProvided) {
+    password = readRestoreAuthorizationPassword(passwordValue, "Upload password");
+    const confirmation = readRestoreAuthorizationPassword(
+      confirmationValue,
+      "Confirm Upload password",
+    );
+    if (password !== confirmation) {
+      throw new HttpError(400, "Upload passwords do not match.");
     }
   }
+  if (password) {
+    await setRestoreAuthorizationCredentials(password, recoveryPin);
+  } else {
+    await pool.query(
+      `update protected_backup_settings
+       set restore_authorization_recovery_pin_hash = crypt($1, gen_salt('bf')), updated_at = now()
+       where id = true`,
+      [recoveryPin],
+    );
+  }
+}
+
+async function setRestoreAuthorizationCredentials(password: string, recoveryPin: string) {
   await pool.query(
     `update protected_backup_settings
-     set restore_authorization_password_hash = crypt($1, gen_salt('bf')), updated_at = now()
+     set restore_authorization_password_hash = crypt($1, gen_salt('bf')),
+         restore_authorization_recovery_pin_hash = crypt($2, gen_salt('bf')),
+         updated_at = now()
      where id = true`,
-    [password],
+    [password, recoveryPin],
   );
 }
 
@@ -425,10 +677,20 @@ async function restoreAuthorizationPasswordIsConfigured() {
   return result.rows[0]?.configured ?? false;
 }
 
+async function restoreAuthorizationRecoveryPinIsConfigured() {
+  await ensureProtectedBackupAuthorizationSchema();
+  const result = await pool.query<{ configured: boolean }>(
+    `select restore_authorization_recovery_pin_hash <> '' as configured
+     from protected_backup_settings
+     where id = true`,
+  );
+  return result.rows[0]?.configured ?? false;
+}
+
 async function verifyRestoreAuthorizationPassword(passwordValue: unknown) {
   const password = readRestoreAuthorizationPassword(
     passwordValue,
-    "Restore authorization password",
+    "Upload password",
   );
   await ensureProtectedBackupAuthorizationSchema();
   const result = await pool.query<{ configured: boolean; valid: boolean }>(
@@ -443,11 +705,11 @@ async function verifyRestoreAuthorizationPassword(passwordValue: unknown) {
   if (!result.rows[0]?.configured) {
     throw new HttpError(
       400,
-      "Set a restore authorization password in Protected Backup settings before restoring.",
+      "Set an Upload password in Protected Backup settings before restoring.",
     );
   }
   if (!result.rows[0].valid) {
-    throw new HttpError(403, "Incorrect restore authorization password.");
+    throw new HttpError(403, "Incorrect Upload password.");
   }
 }
 
@@ -594,6 +856,7 @@ const appearancePresets = new Set<AppearancePreset>([
   "midnightIndigo",
 ]);
 const appFontFamilies = new Set<AppFontFamily>(["inter", "manrope", "sourceSans", "nunito"]);
+const appFontScales = new Set<AppFontScale>([90, 100, 110, 125, 140, 150, 160]);
 const defaultChartColorOrder = [
   "#0f766e",
   "#2563eb",
@@ -686,6 +949,7 @@ type UserUiPreferencesRow = {
   theme_tint: AppThemeTint | null;
   appearance_preset: AppearancePreset | null;
   font_family: AppFontFamily | null;
+  font_scale: AppFontScale | null;
   top_ribbon_color: TopRibbonColor | null;
   top_ribbon_text_color: TopRibbonTextColor | null;
   chart_bar_color: string | null;
@@ -695,9 +959,15 @@ type UserUiPreferencesRow = {
 
 const defaultFirmRatingConfig: FirmRatingConfig = {
   fields: [
-    { id: "delivery", label: "Delivery", weight: "1" },
-    { id: "quality", label: "Quality", weight: "1" },
-    { id: "afterSalesService", label: "After Sales Service", weight: "1" },
+    { id: "delivery", label: "Delivery", weight: "1", minValue: "0", maxValue: "5" },
+    { id: "quality", label: "Quality", weight: "1", minValue: "0", maxValue: "5" },
+    {
+      id: "afterSalesService",
+      label: "After Sales Service",
+      weight: "1",
+      minValue: "0",
+      maxValue: "5",
+    },
   ],
 };
 
@@ -1121,6 +1391,7 @@ async function ensureUserUiPreferencesTable() {
        font_family text check (
          font_family in ('inter', 'manrope', 'sourceSans', 'nunito')
        ),
+       font_scale integer check (font_scale in (90, 100, 110, 125, 140, 150, 160)),
        top_ribbon_color text check (
          top_ribbon_color in ('navy', 'teal', 'charcoal', 'maroon', 'indigo', 'gold', 'warmGold', 'black')
        ),
@@ -1188,16 +1459,40 @@ async function ensureUserUiPreferencesTable() {
      end $$;`,
   );
   await pool.query(
+    `do $$
+     declare constraint_definition text;
+     begin
+       select pg_get_constraintdef(c.oid)
+       into constraint_definition
+       from pg_constraint c
+       join pg_class t on t.oid = c.conrelid
+       where t.relname = 'user_ui_preferences'
+         and c.conname = 'user_ui_preferences_font_scale_check';
+       if constraint_definition is null then
+         alter table user_ui_preferences
+           add constraint user_ui_preferences_font_scale_check
+           check (font_scale in (90, 100, 110, 125, 140, 150, 160));
+       elsif position('150' in constraint_definition) = 0 or position('160' in constraint_definition) = 0 then
+         alter table user_ui_preferences
+           drop constraint user_ui_preferences_font_scale_check;
+         alter table user_ui_preferences
+           add constraint user_ui_preferences_font_scale_check
+           check (font_scale in (90, 100, 110, 125, 140, 150, 160));
+       end if;
+     end $$;`,
+  );
+  await pool.query(
     "alter table user_ui_preferences add column if not exists appearance_preset text",
   );
   await pool.query("alter table user_ui_preferences add column if not exists font_family text");
+  await pool.query("alter table user_ui_preferences add column if not exists font_scale integer");
 }
 
 async function loadUserUiPreferences(userId: string) {
   await ensureUserUiPreferencesTable();
   return getCached(`settings:ui-preferences:${userId}`, cacheTtl.settingsMs, async () => {
     const result = await pool.query<UserUiPreferencesRow>(
-      "select theme, theme_tint, appearance_preset, font_family, top_ribbon_color, top_ribbon_text_color, chart_bar_color, chart_color_order, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
+      "select theme, theme_tint, appearance_preset, font_family, font_scale, top_ribbon_color, top_ribbon_text_color, chart_bar_color, chart_color_order, add_edit_ribbon_fields from user_ui_preferences where user_id = $1",
       [userId],
     );
     return result.rows[0];
@@ -1337,6 +1632,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     themeTint: uiPreferences?.theme_tint ?? row.theme_tint,
     appearancePreset: uiPreferences?.appearance_preset ?? null,
     fontFamily: uiPreferences?.font_family ?? null,
+    fontScale: uiPreferences?.font_scale ?? 100,
     topRibbonColor: uiPreferences?.top_ribbon_color ?? null,
     topRibbonTextColor: uiPreferences?.top_ribbon_text_color ?? null,
     chartBarColor:
@@ -1578,6 +1874,17 @@ function readFontFamily(value: unknown) {
     throw new HttpError(400, "fontFamily is invalid.");
   }
   return value as AppFontFamily;
+}
+
+function readFontScale(value: unknown) {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    !appFontScales.has(value as AppFontScale)
+  ) {
+    throw new HttpError(400, "fontScale is invalid.");
+  }
+  return value as AppFontScale;
 }
 
 function readChartBarColor(value: unknown) {
@@ -1873,10 +2180,14 @@ async function assertGemBiddingModesCanChange(nextModes: string[]) {
   await assertRemovedValuesUnused(
     "GeM bidding modes",
     removed,
-    `select trim(gem_bidding_mode) as value, count(*)::text as count
-     from files
-     where lower(trim(coalesce(gem_bidding_mode, ''))) = any($1::text[])
-     group by trim(gem_bidding_mode)`,
+    `select trim(value) as value, count(distinct file_id)::text as count
+     from (
+       select id as file_id, trim(gem_bidding_mode) as value from files
+       union all
+       select id as file_id, trim(refloat_gem_bidding_mode) as value from files
+     ) used
+     where lower(trim(coalesce(value, ''))) = any($1::text[])
+     group by trim(value)`,
   );
 }
 
@@ -1988,10 +2299,16 @@ function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
         .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
     const weightText = toDbText(candidate.weight);
     const parsedWeight = Number.parseFloat(weightText ?? "");
+    const minText = toDbText(candidate.minValue);
+    const maxText = toDbText(candidate.maxValue);
+    const parsedMin = Number(minText ?? "0");
+    const parsedMax = Number(maxText ?? "5");
     result.push({
       id,
       label,
       weight: Number.isFinite(parsedWeight) && parsedWeight > 0 ? String(parsedWeight) : "1",
+      minValue: Number.isFinite(parsedMin) ? String(parsedMin) : "0",
+      maxValue: Number.isFinite(parsedMax) ? String(parsedMax) : "5",
     });
     return result;
   }, []);
@@ -2017,6 +2334,7 @@ async function replaceUserUiPreferences(
     themeTint?: AppThemeTint;
     appearancePreset?: AppearancePreset | null;
     fontFamily?: AppFontFamily | null;
+    fontScale?: AppFontScale;
     topRibbonColor?: TopRibbonColor | null;
     topRibbonTextColor?: TopRibbonTextColor | null;
     chartBarColor?: string;
@@ -2042,6 +2360,7 @@ async function replaceUserUiPreferences(
   if ("appearancePreset" in preferences)
     add("appearance_preset", preferences.appearancePreset ?? null);
   if ("fontFamily" in preferences) add("font_family", preferences.fontFamily ?? null);
+  if ("fontScale" in preferences) add("font_scale", preferences.fontScale ?? 100);
   if ("topRibbonColor" in preferences) add("top_ribbon_color", preferences.topRibbonColor ?? null);
   if ("topRibbonTextColor" in preferences)
     add("top_ribbon_text_color", preferences.topRibbonTextColor ?? null);
@@ -2091,7 +2410,7 @@ settingsRouter.post(
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
     const password = requireString(body.password, "password");
-    if (password.length < 8) throw new HttpError(400, "Backup password must be at least 8 characters.");
+    if (password.length < 8) throw new HttpError(400, "Backup encryption password must be at least 8 characters.");
     const runId = await beginBackupRun("local", user.id);
     try {
       const { envelope, schema, rowCount, createdAt } = await buildProtectedBackupEnvelope(user, password);
@@ -2111,7 +2430,7 @@ settingsRouter.post(
       response.json(envelope);
     } catch (error) {
       await finishBackupRun(runId, "failed", {
-        errorMessage: error instanceof Error ? error.message : "Local backup failed.",
+        errorMessage: error instanceof Error ? error.message : "Database backup failed.",
       });
       throw error;
     }
@@ -2303,7 +2622,7 @@ settingsRouter.post(
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
     const password = requireString(body.password, "password");
-    if (password.length < 8) throw new HttpError(400, "Backup password must be at least 8 characters.");
+    if (password.length < 8) throw new HttpError(400, "Backup encryption password must be at least 8 characters.");
     const runId = await beginBackupRun("full_recovery", user.id);
     let packageResult: FullRecoveryPackageResult | undefined;
     try {
@@ -2344,6 +2663,112 @@ settingsRouter.post(
       if (packageResult) {
         await fs.rm(packageResult.temporaryRoot, { recursive: true, force: true });
       }
+    }
+  }),
+);
+
+settingsRouter.post(
+  "/protected-backup/full-restore",
+  raw({ type: "application/octet-stream", limit: Infinity }),
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    if (fullRecoveryRestoreInProgress) {
+      throw new HttpError(409, "A full recovery restore is already in progress.");
+    }
+    const backupFilePassword = requireString(
+      request.header("x-backup-file-password"),
+      "backup encryption password",
+    );
+    const restoreAuthorizationPassword = requireString(
+      request.header("x-restore-authorization-password"),
+      "Upload password",
+    );
+    await verifyRestoreAuthorizationPassword(restoreAuthorizationPassword);
+    if (!Buffer.isBuffer(request.body) || request.body.length === 0) {
+      throw new HttpError(400, "Select a full recovery package first.");
+    }
+    const databaseUrl = process.env.DATABASE_URL?.trim();
+    if (!databaseUrl) throw new HttpError(503, "DATABASE_URL is not configured on the server.");
+
+    fullRecoveryRestoreInProgress = true;
+    let restoreRoot: string | undefined;
+    const warnings: string[] = [];
+    try {
+      restoreRoot = await fs.mkdtemp(join("/tmp", "recordkeeper-full-restore-"));
+      const encryptedPath = join(restoreRoot, "recovery-package.rkdr");
+      const archivePath = join(restoreRoot, "recovery-package.tar.gz");
+      const unpackRoot = join(restoreRoot, "unpacked");
+      await fs.writeFile(encryptedPath, request.body, { mode: 0o600 });
+      await decryptRecoveryPackage(encryptedPath, archivePath, backupFilePassword);
+      await fs.mkdir(unpackRoot, { recursive: true, mode: 0o700 });
+      await runBackupCommand(
+        process.env.TAR_PATH?.trim() || "tar",
+        ["-xzf", archivePath, "--no-absolute-names", "--no-same-owner", "-C", unpackRoot],
+        "Recovery package extraction",
+      );
+      const packageEntries = await fs.readdir(unpackRoot, { withFileTypes: true });
+      const packageDirectories = packageEntries.filter((entry) => entry.isDirectory());
+      if (packageDirectories.length !== 1) {
+        throw new HttpError(400, "Recovery package contains an unexpected archive layout.");
+      }
+      const packageRoot = join(unpackRoot, packageDirectories[0].name);
+      const manifest = await validateRecoveryPackage(packageRoot);
+      const databaseDumpPath = packageRelativePath(packageRoot, manifest.databaseDump, "database dump");
+      const globalsPath = packageRelativePath(packageRoot, manifest.postgresGlobals, "PostgreSQL globals");
+
+      await runBackupCommand(
+        process.env.PSQL_PATH?.trim() || "psql",
+        ["--set", "ON_ERROR_STOP=on", "--dbname", databaseUrl, "--file", globalsPath],
+        "PostgreSQL roles/globals restore",
+      );
+      await runBackupCommand(
+        process.env.PG_RESTORE_PATH?.trim() || "pg_restore",
+        [
+          "--clean",
+          "--if-exists",
+          "--no-owner",
+          "--exit-on-error",
+          "--single-transaction",
+          "--dbname",
+          databaseUrl,
+          databaseDumpPath,
+        ],
+        "PostgreSQL database restore",
+      );
+
+      const externalStorage = await restoreConfiguredExternalStorage(packageRoot, manifest);
+      if (externalStorage.warning) warnings.push(externalStorage.warning);
+      if (!externalStorage.restored && manifest.externalStorage) {
+        warnings.push("External storage was not restored; uploaded files may be unavailable.");
+      }
+
+      const restoreDeploymentFiles = request.header("x-restore-deployment-files") === "true";
+      const deploymentSecretsIncluded = Boolean(manifest.deploymentSecrets);
+      if (restoreDeploymentFiles) {
+        warnings.push(...await restoreConfiguredDeploymentFiles(packageRoot, manifest));
+        if (manifest.deploymentConfig || manifest.deploymentSecrets) {
+          warnings.push("Restart the backend service before the restored configuration or secrets take effect.");
+        }
+      } else if (manifest.deploymentConfig || manifest.deploymentSecrets) {
+        warnings.push("Deployment configuration and secret files were not overwritten; the server kept its existing files.");
+      }
+
+      clearSettingsCache();
+      clearDashboardReportCaches();
+      response.json({
+        restored: true,
+        database: true,
+        externalStorage: externalStorage.restored,
+        deploymentConfig: Boolean(manifest.deploymentConfig),
+        deploymentSecrets: deploymentSecretsIncluded,
+        warnings,
+      });
+    } finally {
+      if (restoreRoot) {
+        await fs.rm(restoreRoot, { recursive: true, force: true }).catch(() => undefined);
+      }
+      fullRecoveryRestoreInProgress = false;
     }
   }),
 );
@@ -2532,7 +2957,7 @@ async function readBackupSchedule() {
   return mapBackupSchedule(result.rows[0]);
 }
 
-type BackupHealthStatus = "success" | "failed" | "not_run" | "running";
+type BackupHealthStatus = "success" | "failed" | "not_run" | "running" | "not_configured";
 
 function serializeBackupRun(row: BackupRunRow | undefined) {
   if (!row) {
@@ -2572,8 +2997,8 @@ async function readBackupStatus() {
   let secretStatus: BackupHealthStatus;
   let secretError: string | null = null;
   if (!secretInspection.configured) {
-    secretStatus = "failed";
-    secretError = secretInspection.error;
+    secretStatus = "not_configured";
+    secretError = "No deployment secret file is configured; this is optional for database recovery.";
   } else if (!latestFullRecovery) {
     secretStatus = "not_run";
     secretError = "No full recovery package has been completed yet.";
@@ -2594,11 +3019,13 @@ async function readBackupStatus() {
   }
   const schedule = await readBackupSchedule();
   const restoreAuthorizationConfigured = await restoreAuthorizationPasswordIsConfigured();
+  const restoreAuthorizationRecoveryConfigured =
+    await restoreAuthorizationRecoveryPinIsConfigured();
   const scheduledRun = latest.get("server_scheduled");
   const scheduleError = schedule.enabled && !schedule.schedulePasswordConfigured
-    ? "Server backup password is not configured."
+    ? "Scheduled server backup encryption password is not configured."
     : schedule.enabled && !schedule.destinationDir
-      ? "Server backup destination is not configured."
+      ? "Scheduled server backup destination is not configured."
       : null;
   const serializedScheduledRun = serializeBackupRun(scheduledRun);
   return {
@@ -2625,6 +3052,7 @@ async function readBackupStatus() {
       error: secretError,
     },
     restoreAuthorizationConfigured,
+    restoreAuthorizationRecoveryConfigured,
     schedule,
   };
 }
@@ -2685,7 +3113,7 @@ async function executeScheduledBackup(force: boolean, requestedBy?: BackupUser) 
 
     const password = process.env.RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD?.trim();
     if (!password || password.length < 8) {
-      throw new HttpError(503, "Configure RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD before running server backups.");
+      throw new HttpError(503, "Configure RECORDKEEPER_BACKUP_SCHEDULE_PASSWORD before running scheduled server backups.");
     }
     const destinationDir = schedule.destination_dir.trim();
     if (!destinationDir || !isAbsolute(destinationDir)) {
@@ -2785,8 +3213,61 @@ settingsRouter.put(
     const user = requireAuth(request as AuthRequest);
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
-    await saveRestoreAuthorizationPassword(body.currentPassword, body.password, body.confirmation);
+    await saveRestoreAuthorizationPassword(
+      body.currentPassword,
+      body.password,
+      body.confirmation,
+      body.recoveryPin,
+      body.recoveryPinConfirmation,
+    );
     response.json({ configured: true });
+  }),
+);
+
+settingsRouter.put(
+  "/protected-backup/restore-authorization/recover",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    const recoveryPin = readRestoreAuthorizationRecoveryPin(
+      body.recoveryPin,
+      "Upload password Recovery PIN",
+    );
+    const password = readRestoreAuthorizationPassword(body.password, "Upload password");
+    const confirmation = readRestoreAuthorizationPassword(
+      body.confirmation,
+      "Confirm Upload password",
+    );
+    if (password !== confirmation) {
+      throw new HttpError(400, "Upload passwords do not match.");
+    }
+    await ensureProtectedBackupAuthorizationSchema();
+    const recoveryPinResult = await pool.query<{ configured: boolean; valid: boolean }>(
+      `select
+         restore_authorization_recovery_pin_hash <> '' as configured,
+         restore_authorization_recovery_pin_hash <> ''
+           and restore_authorization_recovery_pin_hash = crypt($1, restore_authorization_recovery_pin_hash) as valid
+       from protected_backup_settings
+       where id = true`,
+      [recoveryPin],
+    );
+    if (!recoveryPinResult.rows[0]?.configured) {
+      throw new HttpError(
+        400,
+        "Configure the six-digit Recovery PIN in Protected Backup settings before using Forgot password.",
+      );
+    }
+    if (!recoveryPinResult.rows[0].valid) {
+      throw new HttpError(403, "Incorrect Upload password Recovery PIN.");
+    }
+    await pool.query(
+      `update protected_backup_settings
+       set restore_authorization_password_hash = crypt($1, gen_salt('bf')), updated_at = now()
+       where id = true`,
+      [password],
+    );
+    response.json({ configured: true, recovered: true });
   }),
 );
 
@@ -3358,6 +3839,7 @@ settingsRouter.patch(
       "themeTint",
       "appearancePreset",
       "fontFamily",
+      "fontScale",
       "topRibbonColor",
       "topRibbonTextColor",
       "chartBarColor",
@@ -3510,6 +3992,7 @@ settingsRouter.patch(
         "themeTint" in body ||
         "appearancePreset" in body ||
         "fontFamily" in body ||
+        "fontScale" in body ||
         "topRibbonColor" in body ||
         "topRibbonTextColor" in body ||
         "chartBarColor" in body ||
@@ -3523,6 +4006,7 @@ settingsRouter.patch(
           ? { appearancePreset: readAppearancePreset(body.appearancePreset) }
           : {}),
         ...("fontFamily" in body ? { fontFamily: readFontFamily(body.fontFamily) } : {}),
+        ...("fontScale" in body ? { fontScale: readFontScale(body.fontScale) } : {}),
         ...("topRibbonColor" in body
           ? { topRibbonColor: readOptionalTopRibbonColor(body.topRibbonColor) }
           : {}),
@@ -3639,12 +4123,22 @@ settingsRouter.patch(
     }
     if ("firmUniqueNoLabel" in body)
       addField("firm_unique_no_label", toDbText(body.firmUniqueNoLabel) || "Firm Unique No.");
-    if ("firmRatingConfig" in body)
+    if ("firmRatingConfig" in body) {
+      const firmRatingConfig = normalizeFirmRatingConfig(body.firmRatingConfig);
+      for (const field of firmRatingConfig.fields) {
+        if (Number(field.minValue) > Number(field.maxValue)) {
+          throw new HttpError(
+            400,
+            `${field.label}: minimum rating value must not exceed maximum rating value.`,
+          );
+        }
+      }
       addField(
         "firm_rating_config",
-        JSON.stringify(normalizeFirmRatingConfig(body.firmRatingConfig)),
+        JSON.stringify(firmRatingConfig),
         "::jsonb",
       );
+    }
     if ("preSoDefaultSoOffsetDays" in body) {
       if (user.role !== "admin") {
         throw new HttpError(403, "Admin access required.");
@@ -3754,6 +4248,7 @@ settingsRouter.patch(
       !("themeTint" in body) &&
       !("appearancePreset" in body) &&
       !("fontFamily" in body) &&
+      !("fontScale" in body) &&
       !("topRibbonColor" in body) &&
       !("topRibbonTextColor" in body) &&
       !("chartBarColor" in body) &&

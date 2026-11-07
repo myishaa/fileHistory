@@ -7,7 +7,7 @@ alter table file_firms
 
 create table if not exists master_firms (
   id uuid primary key default gen_random_uuid(),
-  firm_name text,
+  firm_name text not null,
   email_id text,
   city text,
   address text,
@@ -18,11 +18,7 @@ create table if not exists master_firms (
   archive_reason text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (
-    nullif(btrim(coalesce(firm_name, '')), '') is not null or
-    nullif(btrim(coalesce(email_id, '')), '') is not null or
-    nullif(btrim(coalesce(firm_unique_no, '')), '') is not null
-  )
+  constraint master_firms_name_required check (nullif(btrim(firm_name), '') is not null)
 );
 
 drop trigger if exists master_firms_set_updated_at on master_firms;

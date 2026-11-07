@@ -26,14 +26,17 @@ import {
   type FileRecord,
   type FileStatusUpdate,
   type QuickStatusFileSummary,
+  type SupplyOrderDetail,
   useActiveUser,
 } from "@/lib/files-store";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import {
   isBiddingApplicableForFile,
+  isRefloatBiddingApplicableForFile,
   isDeliveryInspectionApplicableByGroup,
 } from "@/lib/file-type-groups";
 import { hasCapability } from "@/lib/permissions";
+import { useUnsavedChanges } from "@/lib/unsaved-changes";
 
 export const Route = createFileRoute("/quick-entry")({
   component: QuickEntryPage,
@@ -54,7 +57,7 @@ const quickEntryStageSections = [
   },
   {
     title: "Bidding details",
-    milestones: ["Bidding", "CNC", "RFP Vetting", "Refloat", "RST"],
+    milestones: ["Bidding", "Refloat Bidding", "CNC", "RFP Vetting", "Refloat", "RST"],
   },
   {
     title: "Supply order and payment",
@@ -137,6 +140,13 @@ function QuickEntryEditor() {
   const [statusDraft, setStatusDraft] = useState("");
   const [editingStatusId, setEditingStatusId] = useState("");
   const [editingStatusText, setEditingStatusText] = useState("");
+  const editingStatusOriginalText = context?.statuses.find(
+    (status) => status.id === editingStatusId,
+  )?.text;
+  const quickEntryStatusDirty =
+    Boolean(statusDraft.trim()) ||
+    Boolean(editingStatusId && editingStatusText !== editingStatusOriginalText);
+  useUnsavedChanges("quick-entry-status-editor", quickEntryStatusDirty);
 
   useEffect(() => {
     const query = entryIdentifierQuery.trim();
@@ -276,6 +286,12 @@ function QuickEntryEditor() {
   };
 
   const lookupFile = async () => {
+    if (
+      quickEntryStatusDirty &&
+      !window.confirm("You have unsaved changes. Discard them and look up another file?")
+    ) {
+      return;
+    }
     const query = fileIdentifier.trim();
     if (!query) {
       setLookupMessage({
@@ -321,6 +337,12 @@ function QuickEntryEditor() {
   };
 
   const resetLookup = () => {
+    if (
+      quickEntryStatusDirty &&
+      !window.confirm("You have unsaved changes. Discard them and clear this lookup?")
+    ) {
+      return;
+    }
     setFileIdentifier("");
     setSelectedStatusSuggestion(null);
     setStatusIdentifierQuery("");
@@ -688,7 +710,7 @@ function FileConfirmation({
     ["Demand Description", file.demandDescription],
   ];
   return (
-    <div className="min-h-[220px] rounded-md border border-border bg-secondary/20 p-3">
+    <div className="min-h-[190px] rounded-md border border-border bg-secondary/20 p-3">
       <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold">Matched file</h3>
         <button
@@ -706,7 +728,7 @@ function FileConfirmation({
             key={label}
             className={`rounded-md bg-background/70 p-2 ${label === "Demand Description" ? "md:col-span-4" : ""}`}
           >
-            <div className="text-[11px] font-medium text-muted-foreground">{label}</div>
+            <div className="text-[0.6875rem] font-medium text-muted-foreground">{label}</div>
             <div className="mt-1 min-h-5 break-words text-sm font-medium">{value || "-"}</div>
           </div>
         ))}
@@ -747,7 +769,7 @@ function StatusComposer({
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
         placeholder="Enter latest file status"
-        rows={3}
+        rows={2}
         className="w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
       />
       <div className="mt-2 flex justify-end">
@@ -766,10 +788,22 @@ function StatusComposer({
 }
 
 function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
-  const items = getQuickStatusTimelineItems(file);
+  const orders = rawSupplyOrders(file);
+  const [activeOrderIndex, setActiveOrderIndex] = useState<number | null>(null);
+  useEffect(() => setActiveOrderIndex(null), [file.id]);
+  const selectedOrderIndex =
+    activeOrderIndex !== null && activeOrderIndex < orders.length ? activeOrderIndex : null;
+  const activeOrder = selectedOrderIndex === null ? undefined : orders[selectedOrderIndex];
+  const items = activeOrder
+    ? getQuickStatusOrderTimelineItems(activeOrder)
+    : getQuickStatusFileTimelineItems(file);
   const firstDate = parseDate(items[0]?.date);
-  const completedMilestones = file.completedMilestones ?? [];
-  const milestoneStatuses = getQuickViewerMilestoneStatuses(file);
+  const milestoneStatuses = activeOrder
+    ? getQuickViewerOrderMilestoneStatuses(file, activeOrder)
+    : getQuickViewerMilestoneStatuses(file).filter(
+        (milestone) =>
+          !supplyOrderQuickEntryMilestones.has(normalizeQuickEntryMilestone(milestone.label)),
+      );
   return (
     <div className="rounded-md border border-border bg-muted/20 p-3">
       <h3 className="text-sm font-semibold">Milestone History</h3>
@@ -777,6 +811,33 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
         Only applicable milestones are shown. Pending means the milestone applies but is not
         completed yet.
       </p>
+      <div
+        className="mt-3 flex flex-wrap gap-2"
+        role="tablist"
+        aria-label="Milestone history scope"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={selectedOrderIndex === null}
+          onClick={() => setActiveOrderIndex(null)}
+          className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedOrderIndex === null ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
+        >
+          File Level
+        </button>
+        {orders.map((order, orderIndex) => (
+          <button
+            key={order.id ?? `milestone-history-order-tab-${orderIndex}`}
+            type="button"
+            role="tab"
+            aria-selected={selectedOrderIndex === orderIndex}
+            onClick={() => setActiveOrderIndex(orderIndex)}
+            className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedOrderIndex === orderIndex ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
+          >
+            Supply Order {orderIndex + 1}
+          </button>
+        ))}
+      </div>
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
         {milestoneStatuses.map((milestone) => (
           <div
@@ -795,14 +856,6 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
           </div>
         ))}
       </div>
-      <div className="mt-3 rounded-md border border-border bg-muted/45 p-2">
-        <div className="text-[11px] font-medium text-muted-foreground">Completed milestones</div>
-        <div className="mt-1 text-sm font-medium">
-          {completedMilestones.length
-            ? completedMilestones.join(", ")
-            : "No completed milestones recorded."}
-        </div>
-      </div>
       <div className="mt-3 max-h-[520px] overflow-auto pr-1">
         {items.length ? (
           <ol className="relative space-y-0">
@@ -815,7 +868,7 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
               return (
                 <li key={`${item.label}:${item.date}:${index}`} className="relative pb-4 last:pb-0">
                   <div className="grid grid-cols-[4.5rem_1.5rem_minmax(0,1fr)] items-start gap-2">
-                    <div className="pt-0.5 text-right text-[11px] font-medium text-muted-foreground">
+                    <div className="pt-0.5 text-right text-[0.6875rem] font-medium text-muted-foreground">
                       {formatDays(stageGap)}
                     </div>
                     <div className="relative flex h-5 justify-center">
@@ -824,7 +877,7 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
                     <div className="rounded-md border border-border bg-muted/45 px-3 py-2.5">
                       <div className="flex min-w-0 items-start justify-between gap-3">
                         <div className="min-w-0 text-sm font-medium">{item.label}</div>
-                        <div className="shrink-0 text-right text-[11px] font-medium text-muted-foreground">
+                        <div className="shrink-0 text-right text-[0.6875rem] font-medium text-muted-foreground">
                           {formatDays(cumulativeGap)}
                         </div>
                       </div>
@@ -867,6 +920,95 @@ function getQuickViewerMilestoneStatuses(file: FileRecord) {
     });
 }
 
+function getQuickViewerOrderMilestoneStatuses(file: FileRecord, order: SupplyOrderDetail) {
+  const current = normalizeQuickEntryMilestone(getEffectiveQuickEntryOrderMilestone(file, order));
+  const completed = new Set((order.completedMilestones ?? []).map(normalizeQuickEntryMilestone));
+  const hasSo = hasDate(order.soDate);
+  const hasDeliveryEvidence =
+    hasDate(order.dpDate) ||
+    hasDate(order.revisedDp) ||
+    hasDate(order.materialReceiptDate) ||
+    hasDate(order.jobCompletionDate);
+  const hasIrEvidence = hasDate(order.irPreparationDate) || hasDate(order.irReceiptDate);
+  const hasBillEvidence =
+    hasDate(order.billPreparationDate) || hasDate(order.billSentForPaymentDate);
+  const hasPaymentEvidence = hasDate(order.paymentDate);
+  const definitions = [
+    { label: "Financial Sanction", applicable: true, date: order.financialSanctionDate },
+    { label: "Supply Order", applicable: true, date: order.soDate },
+    {
+      label: "Delivery Period",
+      applicable: hasSo || hasDeliveryEvidence,
+      date: order.revisedDp || order.dpDate,
+    },
+    {
+      label: "PSB",
+      applicable: isBgMilestoneApplicable(file, order, "psb"),
+      date: order.psbBgReceivedDate,
+    },
+    {
+      label: "PWB",
+      applicable: isBgMilestoneApplicable(file, order, "pwb"),
+      date: order.pwbBgReceivedDate,
+    },
+    {
+      label: "PSB+PWB",
+      applicable: isBgMilestoneApplicable(file, order, "psbpwb"),
+      date: order.combinedBgReceivedDate,
+    },
+    {
+      label: isJobCompletionWorkflow(file) ? "Job Completion" : "Delivery",
+      applicable: hasSo || hasDeliveryEvidence,
+      date: isJobCompletionWorkflow(file) ? order.jobCompletionDate : order.materialReceiptDate,
+    },
+    {
+      label: "IR Preparation",
+      applicable: isYes(file.ir) || hasIrEvidence,
+      date: order.irPreparationDate,
+    },
+    {
+      label: "IR Receipt",
+      applicable: isYes(file.ir) || hasIrEvidence,
+      date: order.irReceiptDate,
+    },
+    {
+      label: "Bill preparation",
+      applicable: hasSo || hasBillEvidence || hasPaymentEvidence,
+      date: order.billPreparationDate,
+    },
+    {
+      label: "Bill sent for payment",
+      applicable: hasSo || hasBillEvidence || hasPaymentEvidence,
+      date: order.billSentForPaymentDate,
+    },
+    {
+      label: "Payment",
+      applicable: hasSo || hasPaymentEvidence,
+      date: order.paymentDate,
+    },
+    {
+      label: "Advance Payment",
+      applicable: isYes(order.advancePayment),
+      date: (order.advancePaymentDetail as { paymentDate?: string } | undefined)?.paymentDate,
+    },
+  ];
+
+  return definitions
+    .filter((definition) => definition.applicable)
+    .map((definition) => {
+      const key = normalizeQuickEntryMilestone(definition.label);
+      return {
+        label: definition.label,
+        date: definition.date,
+        status: key === current
+          ? "Current"
+          : completed.has(key) || hasDate(definition.date)
+            ? "Completed"
+            : "Pending",
+      };
+    });
+}
+
 function getQuickViewerMilestoneDefinitions(file: FileRecord) {
   const orders = rawSupplyOrders(file);
   const currentMilestone = normalizeQuickEntryMilestone(file.currentMilestone ?? "");
@@ -876,16 +1018,6 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
   const hasOrder = orders.length > 0 || hasDate(file.soDate);
   const hasFinancialSanction = orders.some((order) => hasDate(order.financialSanctionDate));
   const hasSo = orders.some((order) => hasDate(order.soDate)) || hasDate(file.soDate);
-  const hasBgEvidence = orders.some(
-    (order) =>
-      isYes(order.psbApplicable) ||
-      ["PSB", "PWB", "PSB+PWB", "PSB and PWB separately"].includes(
-        String(order.bgCoverageType ?? ""),
-      ) ||
-      hasDate(order.psbBgReceivedDate) ||
-      hasDate(order.pwbBgReceivedDate) ||
-      hasDate(order.combinedBgReceivedDate),
-  );
   const hasDeliveryEvidence = orders.some(
     (order) =>
       hasDate(order.dpDate) ||
@@ -905,15 +1037,14 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
   return [
     { label: "Scrutiny", applicable: true, date: file.scrutinyDate || file.scrutinyCompletionDate },
     {
-      label: "Controlled",
-      matchKeys: ["Controlling", "Control"],
-      applicable: true,
-      date: file.immsDate,
-    },
-    {
       label: "High Value",
       applicable: isYes(file.highValue) || hasDate(file.highValueMeetingDate),
       date: file.highValueMinutesDate || file.highValueMeetingDate,
+    },
+    {
+      label: "Pre-TCEC",
+      applicable: isYes(file.tcec) || hasDate(file.preTcecDate),
+      date: file.preTcecMinutesDate || file.preTcecDate,
     },
     {
       label: "AD",
@@ -926,9 +1057,10 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
       date: file.rqaApprovalDate || file.rqaSentDate,
     },
     {
-      label: "Pre-TCEC",
-      applicable: isYes(file.tcec) || hasDate(file.preTcecDate),
-      date: file.preTcecMinutesDate || file.preTcecDate,
+      label: "Controlled",
+      matchKeys: ["Controlling", "Control"],
+      applicable: true,
+      date: file.immsDate,
     },
     {
       label: "IFA",
@@ -936,6 +1068,11 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
       date: file.ifaFinalDate || file.ifaSentDate,
     },
     { label: "CFA", applicable: true, date: file.cfaDate || file.cfaSentDate },
+    {
+      label: "Pre-Bid Meeting",
+      applicable: isYes(file.preBidMeeting) || hasDate(file.preBidMeetingDate),
+      date: file.preBidMeetingDate,
+    },
     {
       label: "Bidding",
       applicable:
@@ -946,14 +1083,43 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
       date: isYes(file.biddingStageOver) ? file.bidOpeningDate || file.bidDate : file.bidDate,
     },
     {
-      label: "Pre-Bid Meeting",
-      applicable: isYes(file.preBidMeeting) || hasDate(file.preBidMeetingDate),
-      date: file.preBidMeetingDate,
-    },
-    {
       label: "Post-TCEC",
       applicable: isYes(file.tcec) || hasDate(file.postTcecDate),
       date: file.postTcecMinutesDate || file.postTcecDate,
+    },
+    {
+      label: "Refloat Pre-Bid Meeting",
+      applicable:
+        isYes(file.refloat) &&
+        (isYes(file.refloatPreBidMeeting) || hasDate(file.refloatPreBidMeetingDate)),
+      date: file.refloatPreBidMeetingDate,
+    },
+    {
+      label: "Refloat Bidding",
+      applicable:
+        isYes(file.refloat) &&
+        (isRefloatBiddingApplicableForFile(file) ||
+          hasDate(file.refloatBiddingDate) ||
+          hasDate(file.refloatBidOpeningDate) ||
+          isYes(file.refloatTenderLive) ||
+          isYes(file.refloatBidOpened) ||
+          isYes(file.refloatBiddingStageOver) ||
+          currentMilestone === "refloatbidding" ||
+          completedMilestones.has("refloatbidding")),
+      date: isYes(file.refloatBiddingStageOver)
+        ? file.refloatBidOpeningDate || file.refloatBiddingDate
+        : file.refloatBiddingDate,
+    },
+    {
+      label: "Refloat Post-TCEC",
+      applicable:
+        isYes(file.refloat) &&
+        ((isYes(file.tcec) && isRefloatBiddingApplicableForFile(file)) ||
+          hasDate(file.refloatPostTcecDate) ||
+          hasDate(file.refloatPostTcecMinutesDate) ||
+          currentMilestone === "refloatposttcec" ||
+          completedMilestones.has("refloatposttcec")),
+      date: file.refloatPostTcecMinutesDate || file.refloatPostTcecDate,
     },
     {
       label: "CNC",
@@ -985,20 +1151,17 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
     },
     {
       label: "PSB",
-      applicable:
-        hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psb")),
+      applicable: orders.some((order) => isBgMilestoneApplicable(file, order, "psb")),
       date: getFirstOrderDate(orders, "psbBgReceivedDate"),
     },
     {
       label: "PWB",
-      applicable:
-        hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "pwb")),
+      applicable: orders.some((order) => isBgMilestoneApplicable(file, order, "pwb")),
       date: getFirstOrderDate(orders, "pwbBgReceivedDate"),
     },
     {
       label: "PSB+PWB",
-      applicable:
-        hasBgEvidence && orders.some((order) => isBgMilestoneApplicable(file, order, "psbpwb")),
+      applicable: orders.some((order) => isBgMilestoneApplicable(file, order, "psbpwb")),
       date: getFirstOrderDate(orders, "combinedBgReceivedDate"),
     },
     {
@@ -1049,12 +1212,21 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
 }
 
 function isTcecPostTcecCncPath(file: FileRecord) {
+  const currentMilestone = normalizeQuickEntryMilestone(file.currentMilestone);
+  const completedMilestones = new Set(
+    (file.completedMilestones ?? []).map(normalizeQuickEntryMilestone),
+  );
   return (
     isYes(file.tcec) &&
     (hasDate(file.postTcecDate) ||
       hasDate(file.postTcecMinutesDate) ||
-      normalizeQuickEntryMilestone(file.currentMilestone) === "posttcec" ||
-      normalizeQuickEntryMilestone(file.currentMilestone) === "cnc")
+      currentMilestone === "posttcec" ||
+      (isYes(file.refloat) &&
+        (hasDate(file.refloatPostTcecDate) ||
+          hasDate(file.refloatPostTcecMinutesDate) ||
+          currentMilestone === "refloatposttcec" ||
+          completedMilestones.has("refloatposttcec"))) ||
+      currentMilestone === "cnc")
   );
 }
 
@@ -1082,21 +1254,19 @@ function isBgMilestoneApplicable(
 ) {
   if (kind === "psb") {
     return (
-      isYes(order.psbApplicable) ||
-      ["PSB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? "")) ||
-      hasDate(order.psbBgReceivedDate)
+      isYes(order.psbApplicable) &&
+      ["PSB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? ""))
     );
   }
   if (kind === "pwb") {
     return (
       isYes(file.bg) &&
-      (["PWB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? "")) ||
-        hasDate(order.pwbBgReceivedDate))
+      ["PWB", "PSB and PWB separately"].includes(String(order.bgCoverageType ?? ""))
     );
   }
   return (
     isYes(file.bg) &&
-    (String(order.bgCoverageType ?? "") === "PSB+PWB" || hasDate(order.combinedBgReceivedDate))
+    String(order.bgCoverageType ?? "") === "PSB+PWB"
   );
 }
 
@@ -1211,8 +1381,8 @@ function openFullFile(navigate: ReturnType<typeof useNavigate>, fileId: string) 
   });
 }
 
-function getQuickStatusTimelineItems(file: FileRecord) {
-  const items = [
+function getQuickStatusFileTimelineItems(file: FileRecord) {
+  return sortQuickStatusTimelineItems([
     ["Demand received", file.receivedDate],
     ["Scrutiny", file.scrutinyDate],
     ["Scrutiny response", file.scrutinyResponseDate],
@@ -1231,8 +1401,8 @@ function getQuickStatusTimelineItems(file: FileRecord) {
     ["CFA sent", file.cfaSentDate],
     ["CFA approval", file.cfaDate],
     ["GeM undertaking", file.gemUndertakingDate],
-    ["Refloat GeM undertaking", file.refloatGemUndertakingDate],
-    ["Refloat recommendation", file.refloatRecommendationDate],
+    ["Refloat GeM undertaking date", file.refloatGemUndertakingDate],
+    ["Refloat recommendation date for Non-TCEC cases", file.refloatRecommendationDate],
     ["RFP vetting initiation", file.rfpVettingInitiationDate],
     ["RFP vetting approval", file.rfpVettingApprovalDate],
     ["Pre-Bid Meeting", file.preBidMeetingDate],
@@ -1241,33 +1411,37 @@ function getQuickStatusTimelineItems(file: FileRecord) {
     ["Refloat Pre-Bid Meeting", file.refloatPreBidMeetingDate],
     ["Refloat bid date", file.refloatBiddingDate],
     ["Refloat bid opening", file.refloatBidOpeningDate],
-    ["Refloat Bidding Stage Over", file.refloatBiddingStageOver],
     ["Post-TCEC", file.postTcecDate],
     ["Post-TCEC minutes", file.postTcecMinutesDate],
     ["CNC", file.cncDate],
     ["CNC approval", file.cncApprovalDate],
     ["File closure", file.fileClosureDate],
-    ...rawSupplyOrders(file).flatMap((order, orderIndex) =>
-      [
-        ["Financial Sanction", order.financialSanctionDate],
-        ["S.O. date", order.soDate],
-        ["D.P.", order.dpDate],
-        ["Revised D.P.", order.revisedDp],
-        ["Material receipt", order.materialReceiptDate],
-        ["Job Completion Received Date", order.jobCompletionDate],
-        ["IR Preparation", order.irPreparationDate],
-        ["IR Receipt", order.irReceiptDate],
-        ["Bill preparation", order.billPreparationDate],
-        ["Bill sent for payment", order.billSentForPaymentDate],
-        ["Payment", order.paymentDate],
-        ["S.O. cancellation", order.soCancelledDate],
-        ["Shortclosure", order.shortclosureDate],
-      ].map(([label, date]) => [`S.O. ${orderIndex + 1} - ${label}`, date]),
-    ),
-  ]
-    .filter((item): item is [string, string] => Boolean(item[1]))
-    .sort((a, b) => (parseDate(a[1])?.getTime() ?? 0) - (parseDate(b[1])?.getTime() ?? 0));
-  return items.map(([label, date]) => ({ label, date }));
+  ]);
+}
+
+function getQuickStatusOrderTimelineItems(order: SupplyOrderDetail) {
+  return sortQuickStatusTimelineItems([
+    ["Financial Sanction", order.financialSanctionDate],
+    ["S.O. date", order.soDate],
+    ["D.P.", order.dpDate],
+    ["Revised D.P.", order.revisedDp],
+    ["Material receipt", order.materialReceiptDate],
+    ["Job Completion Received Date", order.jobCompletionDate],
+    ["IR Preparation", order.irPreparationDate],
+    ["IR Receipt", order.irReceiptDate],
+    ["Bill preparation", order.billPreparationDate],
+    ["Bill sent for payment", order.billSentForPaymentDate],
+    ["Payment", order.paymentDate],
+    ["S.O. cancellation", order.soCancelledDate],
+    ["Shortclosure", order.shortclosureDate],
+  ]);
+}
+
+function sortQuickStatusTimelineItems(items: Array<[string, unknown]>) {
+  return items
+    .filter((item): item is [string, string] => hasDate(item[1]))
+    .sort((a, b) => (parseDate(a[1])?.getTime() ?? 0) - (parseDate(b[1])?.getTime() ?? 0))
+    .map(([label, date]) => ({ label, date }));
 }
 
 function normalizeQuickEntryCode(value: string | undefined) {
@@ -1414,7 +1588,9 @@ function getEffectiveQuickEntryOrderMilestone(file: FileRecord, order: { [key: s
 function isFinancialSanctionReached(file: FileRecord) {
   return (
     !isYes(file.demandCancelled) &&
-    (isBiddingApplicableForFile(file) ? isYes(file.biddingStageOver) : hasDate(file.cfaDate)) &&
+    (isBiddingApplicableForFile(file)
+      ? isYes(isYes(file.refloat) ? file.refloatBiddingStageOver : file.biddingStageOver)
+      : hasDate(file.cfaDate)) &&
     (!isYes(file.tcec) || hasDate(file.cncApprovalDate))
   );
 }

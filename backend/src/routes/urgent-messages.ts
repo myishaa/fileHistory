@@ -596,8 +596,7 @@ urgentMessagesRouter.delete(
       throw new HttpError(403, "Only Admins and Sub-admins can delete urgent messages.");
     }
     const result = await pool.query(
-      `update urgent_messages
-          set deleted_at = now()
+      `delete from urgent_messages
         where id = $1
           and created_by_user_id = $2::uuid
           and deleted_at is null`,

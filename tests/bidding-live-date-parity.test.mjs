@@ -35,6 +35,7 @@ function liveRefloat(overrides = {}) {
     receivedDate: dateOffset(-90),
     demandCancelled: "No",
     refloat: "Yes",
+    currentMilestone: "Refloat Bidding",
     bidDate: dateOffset(-60),
     bidOpeningDate: dateOffset(-45),
     refloatBiddingDate: dateOffset(-1),

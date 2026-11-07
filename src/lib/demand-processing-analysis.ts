@@ -29,6 +29,7 @@ export type DemandProcessingPreset = {
   fromFieldId: string;
   toFieldId: string;
   active?: boolean;
+  tcecScope?: "yes" | "no";
 };
 
 export type DemandProcessingAnalysisRow = {
@@ -250,24 +251,45 @@ const dateFieldConfigs: DateFieldConfig[] = [
   },
   {
     id: "file.refloatGemUndertakingDate",
-    label: "Refloat GeM undertaking",
+    label: "Refloat GeM undertaking date",
     group: "Bidding",
     scope: "file",
     key: "refloatGemUndertakingDate",
   },
   {
     id: "file.refloatRecommendationDate",
-    label: "Refloat recommendation",
+    label: "Refloat recommendation date for Non-TCEC cases",
     group: "Bidding",
     scope: "file",
     key: "refloatRecommendationDate",
   },
   {
-    id: "file.refloatBiddingStageOver",
-    label: "Refloat Bidding Stage Over",
+    id: "file.refloatRfpVettingInitiationDate",
+    label: "Refloat RFP vetting initiation date",
     group: "Bidding",
     scope: "file",
-    key: "refloatBiddingStageOver",
+    key: "refloatRfpVettingInitiationDate",
+  },
+  {
+    id: "file.refloatRfpVettingApprovalDate",
+    label: "Refloat RFP vetting approval date",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatRfpVettingApprovalDate",
+  },
+  {
+    id: "file.preBidMeetingDate",
+    label: "Pre-Bid Meeting date",
+    group: "Bidding",
+    scope: "file",
+    key: "preBidMeetingDate",
+  },
+  {
+    id: "file.refloatPreBidMeetingDate",
+    label: "Refloat Pre-Bid Meeting date",
+    group: "Bidding",
+    scope: "file",
+    key: "refloatPreBidMeetingDate",
   },
   {
     id: "file.rfpVettingInitiationDate",
@@ -414,7 +436,7 @@ const dateFieldConfigs: DateFieldConfig[] = [
   },
   {
     id: "order.actualJobCompletionDate",
-    label: "Work Completion Date",
+    label: "Job Completion Date",
     group: "Delivery / IR",
     scope: "order",
     key: "actualJobCompletionDate",
@@ -519,7 +541,7 @@ const dateFieldConfigs: DateFieldConfig[] = [
   },
   {
     id: "stage.actualJobCompletionDate",
-    label: "Stage Work Completion Date",
+    label: "Stage Job Completion Date",
     group: "Stage delivery",
     scope: "stage",
     key: "actualJobCompletionDate",
@@ -618,10 +640,27 @@ export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
   },
   {
     id: "builtin-fs-so",
-    name: "S.O. based on Financial Sanction date",
+    name: "Non-TCEC: That S.O.’s Financial Sanction date → S.O. date",
     fromFieldId: "order.financialSanctionDate",
     toFieldId: "order.soDate",
     active: true,
+    tcecScope: "no",
+  },
+  {
+    id: "builtin-tcec-cnc-so",
+    name: "TCEC: CNC Approval Date → each S.O. date",
+    fromFieldId: "file.cncApprovalDate",
+    toFieldId: "order.soDate",
+    active: true,
+    tcecScope: "yes",
+  },
+  {
+    id: "builtin-tcec-cnc-financial-sanction",
+    name: "TCEC: CNC Approval Date → each S.O.’s Financial Sanction Date",
+    fromFieldId: "file.cncApprovalDate",
+    toFieldId: "order.financialSanctionDate",
+    active: true,
+    tcecScope: "yes",
   },
   {
     id: "builtin-so-material",
@@ -687,9 +726,30 @@ export const builtInDemandProcessingPresets: DemandProcessingPreset[] = [
     active: true,
   },
   {
+    id: "builtin-pre-post-tcec-normal",
+    name: "Pre Post-TCEC (Normal): Bid Opening Date to Post-TCEC Date",
+    fromFieldId: "file.bidOpeningDate",
+    toFieldId: "file.postTcecDate",
+    active: true,
+  },
+  {
+    id: "builtin-pre-post-tcec-refloat",
+    name: "Pre Post-TCEC (Refloat): Refloat Bid Opening Date to Refloat Post-TCEC Date",
+    fromFieldId: "file.refloatBidOpeningDate",
+    toFieldId: "file.refloatPostTcecDate",
+    active: true,
+  },
+  {
     id: "builtin-cnc",
-    name: "CNC approval based on CNC date",
-    fromFieldId: "file.cncDate",
+    name: "Normal CNC approval based on Post-TCEC minutes date",
+    fromFieldId: "file.postTcecMinutesDate",
+    toFieldId: "file.cncApprovalDate",
+    active: true,
+  },
+  {
+    id: "builtin-refloat-cnc",
+    name: "Refloat CNC approval based on Refloat Post-TCEC minutes date",
+    fromFieldId: "file.refloatPostTcecMinutesDate",
     toFieldId: "file.cncApprovalDate",
     active: true,
   },

@@ -209,7 +209,7 @@ async function fillSupplyOrderBase(page: Page, code: string, scenario: AddScenar
   await page.getByTestId("add-section-supply-order-and-payment").click();
   await page.getByTestId("add-so-tab-supplyOrder").click();
   await openSupplyOrder(page);
-  await fillDate(page, "add-field-supplyOrder-0-financialSanctionDate", "2026-07-05");
+  await fillDate(page, "add-field-supplyOrder-0-financialSanctionDate", "2026-07-09");
 
   if (index === 0) {
     await page.getByTestId("add-field-supplyOrder-0-soNo").fill(`${code}-SO-1`);
@@ -283,7 +283,11 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
     await fillDate(
       page,
       "add-field-supplyOrder-0-dpDate",
-      scenario.fileType === "Goods & Services" ? "2026-08-15" : "2026-07-15",
+      scenario.fileType === "Goods & Services" && scenario.ir === "No"
+        ? "2026-07-15"
+        : scenario.fileType === "Goods & Services"
+          ? "2026-08-15"
+          : "2026-07-15",
     );
   } else {
     await openStage(page, 0, 0);
@@ -314,6 +318,13 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
         `add-field-supplyOrder-0-${scenario.ir === "Yes" ? "materialReceiptDate" : "jobCompletionDate"}`,
         "2026-07-20",
       );
+      if (scenario.ir === "No") {
+        await fillDate(
+          page,
+          "add-field-supplyOrder-0-actualJobCompletionDate",
+          "2026-07-20",
+        );
+      }
       if (scenario.ir === "Yes") {
         await fillDate(page, "add-field-supplyOrder-0-irPreparationDate", "2026-07-21");
         await fillDate(page, "add-field-supplyOrder-0-irReceiptDate", "2026-07-22");

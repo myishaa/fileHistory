@@ -38,12 +38,12 @@ export function AppSidebar() {
         </div>
         <div className="leading-tight">
           <div className="text-sm font-semibold text-white">FileHistory</div>
-          <div className="text-[11px] text-sidebar-foreground/60">Records Management</div>
+          <div className="text-[0.6875rem] text-sidebar-foreground/60">Records Management</div>
         </div>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-4">
-        <div className="text-[10px] uppercase tracking-wider text-sidebar-foreground/50 px-2 mb-2">
+        <div className="text-[0.625rem] uppercase tracking-wider text-sidebar-foreground/50 px-2 mb-2">
           Main
         </div>
         <ul className="space-y-1">
@@ -69,7 +69,7 @@ export function AppSidebar() {
           })}
         </ul>
 
-        <div className="text-[10px] uppercase tracking-wider text-sidebar-foreground/50 px-2 mt-7 mb-2">
+        <div className="text-[0.625rem] uppercase tracking-wider text-sidebar-foreground/50 px-2 mt-7 mb-2">
           Coming soon
         </div>
         <ul className="space-y-1">
@@ -84,7 +84,7 @@ export function AppSidebar() {
                   <Icon className="size-4" />
                   {t.label}
                 </span>
-                <span className="text-[9px] uppercase tracking-wider rounded bg-sidebar-accent px-1.5 py-0.5">
+                <span className="text-[0.5625rem] uppercase tracking-wider rounded bg-sidebar-accent px-1.5 py-0.5">
                   Soon
                 </span>
               </li>

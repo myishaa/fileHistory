@@ -87,21 +87,28 @@ export function getReturnedBillCashOutgoEventDate(
   return hasReturnedBillPaid(order) ? order.paymentDate : undefined;
 }
 
-export function isRefloatBiddingCurrent(file: Pick<FileRecord, "refloat" | "biddingStageOver">) {
-  return file.refloat === "Yes" && file.biddingStageOver !== "Yes";
+export function isRefloatBiddingCurrent(
+  file: Pick<FileRecord, "refloat" | "refloatBiddingStageOver">,
+) {
+  return file.refloat === "Yes" && file.refloatBiddingStageOver !== "Yes";
 }
 
-export function isRefloatBiddingCompleted(file: Pick<FileRecord, "refloat" | "biddingStageOver">) {
-  return file.refloat === "Yes" && file.biddingStageOver === "Yes";
+export function isRefloatBiddingCompleted(
+  file: Pick<FileRecord, "refloat" | "refloatBiddingStageOver">,
+) {
+  return file.refloat === "Yes" && file.refloatBiddingStageOver === "Yes";
 }
 
 export function isRefloatPostTcecCurrent(
-  file: Pick<FileRecord, "refloat" | "tcec" | "biddingStageOver" | "refloatPostTcecMinutesDate">,
+  file: Pick<
+    FileRecord,
+    "refloat" | "tcec" | "refloatBiddingStageOver" | "refloatPostTcecMinutesDate"
+  >,
 ) {
   return (
     file.refloat === "Yes" &&
     file.tcec === "Yes" &&
-    file.biddingStageOver === "Yes" &&
+    file.refloatBiddingStageOver === "Yes" &&
     !hasFilledString(file.refloatPostTcecMinutesDate)
   );
 }
