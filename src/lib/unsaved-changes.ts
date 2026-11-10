@@ -21,6 +21,10 @@ export function hasUnsavedChanges() {
   return dirtySnapshot;
 }
 
+export function hasUnsavedChangesForSource(sourceId: string) {
+  return dirtySources.get(sourceId) === true;
+}
+
 export function clearUnsavedChanges(sourceId: string) {
   setSourceDirty(sourceId, false);
 }

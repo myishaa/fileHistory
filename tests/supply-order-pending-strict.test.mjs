@@ -8,10 +8,11 @@ import {
   isSupplyOrderAtPreviousStage as frontendPreviousStage,
   isSupplyOrderMilestoneCurrent as frontendCurrent,
 } from "../src/lib/effective-deliveries.ts";
+import { isMmgSupplyOrderPendingOrder } from "../src/lib/mmg-summary.ts";
 
 const file = {
   fileType: "Goods & Services",
-  fileTypeGroup: "Group-A",
+  fileTypeGroup: "goodsServices",
   gem: "No",
 };
 
@@ -90,4 +91,20 @@ test("Supply Order At previous stage requires Financial Sanction as the exact pr
       false,
     );
   }
+});
+
+test("MMG Supply Order pending requires the exact current milestone", () => {
+  assert.equal(isMmgSupplyOrderPendingOrder(file, order()), true);
+  assert.equal(
+    isMmgSupplyOrderPendingOrder(file, order({ currentMilestone: "Financial Sanction" })),
+    false,
+  );
+  assert.equal(
+    isMmgSupplyOrderPendingOrder(file, order({ currentMilestone: "Delivery" })),
+    false,
+  );
+  assert.equal(
+    isMmgSupplyOrderPendingOrder(file, order({ noFurtherAction: "Yes" })),
+    false,
+  );
 });

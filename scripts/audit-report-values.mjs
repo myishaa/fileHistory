@@ -120,19 +120,6 @@ function combineRowsForMonth(monthKey, rowGroups) {
   return capital || revenue ? [{ monthKey, capital, revenue, total: capital + revenue }] : [];
 }
 
-function combineRowsThroughMonth(monthKey, rowGroups) {
-  let capital = 0;
-  let revenue = 0;
-  for (const rows of rowGroups) {
-    for (const row of rows ?? []) {
-      if (!row.monthKey || row.monthKey > monthKey) continue;
-      capital += n(row.capital);
-      revenue += n(row.revenue);
-    }
-  }
-  return capital || revenue ? [{ monthKey, capital, revenue, total: capital + revenue }] : [];
-}
-
 function fyRows(rows, startMonth = "2026-04", endMonth = "2027-03") {
   return (rows ?? []).filter((row) => row.monthKey >= startMonth && row.monthKey <= endMonth);
 }
@@ -141,23 +128,11 @@ function derivedCashRows(summary) {
   const expectedCashOutgoFyRows = fyRows(summary.expectedCashOutgoDpRows);
   return {
     expectedCashOutgoFyRows,
-    spentTillDateFyRows: summary.actualCashOutgoRows ?? [],
     billsPaidInMonthRows: combineRowsForMonth(selectedMonth, [summary.actualCashOutgoRows]),
-    currentLiabilityRows: combineRowsThroughMonth(selectedMonth, [
-      summary.expectedCashOutgoReceiptPendingBillRows,
-      summary.expectedCashOutgoBillPreparationRows,
-      summary.billSentForPaymentRows,
-    ]),
     cashOutgoForMonthRows: combineRowsForMonth(selectedMonth, [
       summary.expectedCashOutgoBillPreparationRows,
       summary.billSentForPaymentRows,
       expectedCashOutgoFyRows,
-    ]),
-    expectedExpenditureTillMonthRows: combineRowsThroughMonth(selectedMonth, [
-      summary.actualCashOutgoRows,
-      summary.expectedCashOutgoBillPreparationRows,
-      summary.billSentForPaymentRows,
-      summary.expectedCashOutgoReceiptPendingBillRows,
     ]),
   };
 }

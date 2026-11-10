@@ -1,8 +1,12 @@
+import type { ExportCell } from "./export-xlsx.js";
+
 type ExportTable = {
   title?: string;
   headers: string[];
-  rows: string[][];
+  rows: ExportCell[][];
   numericColumns?: number[];
+  dateColumns?: number[];
+  dateTimeColumns?: number[];
   columnWidths?: number[];
   emphasizedColumns?: number[];
 };
@@ -20,6 +24,7 @@ type ExportDocument = {
 
 type ExportPlot = {
   kind: "bar" | "line" | "pie";
+  orientation?: "horizontal" | "vertical";
   title: string;
   measure: string;
   unit?: string;
@@ -166,37 +171,30 @@ function renderPdfPages(document: ExportDocument) {
     const columnWidths = getColumnWidths(table.headers, table.rows, table.columnWidths);
     const emphasizedColumns = new Set(table.emphasizedColumns ?? []);
     const rows = table.rows.length ? table.rows : [["No rows found."]];
+    const headerHeight = getTableHeaderHeight(table.headers, columnWidths);
+    const drawHeader = (target: PdfPage) =>
+      drawTableHeader(target, table.headers, columnWidths, emphasizedColumns);
 
     const ensureSpace = (height: number) => {
       if (page.y - height < pdfMargin) page = addPage();
     };
 
+    ensureSpace((table.title ? 17 : 0) + headerHeight + pdfMinRowHeight);
     if (table.title) {
-      ensureSpace(22);
       drawText(page, table.title, pdfMargin, page.y, pdfSubheadingFontSize + 1);
       page.y -= 17;
     }
 
-    ensureSpace(getTableHeaderHeight(table.headers, columnWidths));
-    drawTableHeader(page, table.headers, columnWidths, emphasizedColumns);
+    drawHeader(page);
 
     rows.forEach((row) => {
       const cells = columns.map((columnIndex) => normalizeCell(row[columnIndex] ?? ""));
       const wrappedCells = cells.map((cell, index) =>
         wrapText(cell, getMaxCharsForColumn(columnWidths[index])),
       );
-      const rowHeight = Math.max(
-        pdfMinRowHeight,
-        Math.max(...wrappedCells.map((cellLines) => cellLines.length)) * pdfLineHeight +
-          pdfCellPaddingY * 2,
+      page = drawPaginatedTableRow(
+        page, wrappedCells, columnWidths, addPage, drawHeader, headerHeight, emphasizedColumns,
       );
-
-      if (page.y - rowHeight < pdfMargin) {
-        page = addPage();
-        ensureSpace(getTableHeaderHeight(table.headers, columnWidths));
-        drawTableHeader(page, table.headers, columnWidths, emphasizedColumns);
-      }
-      drawTableRow(page, wrappedCells, columnWidths, rowHeight, false, emphasizedColumns);
     });
 
     page.y -= 24;
@@ -231,7 +229,8 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
     page.y -= 24;
     return page;
   }
-  const chartLeft = plot.kind === "bar" ? pdfMargin + 160 : pdfMargin + 38;
+  const isVerticalBarChart = plot.kind === "bar" && plot.orientation === "vertical";
+  const chartLeft = plot.kind === "bar" && !isVerticalBarChart ? pdfMargin + 160 : pdfMargin + 38;
   const chartRight = pdfPageWidth - pdfMargin - 12;
   const chartWidth = chartRight - chartLeft;
   const details = [`Measure: ${plot.measure}`, plot.unit, plot.expandedYears?.length ? `Expanded years: ${plot.expandedYears.join(", ")}` : ""]
@@ -242,7 +241,9 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
       ? 12
       : plot.kind === "pie" || plot.compactBars
         ? categories.length
-        : 18;
+        : isVerticalBarChart
+          ? 8
+          : 18;
   const pageCount = Math.ceil(categories.length / pageSize);
   const maxValue = Math.max(
     1,
@@ -322,6 +323,30 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
       pageCategories.forEach((category, index) => {
         const x = chartLeft + index * xStep;
         drawText(page, category.slice(0, 13), x - 18, chartBottom - 13, pdfFontSize - 2);
+      });
+    } else if (isVerticalBarChart) {
+      const plotTop = chartTop - 12;
+      const plotBottom = chartBottom + 22;
+      const plotHeight = plotTop - plotBottom;
+      const categoryWidth = chartWidth / Math.max(1, pageCategories.length);
+      page.commands.push("0.7 0.73 0.78 RG 0.7 w");
+      page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(plotBottom)} m ${formatPdfNumber(chartRight)} ${formatPdfNumber(plotBottom)} l S`);
+      pageCategories.forEach((category, categoryIndex) => {
+        const centerX = chartLeft + (categoryIndex + 0.5) * categoryWidth;
+        const seriesCount = Math.max(1, series.length);
+        const groupWidth = Math.min(42, categoryWidth * 0.72);
+        const barWidth = groupWidth / seriesCount;
+        series.forEach((item, seriesIndex) => {
+          const value = Math.max(0, item.values[offset + categoryIndex] ?? 0);
+          const barHeight = plotHeight * (value / maxValue);
+          const x = centerX - groupWidth / 2 + seriesIndex * barWidth;
+          page.commands.push(`${seriesColors[seriesIndex]} rg`);
+          page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(plotBottom)} ${formatPdfNumber(Math.max(1, barWidth - 1))} ${formatPdfNumber(Math.max(value ? 1 : 0, barHeight))} re f`);
+          if (value > 0) {
+            drawText(page, String(value), x, plotBottom + barHeight + 2, pdfFontSize - 2);
+          }
+        });
+        drawText(page, category.slice(0, 18), centerX - categoryWidth / 2, chartBottom + 4, pdfFontSize - 2);
       });
     } else {
       const rowHeight = chartHeight / pageSize;
@@ -460,6 +485,49 @@ function drawTableRow(
   page.y = yBottom;
 }
 
+function drawPaginatedTableRow(
+  page: PdfPage,
+  wrappedCells: string[][],
+  columnWidths: number[],
+  addPage: AddPdfPage,
+  drawHeader: (page: PdfPage) => void,
+  headerHeight: number,
+  emphasizedColumns = new Set<number>(),
+) {
+  const rowHeight = getWrappedCellsHeight(wrappedCells);
+  const freshPageBodyHeight = pdfPageHeight - pdfMargin * 2 - headerHeight;
+  if (freshPageBodyHeight < pdfMinRowHeight) {
+    throw new Error("PDF table header is too tall to leave room for row content.");
+  }
+  // Keep ordinary rows together; split only rows too tall for a fresh page.
+  if (rowHeight <= freshPageBodyHeight && page.y - rowHeight < pdfMargin) {
+    page = addPage();
+    drawHeader(page);
+  }
+
+  const totalLines = Math.max(1, ...wrappedCells.map((lines) => lines.length));
+  let lineOffset = 0;
+  while (lineOffset < totalLines) {
+    let availableLines = Math.floor((page.y - pdfMargin - pdfCellPaddingY * 2) / pdfLineHeight);
+    if (availableLines < 1) {
+      page = addPage();
+      drawHeader(page);
+      availableLines = Math.floor((page.y - pdfMargin - pdfCellPaddingY * 2) / pdfLineHeight);
+    }
+    const lineCount = Math.min(availableLines, totalLines - lineOffset);
+    const fragment = wrappedCells.map((lines) => lines.slice(lineOffset, lineOffset + lineCount));
+    drawTableRow(
+      page, fragment, columnWidths, getWrappedCellsHeight(fragment), false, emphasizedColumns,
+    );
+    lineOffset += lineCount;
+    if (lineOffset < totalLines) {
+      page = addPage();
+      drawHeader(page);
+    }
+  }
+  return page;
+}
+
 function drawDescriptionTable(
   page: PdfPage,
   rows: Array<{ label: string; value: string }>,
@@ -469,32 +537,21 @@ function drawDescriptionTable(
   const valueWidth = pdfContentWidth - labelWidth;
   const columnWidths = [labelWidth, valueWidth];
   const headerHeight = pdfMinRowHeight;
-  if (page.y - headerHeight < pdfMargin) {
+  const drawHeader = (target: PdfPage) =>
+    drawTableRow(target, [["Export detail"], ["Selection / note"]], columnWidths, headerHeight, true);
+  if (page.y - headerHeight - pdfMinRowHeight < pdfMargin) {
     page = addPage();
   }
-  drawTableRow(page, [["Export detail"], ["Selection / note"]], columnWidths, headerHeight, true);
+  drawHeader(page);
 
   rows.forEach((row) => {
     const wrappedCells = [
       wrapText(row.label, getMaxCharsForColumn(columnWidths[0])),
       wrapText(row.value, getMaxCharsForColumn(columnWidths[1])),
     ];
-    const rowHeight = Math.max(
-      pdfMinRowHeight,
-      Math.max(...wrappedCells.map((cellLines) => cellLines.length)) * pdfLineHeight +
-        pdfCellPaddingY * 2,
+    page = drawPaginatedTableRow(
+      page, wrappedCells, columnWidths, addPage, drawHeader, headerHeight, new Set([0]),
     );
-    if (page.y - rowHeight < pdfMargin) {
-      page = addPage();
-      drawTableRow(
-        page,
-        [["Export detail"], ["Selection / note"]],
-        columnWidths,
-        headerHeight,
-        true,
-      );
-    }
-    drawTableRow(page, wrappedCells, columnWidths, rowHeight, false, new Set([0]));
   });
   return page;
 }
@@ -502,19 +559,16 @@ function drawDescriptionTable(
 function drawDescriptionNotes(page: PdfPage, notes: string[], addPage: AddPdfPage) {
   const columnWidths = [pdfContentWidth];
   const headerHeight = pdfMinRowHeight;
-  if (page.y - headerHeight < pdfMargin) {
+  const drawHeader = (target: PdfPage) =>
+    drawTableRow(target, [["Notes"]], columnWidths, headerHeight, true);
+  if (page.y - headerHeight - pdfMinRowHeight < pdfMargin) {
     page = addPage();
   }
-  drawTableRow(page, [["Notes"]], columnWidths, headerHeight, true);
+  drawHeader(page);
 
   notes.forEach((note) => {
     const wrappedCells = [wrapText(note, getMaxCharsForColumn(columnWidths[0]))];
-    const rowHeight = getWrappedCellsHeight(wrappedCells);
-    if (page.y - rowHeight < pdfMargin) {
-      page = addPage();
-      drawTableRow(page, [["Notes"]], columnWidths, headerHeight, true);
-    }
-    drawTableRow(page, wrappedCells, columnWidths, rowHeight);
+    page = drawPaginatedTableRow(page, wrappedCells, columnWidths, addPage, drawHeader, headerHeight);
   });
   return page;
 }
@@ -579,7 +633,7 @@ function getRepeatedPdfColumnCount(headers: string[]) {
   return 1;
 }
 
-function getColumnWidths(headers: string[], rows: string[][], requestedWidths?: number[]) {
+function getColumnWidths(headers: string[], rows: ExportCell[][], requestedWidths?: number[]) {
   const columns = normalizeColumns(headers.length);
   if (
     requestedWidths?.length === columns.length &&
@@ -670,7 +724,7 @@ function normalizeHeaderForWidth(header: string) {
     .replace(/[^a-z0-9]+/g, "");
 }
 
-function estimateColumnContentWidth(header: string, values: string[], profile: PdfColumnProfile) {
+function estimateColumnContentWidth(header: string, values: ExportCell[], profile: PdfColumnProfile) {
   const samples = [header, ...values.slice(0, 80)].map(normalizeCell);
   const contentScore = samples.reduce((max, value) => {
     const longestWord = value
@@ -763,7 +817,7 @@ function getPdfAverageCharacterWidth(fontSize: number) {
   return fontSize * 0.62;
 }
 
-function normalizeCell(value: string) {
+function normalizeCell(value: ExportCell) {
   return (
     String(value ?? "")
       .replace(/\s+/g, " ")
@@ -838,7 +892,7 @@ function parseExportDescriptionPair(line: string): { label: string; value: strin
 function isExportDetailLabel(label: string) {
   const normalized = label.trim().toLowerCase();
   return (
-    /^(global filter|file year subfilter|file year|financial year|fy|division|file category|category|initiation date range|date range|as-on date|as on date|selected month|month|report|source|filter|filters|subfilter|value type|payment mode|stage|milestone|generated by|layout|files)$/.test(
+    /^(global filter|file year subfilter|file year|financial year|fy|division|file category|category|initiation date range|date range|as-on date|as on date|selected month|month|report|source|filter|filters|subfilter|value type|payment mode|stage|milestone|generated by|layout|files|s\.o\.)$/.test(
       normalized,
     ) ||
     /^(global|selected|active|from|to) /.test(normalized) ||

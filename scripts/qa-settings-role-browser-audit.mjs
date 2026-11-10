@@ -7,7 +7,11 @@ const adminUsername = process.env.QA_AUDIT_ADMIN_USERNAME ?? "dashboard_audit";
 const adminPassword = process.env.QA_AUDIT_ADMIN_PASSWORD ?? "dashboard_audit123";
 const password = process.env.QA_AUDIT_USER_PASSWORD ?? "QaRoleAudit#2026";
 const qaDatabase = process.env.QA_AUDIT_DATABASE ?? "recordkeeper_qa_full_audit_20261102";
-const prefix = `qa_settings_role_${Date.now()}`;
+// Master-data endpoints intentionally hide values carrying the reserved
+// standalone "qa" marker. Keep this audit's temporary user names distinct,
+// but use a neutral prefix for indentors and firms so their create/read
+// round-trips exercise the real response path.
+const prefix = `settings_role_audit_${Date.now()}`;
 
 const expectedSettings = {
   admin: [
@@ -279,6 +283,14 @@ async function checkCoreCapabilityMatrix(api, users, divisionId) {
   const createdFirms = [];
   try {
     await loginApi(adminApi, admin.username, password);
+    const adminDivisionsBody = await json(
+      await adminApi.get("/api/divisions?includeInactive=true"),
+      "load admin division scope",
+    );
+    const expectedAdminDivisionCount = Array.isArray(adminDivisionsBody.divisions)
+      ? adminDivisionsBody.divisions.length
+      : 0;
+    assert.ok(expectedAdminDivisionCount > 0, "Admin must see at least one visible division.");
     const filesBody = await json(await adminApi.get("/api/files?year=all"), "load QA files");
     const targetFile = filesBody.files?.find((file) => file.divisionId === divisionId) ?? filesBody.files?.[0];
     assert.ok(targetFile?.id, "QA database must contain a file for capability probes.");
@@ -290,7 +302,7 @@ async function checkCoreCapabilityMatrix(api, users, divisionId) {
         const divisionResponse = await roleApi.get("/api/divisions?includeInactive=true");
         const divisionBody = await json(divisionResponse, `${user.role} divisions`);
         const divisionCount = Array.isArray(divisionBody.divisions) ? divisionBody.divisions.length : 0;
-        const expectedDivisionCount = user.role === "admin" ? 4 : 1;
+        const expectedDivisionCount = user.role === "admin" ? expectedAdminDivisionCount : 1;
         assert.equal(divisionCount, expectedDivisionCount, `${user.role} division scope mismatch.`);
         result.divisions.push({ role: user.role, count: divisionCount });
 
@@ -530,12 +542,13 @@ async function checkAdditionalRolePowers(api, users, divisionId) {
       assert.equal(plan.plan?.canSave, expectedCanSave, `${user.cashOutgoEditScope} Universal Viewer save capability mismatch.`);
       const saveResponse = await universalApi.put("/api/reports/cash-out-go-plan", {
         data: {
-          billOffsetDays: plan.plan?.defaultSoOffsetDays ?? 30,
+          billOffsetDays: plan.plan?.settings?.billOffsetDays ?? 30,
           useCustomBillOffsetDays: false,
-          handSubmissionOffsetDays: plan.plan?.defaultSoOffsetDays ?? 30,
+          handSubmissionOffsetDays: plan.plan?.settings?.handSubmissionOffsetDays ?? 30,
           useCustomHandSubmissionOffsetDays: false,
-          dpOffsetDays: plan.plan?.defaultSoOffsetDays ?? 30,
+          dpOffsetDays: plan.plan?.settings?.dpOffsetDays ?? 30,
           useCustomDpOffsetDays: false,
+          saveSettings: false,
           rows: [],
           advancePaymentDateUpdates: [],
           stageOffsets: [],
@@ -554,6 +567,147 @@ async function checkAdditionalRolePowers(api, users, divisionId) {
     }
   }
   return result;
+}
+
+function financialYearArchived(settings, label) {
+  return (settings.financialYearStatuses ?? []).some(
+    (status) => status?.label === label && status?.archived === true,
+  );
+}
+
+async function checkFinancialYearArchivePermissions(api, users) {
+  const admin = users.find((user) => user.role === "admin");
+  assert.ok(admin, "Archive audit admin is missing.");
+
+  const before = (await json(await api.get("/api/settings"), "load archive settings")).settings;
+  const currentYear = before.financialYear;
+  const targetYear = (before.financialYears ?? []).find((year) => year !== currentYear);
+  assert.ok(targetYear, "QA database must contain a non-current financial year for archive testing.");
+  const initialArchived = financialYearArchived(before, targetYear);
+  const desiredArchived = !initialArchived;
+
+  const currentYearResponse = await api.patch(
+    `/api/settings/financial-years/${encodeURIComponent(currentYear)}/archive`,
+    { data: { archived: true } },
+  );
+  assert.equal(currentYearResponse.status(), 400, "The current financial year must not be archivable.");
+
+  const adminMutation = await api.patch(
+    `/api/settings/financial-years/${encodeURIComponent(targetYear)}/archive`,
+    { data: { archived: desiredArchived } },
+  );
+  assert.equal(adminMutation.status(), 200, "Admin should be able to archive or restore a non-current year.");
+  const afterAdminMutation = (await json(await api.get("/api/settings"), "verify archive mutation")).settings;
+  assert.equal(
+    financialYearArchived(afterAdminMutation, targetYear),
+    desiredArchived,
+    "Admin archive/restore mutation should persist.",
+  );
+
+  const denied = [];
+  try {
+    for (const user of users.filter((item) => item.role !== "admin")) {
+      const roleApi = await playwrightRequest.newContext({ baseURL: apiBaseUrl });
+      try {
+        await loginApi(roleApi, user.username, passwordFor(user.username));
+        const response = await roleApi.patch(
+          `/api/settings/financial-years/${encodeURIComponent(targetYear)}/archive`,
+          { data: { archived: !desiredArchived } },
+        );
+        assert.equal(response.status(), 403, `${user.role} must not archive or restore financial years.`);
+        denied.push({ role: user.role, status: response.status() });
+      } finally {
+        await roleApi.dispose();
+      }
+      const unchanged = (await json(await api.get("/api/settings"), "verify archive denial")).settings;
+      assert.equal(
+        financialYearArchived(unchanged, targetYear),
+        desiredArchived,
+        `${user.role} archive denial must not change the financial-year state.`,
+      );
+    }
+  } finally {
+    const restoreResponse = await api.patch(
+      `/api/settings/financial-years/${encodeURIComponent(targetYear)}/archive`,
+      { data: { archived: initialArchived } },
+    );
+    assert.equal(restoreResponse.status(), 200, "Archive audit must restore the original financial-year state.");
+    const restored = (await json(await api.get("/api/settings"), "verify archive restoration")).settings;
+    assert.equal(
+      financialYearArchived(restored, targetYear),
+      initialArchived,
+      "Archive audit must leave the QA database in its original state.",
+    );
+  }
+
+  return {
+    targetYear,
+    initialArchived,
+    adminMutation: { archived: desiredArchived, status: adminMutation.status() },
+    currentYearRejected: currentYearResponse.status(),
+    denied,
+    restoredOriginalState: true,
+  };
+}
+
+async function checkUniversalViewerSettingsBoundary(browser, user) {
+  const { context, page } = await loginBrowser(browser, user.username);
+  try {
+    const labels = await visibleSettingsLabels(page);
+    const forbidden = [
+      "Quick Entry Excel",
+      "Workspace",
+      "Year Setup",
+      "MMG Summary",
+      "Demand Processing Analysis Presets",
+      "Divisions",
+      "Indentors",
+      "Firm Database",
+      "Firm Rating",
+      "File Types",
+      "Modes",
+      "GeM Bidding Modes",
+      "Firm Types",
+      "File Markers",
+      "TCEC Committee",
+      "Value thresholds",
+      "BG receipt delay",
+      "Anomaly Control",
+      "Milestones",
+      "Authorised users",
+      "IP Access",
+      "Archive",
+      "Protected backup",
+    ];
+    for (const label of forbidden) {
+      assert.ok(!labels.includes(label), `Universal Viewer must not see general Settings section ${label}.`);
+    }
+    return { visible: labels, deniedSections: forbidden };
+  } finally {
+    await context.close();
+  }
+}
+
+async function checkMergeSplitUnavailable(browser, user) {
+  const { context, page } = await loginBrowser(browser, user.username);
+  try {
+    await page.goto(`${frontendUrl}/settings?section=yearSetup`, { waitUntil: "networkidle" });
+    await dismissUrgentDialog(page);
+    await page.getByRole("heading", { name: /Add a division for/i }).waitFor({ state: "visible", timeout: 10_000 });
+    assert.equal(
+      await page.getByRole("heading", { name: /Merge divisions for/i }).count(),
+      0,
+      "Merge must remain unavailable while the feature is intentionally disabled.",
+    );
+    assert.equal(
+      await page.getByRole("heading", { name: /Split \/ transfer division for/i }).count(),
+      0,
+      "Split must remain unavailable while the feature is intentionally disabled.",
+    );
+    return { setupVisible: true, mergeVisible: false, splitVisible: false };
+  } finally {
+    await context.close();
+  }
 }
 
 async function main() {
@@ -597,6 +751,7 @@ async function main() {
     }
 
     const rolePowerResults = await checkAdditionalRolePowers(api, users, divisionId);
+    const archivePermissions = await checkFinancialYearArchivePermissions(api, users);
 
     const roleResults = [];
     for (const user of users) {
@@ -654,6 +809,13 @@ async function main() {
       }
     }
 
+    const universalViewer = users.find((user) => user.role === "universal_viewer");
+    assert.ok(universalViewer, "Universal Viewer audit user is missing.");
+    const universalViewerSettingsBoundary = await checkUniversalViewerSettingsBoundary(browser, universalViewer);
+    const adminUser = users.find((user) => user.role === "admin");
+    assert.ok(adminUser, "Admin audit user is missing for the Year Setup check.");
+    const mergeSplitAvailability = await checkMergeSplitUnavailable(browser, adminUser);
+
     process.stdout.write(`${JSON.stringify({
       database: qaDatabase,
       accountsCreated: users.map(({ username, role, cashOutgoEditScope }) => ({ username, role, cashOutgoEditScope })),
@@ -664,6 +826,9 @@ async function main() {
       settingsSectionRendering: sectionRendering,
       sharedAdminWriteProtection: forbidden,
       additionalRolePowers: rolePowerResults,
+      financialYearArchivePermissions: archivePermissions,
+      universalViewerSettingsBoundary,
+      mergeSplitAvailability,
     }, null, 2)}\n`);
   } finally {
     for (const user of users) {

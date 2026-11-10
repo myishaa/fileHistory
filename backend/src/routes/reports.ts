@@ -50,6 +50,7 @@ import {
   filePaymentEntries,
   filePaymentOrders,
   getParentStagePaymentDate,
+  isSupplyOrderEligibleForMetrics,
   isParentStagePaymentOrder,
   rawSupplyOrders,
 } from "../utils/effective-deliveries.js";
@@ -1374,12 +1375,12 @@ function buildCashOutGoPlan(
 
   if (needsForecastRows) files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
-    filePaymentEntries(file).forEach((entry, paymentOrderIndex) => {
+    filePaymentEntries(file).forEach((entry) => {
       const { order, orderIndex, stageIndex, advancePayment } = entry;
       if (isYes(order.soCancelled) || hasFilledString(order.paymentDate)) return;
       if (isYes(order.noFurtherAction)) return;
       if (advancePayment && !areRequiredAdvanceGuaranteesReceived(file, order)) return;
-      const rowKey = getCashOutGoPlanRowKey(file, order, paymentOrderIndex);
+      const rowKey = getCashOutGoPlanRowKey(file, order, entry);
       const assumption = assumptions.get(rowKey) ?? {};
       const amount = getPlanAmount(file, order);
       const expectedAdvancePaymentDate = advancePayment
@@ -1587,19 +1588,14 @@ function buildCashOutGoPlan(
     });
 
     rawSupplyOrders(file).forEach((order, orderIndex) => {
+      if (!isSupplyOrderEligibleForMetrics(file, order)) return;
       if (isYes(order.soCancelled)) return;
       if (isYes(order.noFurtherAction)) return;
       getSupplementaryBills(order).forEach((bill, billIndex) => {
         if (hasFilledString(bill.paymentDate)) return;
         const amount = getSupplementaryBillPlanAmount(file, bill);
         if (amount.capital === 0 && amount.revenue === 0) return;
-        const rowKey = getSupplementaryBillCashOutGoPlanRowKey(
-          file,
-          order,
-          orderIndex,
-          bill,
-          billIndex,
-        );
+        const rowKey = getSupplementaryBillCashOutGoPlanRowKey(file, order, bill);
         const assumption = assumptions.get(rowKey) ?? {};
         const openReturn = getOpenSupplementaryBillReturn(bill);
         if (openReturn) {
@@ -1866,6 +1862,7 @@ function getActualPaymentsByMonth(files: FileRecord[], paymentCutoffDate?: strin
     });
 
     rawSupplyOrders(file).forEach((order) => {
+      if (!isSupplyOrderEligibleForMetrics(file, order)) return;
       if (isYes(order.soCancelled)) return;
       getSupplementaryBills(order).forEach((bill) => {
         addAmount(bill.paymentDate, getSupplementaryBillActualAmount(file, bill));
@@ -1960,22 +1957,33 @@ function getCashOutGoPlanFocusIndexSuffix(context: { orderIndex: number; stageIn
   }`;
 }
 
-function getCashOutGoPlanRowKey(file: FileRecord, order: SupplyOrderDetail, orderIndex: number) {
-  const label = order.stageDeliveryLabel || "SO";
-  const soRef = order.soNo || order.gemSoNo || String(orderIndex + 1);
-  return [file.id ?? "", soRef, label, orderIndex].join(":");
+function getCashOutGoPlanRowKey(
+  file: FileRecord,
+  order: SupplyOrderDetail,
+  entry: {
+    supplyOrderId?: string;
+    stageId?: string;
+    stageIndex?: number;
+    advancePayment?: boolean;
+  },
+) {
+  const supplyOrderId = entry.supplyOrderId || order.id;
+  if (!file.id || !supplyOrderId || (entry.stageIndex !== undefined && !entry.stageId?.trim())) {
+    throw new Error("Cash Out Go plan row is missing a durable record ID.");
+  }
+  const entryType = entry.advancePayment ? "advance" : entry.stageId ? "stage" : "order";
+  return [file.id, supplyOrderId, entryType, entry.stageId ?? ""].join(":");
 }
 
 function getSupplementaryBillCashOutGoPlanRowKey(
   file: FileRecord,
   order: SupplyOrderDetail,
-  orderIndex: number,
   bill: SupplementaryBillDetail,
-  billIndex: number,
 ) {
-  const soRef = order.soNo || order.gemSoNo || String(orderIndex + 1);
-  const billRef = bill.id || bill.billNo || String(billIndex + 1);
-  return [file.id ?? "", soRef, "supplementary", billRef, orderIndex, billIndex].join(":");
+  if (!file.id || !order.id || !bill.id) {
+    throw new Error("Cash Out Go supplementary bill is missing a durable record ID.");
+  }
+  return [file.id, order.id, "supplementary", bill.id].join(":");
 }
 
 function getSupplementaryBillCashOutGoPlanSourceFocusTarget(
@@ -2018,8 +2026,8 @@ function getActualAmount(file: FileRecord, order: SupplyOrderDetail) {
 
 function getSupplementaryBillActualAmount(file: FileRecord, bill: SupplementaryBillDetail) {
   return {
-    capital: getInrAmountForPlan(bill.actualPaymentCapital || bill.billAmountCapital, file),
-    revenue: getInrAmountForPlan(bill.actualPaymentRevenue || bill.billAmountRevenue, file),
+    capital: getInrAmountForPlan(bill.actualPaymentCapital, file),
+    revenue: getInrAmountForPlan(bill.actualPaymentRevenue, file),
   };
 }
 
@@ -2248,6 +2256,22 @@ function readNonNegativeInteger(value: unknown, fallback: number) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function parseNonNegativeIntegerValue(value: unknown) {
+  const text = typeof value === "number" ? String(value) : readString(value);
+  if (!text || !/^\d+$/.test(text)) return undefined;
+  const parsed = Number(text);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function readDelayDays(value: unknown, fallback: number) {
+  if (value === undefined) return fallback;
+  const parsed = parseNonNegativeIntegerValue(value);
+  if (parsed === undefined) {
+    throw new HttpError(400, "Delay days must be a nonnegative integer.");
+  }
+  return parsed;
+}
+
 function readDateString(value: unknown) {
   const text = readString(value);
   return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : undefined;
@@ -2399,13 +2423,11 @@ function getReportWhereSql({
   const values = [...scopeValues];
   const conditions: string[] = [];
   if (scopeSql) conditions.push(scopeSql);
-  if (selectedYear !== allFilesYear) {
-    const searchableYearCondition = getSearchableFinancialYearSql(
-      activeFilesExpression(),
-      includeArchivedYears,
-    );
-    if (searchableYearCondition) conditions.push(searchableYearCondition);
-  }
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  if (searchableYearCondition) conditions.push(searchableYearCondition);
   const selectedYearCondition =
     selectedYearMode === "candidate"
       ? getSelectedYearCandidateCondition(selectedYear, values, currentFinancialYear)
@@ -2440,9 +2462,15 @@ function getCashOutGoPlanFileWhereSql(
   user: AuthUser,
   divisionId: string,
   fileCategories: FileCategoryKey[] | undefined,
+  includeArchivedYears: boolean,
 ) {
   const values: unknown[] = [];
   const conditions: string[] = [];
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  conditions.push(searchableYearCondition);
   if (!canUseAllDivisions(user)) {
     if (user.divisionIds.length === 0) {
       // Restricted users must not inherit unassigned records. An empty
@@ -2467,6 +2495,7 @@ function getCashOutGoPlanFileWhereSql(
   return {
     whereSql: conditions.length ? `where ${conditions.join(" and ")}` : "",
     values,
+    searchableYearCondition,
   };
 }
 
@@ -2547,23 +2576,10 @@ function biddingDelayBreakupKeyExpression() {
   const refloat = isYesExpression("f.refloat");
   const bidDate = `(case when ${refloat}
     then f.refloat_bidding_date else f.bid_date end)`;
-  const bidOpeningDate = `(case when ${refloat}
-    then f.refloat_bid_opening_date else f.bid_opening_date end)`;
-  const bidOpened = `(case when ${refloat}
-    then (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
-    else (${isYesExpression("f.bid_opened")} or ${isYesExpression("f.bidding_stage_over")}) end)`;
   return `(case
     when ${isYesExpression("f.gem")} and not ${refloat} and not ${hasFilledExpression("f.gem_undertaking_date")}
       then 'gemUndertakingPending'
     when not ${hasFilledExpression(bidDate)}
-      then 'tenderLivePending'
-    when ${hasFilledExpression(bidOpeningDate)}
-      and ${bidOpeningDate} < current_date
-      and not ${bidOpened}
-      then 'bidOpeningOverdue'
-    when ${bidOpened}
-      then 'biddingStageCompletionPending'
-    when ${hasFilledExpression(bidDate)}
       then 'tenderLivePending'
     else null
   end)`;
@@ -2830,18 +2846,7 @@ function fileClosedExpression() {
 }
 
 function biddingDelayStartDateExpression() {
-  const cfaDate = dateCastExpression("f.cfa_date");
-  const bidDate = dateCastExpression("f.bid_date");
-  const bidOpeningDate = dateCastExpression("f.bid_opening_date");
-
-  return `(case
-    when not ${hasFilledExpression("f.bid_date")} then ${cfaDate}
-    when ${bidOpeningDate} is not null
-      and ${bidOpeningDate} < current_date
-      and not ${isYesExpression("f.bid_opened")} then ${bidOpeningDate}
-    when ${isYesExpression("f.bid_opened")} then coalesce(${bidOpeningDate}, ${bidDate}, ${cfaDate})
-    else null::date
-  end)`;
+  return dateCastExpression("f.cfa_date");
 }
 
 function reportAppliesExpression(milestone: (typeof reportMilestoneDefinitions)[number]) {
@@ -2889,9 +2894,6 @@ function reportReviewedExpression(milestone: (typeof reportMilestoneDefinitions)
 }
 
 function refloatBiddingDelayActiveExpression() {
-  const openingOverdue = `${hasFilledExpression("f.refloat_bid_opening_date")}
-    and ${dateCastExpression("f.refloat_bid_opening_date")} < current_date
-    and not (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})`;
   const nonTcecRestart = `${isYesExpression("f.refloat")}
     and not ${isYesExpression("f.tcec")}
     and ${isYesExpression("f.bidding_stage_over")}
@@ -2899,16 +2901,12 @@ function refloatBiddingDelayActiveExpression() {
     and not ${hasFilledExpression("f.refloat_bidding_date")}`;
   return `not ${isCancelledExpression()}
     and not (${fileClosedExpression()})
-    and ${biddingApplicableExpression()}
+    and ${biddingApplicableExpression(true)}
+    and not ${hasFilledExpression("f.refloat_bidding_date")}
     and ((${nonTcecRestart}) or (
       ${isYesExpression("f.refloat")}
       and ${isYesExpression("f.tcec")}
-      and not ${isYesExpression("f.refloat_bidding_stage_over")}
-      and (
-        not ${hasFilledExpression("f.refloat_bidding_date")}
-        or (${openingOverdue})
-        or ${isYesExpression("f.refloat_bid_opened")}
-      )
+      and ${hasFilledExpression("f.post_tcec_minutes_date")}
     ))`;
 }
 
@@ -4892,31 +4890,11 @@ function delayStageStartExpression(
         and ${isYesExpression("f.bidding_stage_over")}
         and ${hasFilledExpression("f.refloat_recommendation_date")}
         then ${dateCastExpression("f.refloat_recommendation_date")}
-      when ${isYesExpression("f.tcec")} then ${dateCastExpression("f.post_tcec_minutes_date")}
-      when ${hasFilledExpression("f.bid_opening_date")} then greatest(
-          ${dateCastExpression("f.bid_opening_date")},
-          coalesce(
-            case when ${isYesExpression("f.refloat_pre_bid_meeting")}
-              then ${dateCastExpression("f.refloat_pre_bid_meeting_date")}
-              else null::date
-            end,
-            ${dateCastExpression("f.bid_opening_date")}
-          )
-        )
+      when ${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")}
+        then ${dateCastExpression("f.post_tcec_minutes_date")}
       else null::date
     end`;
-    const refloatBidOpeningDate = dateCastExpression("f.refloat_bid_opening_date");
-    const refloatBiddingDate = dateCastExpression("f.refloat_bidding_date");
-    return `(case
-      when not ${hasFilledExpression("f.refloat_bidding_date")} then (${refloatStartDate})
-      when ${hasFilledExpression("f.refloat_bid_opening_date")}
-        and ${refloatBidOpeningDate} < current_date
-        and not (${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")})
-        then ${refloatBidOpeningDate}
-      when ${isYesExpression("f.refloat_bid_opened")} or ${isYesExpression("f.refloat_bidding_stage_over")}
-        then coalesce(${refloatBidOpeningDate}, ${refloatBiddingDate}, (${refloatStartDate}))
-      else null::date
-    end)`;
+    return `(${refloatStartDate})`;
   }
   const fileMilestoneEnd = reportMilestoneDefinitions.findIndex(
     (candidate) => candidate.key === "financialSanction",
@@ -5117,32 +5095,37 @@ function effectiveOrderDelayRowsSource(
     "jobCompletionDate",
     effectiveOrderDateExpression("job_completion_date", "jobCompletionDate"),
   );
-  const actualJobCompletionDate = parentStageDateExpression(
+  const pwbStageDate = (field: string, parentDate: string) => `case
+    when ${isYesExpression("so.stage_delivery")} and ${stageCount} > 0 then case
+      when ${isYesExpression("so.stage_payment")} then (
+        select min(nullif(stage.stage ->> '${field}', '')::date)
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage(stage)
+      )
+      when not exists (
+        select 1
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage(stage)
+        where coalesce(nullif(trim(stage.stage ->> '${field}'), ''), '') = ''
+      ) then (
+        select max(nullif(stage.stage ->> '${field}', '')::date)
+        from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage(stage)
+      )
+      else null::date
+    end
+    else ${parentDate}
+  end`;
+  const pwbIrReceiptDate = pwbStageDate(
+    "irReceiptDate",
+    effectiveOrderDateExpression("ir_receipt_date", "irReceiptDate"),
+  );
+  const pwbStageCompletionDate = pwbStageDate(
     "actualJobCompletionDate",
     effectiveOrderDateExpression("actual_job_completion_date", "actualJobCompletionDate"),
   );
-  const pwbIrReceiptDate = effectiveOrderDateExpression("ir_receipt_date", "irReceiptDate");
   const pwbStartDate = `case
-    when ${goodsServicesIrNo} then case
-      when ${isYesExpression("so.stage_delivery")} and ${stageCount} > 0 then case
-        when ${isYesExpression("so.stage_payment")} then (
-          select min(nullif(stage.stage ->> 'actualJobCompletionDate', '')::date)
-          from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage(stage)
-        )
-        when not exists (
-          select 1
-          from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage(stage)
-          where coalesce(nullif(trim(stage.stage ->> 'actualJobCompletionDate'), ''), '') = ''
-        ) then (
-          select max(nullif(stage.stage ->> 'actualJobCompletionDate', '')::date)
-          from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage(stage)
-        )
-        else null::date
-      end
-      else ${actualJobCompletionDate}
-    end
+    when ${contractFileType} then ${soDate}
+    when ${goodsServicesIrNo} then ${pwbStageCompletionDate}
     when ${goodsServicesIrYes} then ${pwbIrReceiptDate}
-    else ${materialReceiptDate}
+    else ${pwbStageCompletionDate}
   end`;
   const irReceiptDate = parentStageDateExpression(
     "irReceiptDate",
@@ -5222,10 +5205,7 @@ function effectiveOrderDelayRowsSource(
       ${effectiveOrderDateExpression("ir_preparation_date", "irPreparationDate")} as ir_receipt_start_date,
       ${irReceiptDate} as ir_receipt_date,
       case
-        when ${contractFileType}
-          and ${effectiveDpDate} is not null
-        then (${effectiveDpDate} + interval '1 day')::date
-        when ${goodsServicesIrNo} and ${jobCompletionDone}
+        when ${nonDeliveryFileTypeExpression("f")}
         then ${jobCompletionDate}
         when ${parentStagePaymentCase} then ${irReceiptDate}
         else coalesce(${irReceiptDate}, ${effectiveOrderDateExpression(
@@ -5418,17 +5398,7 @@ function orderDelayRowsSelects(
           : milestone.key === "jobCompletion"
             ? `${startDate} is not null and not ${contractPaymentDelay}`
             : `${normalizeMilestoneExpression(currentMilestoneExpression)} = '${milestone.current}'`;
-      const paymentFollowUpMilestones = [
-        "advancePayment",
-        "billPreparation",
-        "billSentForPayment",
-        "billReturnedForCorrection",
-        "payment",
-      ];
-      const activeFollowUpCondition =
-        isBgStatusKey(milestone.key) || !paymentFollowUpMilestones.includes(milestone.key)
-          ? "true"
-          : `not ${isYesExpression("effective_order.no_further_action")}`;
+      const activeFollowUpCondition = `not ${isYesExpression("effective_order.no_further_action")}`;
       return `select
           f.id::text as "fileId",
           coalesce(nullif(f.imms, ''), '') as "fileRef",
@@ -5448,6 +5418,7 @@ function orderDelayRowsSelects(
         left join divisions d on d.id = f.division_id
         join lateral ${source} effective_order on true
         ${appendReportWhereClause(whereSql, [
+          `not (${fileClosedExpression()})`,
           `not ${isYesExpression("f.demand_cancelled")}`,
           `not ${isYesExpression("effective_order.so_cancelled")}`,
           activeFollowUpCondition,
@@ -5541,6 +5512,7 @@ function returnedBillDelayRowsSelects(
       left join divisions d on d.id = f.division_id
       join lateral ${source} effective_order on true
       ${appendReportWhereClause(whereSql, [
+        `not (${fileClosedExpression()})`,
         `not ${isYesExpression("f.demand_cancelled")}`,
         `not ${isYesExpression("effective_order.so_cancelled")}`,
         `not ${isYesExpression("effective_order.no_further_action")}`,
@@ -5589,6 +5561,7 @@ function supplementaryReturnedBillDelayRowsSelects(
       join supply_orders so on so.file_id = f.id
       join lateral jsonb_array_elements(coalesce(so.supplementary_bills, '[]'::jsonb)) with ordinality as supplementary_bill(bill, bill_index) on true
       ${appendReportWhereClause(whereSql, [
+        `not (${fileClosedExpression()})`,
         `not ${isYesExpression("f.demand_cancelled")}`,
         `not ${isYesExpression("so.so_cancelled")}`,
         `not ${isYesExpression("so.no_further_action")}`,
@@ -5620,7 +5593,9 @@ async function loadDelayRows(
       const index = reportMilestoneDefinitions.findIndex((item) => item.key === milestone.key);
       const startDate = delayStageStartExpression(milestone, index);
       const cumulativeStartDate = delayCumulativeStartExpression(milestone, index);
-      const complete = reportCompleteExpression(milestone);
+      const complete = milestone.key === "refloatBidding"
+        ? "false"
+        : reportCompleteExpression(milestone);
       const active = milestone.key === "refloatBidding"
         ? refloatBiddingDelayActiveExpression()
         : milestone.key === "postTcec"
@@ -5648,12 +5623,22 @@ async function loadDelayRows(
             else (current_date - (${cumulativeStartDate})::date)::integer
           end as "cumulativeDelayDays",
           coalesce((${lastFilled})::text, '') as "lastFilledDate",
-          'Milestones' as "focusSection",
-          null::text as "focusTarget",
+          (case
+            when '${milestone.key}' = 'tcec' then 'TCEC block'
+            when '${milestone.key}' in ('postTcec', 'refloatPostTcec') then 'TCEC block'
+            else 'Milestones'
+          end) as "focusSection",
+          (case
+            when '${milestone.key}' = 'tcec' then 'preTcecMinutesDate'
+            when '${milestone.key}' = 'postTcec' then 'postTcecMinutesDate'
+            when '${milestone.key}' = 'refloatPostTcec' then 'refloatPostTcecMinutesDate'
+            else null
+          end) as "focusTarget",
           ${biddingBreakupKey} as "biddingBreakupKey"
         from files f
         left join divisions d on d.id = f.division_id
         ${appendReportWhereClause(whereSql, [
+          `not (${fileClosedExpression()})`,
           active,
           `not (${complete})`,
           `(${startDate}) is not null`,
@@ -5682,7 +5667,7 @@ async function loadDelayRows(
             (current_date - (${args.startDate})::date)::integer as "daysInStage",
             null::integer as "cumulativeDelayDays",
             coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
-            'Milestones' as "focusSection",
+            'TCEC block' as "focusSection",
             '${args.focusTarget}' as "focusTarget",
             null::text as "biddingBreakupKey"
           from files f
@@ -5768,7 +5753,9 @@ async function loadDelayRows(
         })
     : [];
   const gemUndertakingSelects =
-    selectedMilestoneKey === "all" || selectedMilestoneKey === "gemUndertaking"
+    selectedMilestoneKey === "all" ||
+    selectedMilestoneKey === "gemUndertaking" ||
+    selectedMilestoneKey === "refloatGemUndertaking"
       ? (() => {
           const refloatTcec = `(${isYesExpression("f.refloat")} and ${isYesExpression("f.tcec")})`;
           const refloatNonTcec = `(${isYesExpression("f.refloat")} and not ${isYesExpression("f.tcec")})`;
@@ -5791,6 +5778,12 @@ async function loadDelayRows(
               and ${hasFilledExpression("f.refloat_recommendation_date")}
               and not ${hasFilledExpression("f.refloat_gem_undertaking_date")})
           )`;
+          const cycleScope =
+            selectedMilestoneKey === "gemUndertaking"
+              ? `not ${isYesExpression("f.refloat")}`
+              : selectedMilestoneKey === "refloatGemUndertaking"
+                ? isYesExpression("f.refloat")
+                : "true";
           return [
           `select
               f.id::text as "fileId",
@@ -5798,15 +5791,15 @@ async function loadDelayRows(
               coalesce(d.name, '') as division,
               coalesce(f.indentor, '') as indentor,
               coalesce(f.demand_description, '') as description,
-              'gemUndertaking' as "milestoneKey",
-              'GeM Undertaking' as milestone,
+              (case when ${isYesExpression("f.refloat")}
+                then 'refloatGemUndertaking' else 'gemUndertaking' end) as "milestoneKey",
+              (case when ${isYesExpression("f.refloat")}
+                then 'Refloat GeM Undertaking' else 'GeM Undertaking' end) as milestone,
               (${startDate})::text as "stageStartDate",
               (current_date - (${startDate})::date)::integer as "daysInStage",
               null::integer as "cumulativeDelayDays",
               coalesce((${lastFilledDateExpression()})::text, '') as "lastFilledDate",
-              (case when ${refloatTcec} or ${refloatNonTcec}
-                then 'Bidding details'
-                else 'Milestones' end) as "focusSection",
+              'Bidding details' as "focusSection",
               (case when ${refloatTcec} or ${refloatNonTcec}
                 then 'refloatGemUndertakingDate'
                 else 'gemUndertakingDate' end) as "focusTarget",
@@ -5817,6 +5810,7 @@ async function loadDelayRows(
               `not ${isCancelledExpression()}`,
               `not (${fileClosedExpression()})`,
               isYesExpression("f.gem"),
+              cycleScope,
               activeCycleBiddingApplicable,
               pending,
               `(${startDate}) is not null`,
@@ -5955,6 +5949,12 @@ async function loadDelayRows(
               then ${dateCastExpression("f.refloat_recommendation_date")}
             else ${firstFinancialSanctionDate}
           end)`;
+          const technicalEvaluationFocusTarget = `(case
+            when ${isYesExpression("f.refloat")} and not ${refloatCycle}
+              and not ${hasFilledExpression("f.refloat_recommendation_date")}
+              then 'refloatRecommendationDate'
+            else 'financialsanction:pending:' || coalesce(technical_order.order_index, 0)::text
+          end)`;
           const lastFilled = lastFilledDateExpression();
           return [
             `select
@@ -5969,14 +5969,21 @@ async function loadDelayRows(
               (current_date - (${stageStartDate})::date)::integer as "daysInStage",
               null::integer as "cumulativeDelayDays",
               coalesce((${lastFilled})::text, '') as "lastFilledDate",
-              'Milestones' as "focusSection",
               (case when ${isYesExpression("f.refloat")} and not ${refloatCycle}
                 and not ${hasFilledExpression("f.refloat_recommendation_date")}
-                then 'refloatRecommendationDate'
-                else 'financialSanction' end) as "focusTarget",
+                then 'Bidding details'
+                else 'Supply order and payment' end) as "focusSection",
+              ${technicalEvaluationFocusTarget} as "focusTarget",
               null::text as "biddingBreakupKey"
             from files f
             left join divisions d on d.id = f.division_id
+            left join lateral (
+              select row_number() over (order by so_target.sort_order asc, so_target.id asc) - 1 as order_index
+              from supply_orders so_target
+              where so_target.file_id = f.id
+              order by so_target.sort_order asc, so_target.id asc
+              limit 1
+            ) as technical_order on true
             ${appendReportWhereClause(whereSql, [
               `not ${isCancelledExpression()}`,
               `not ${isYesExpression("f.tcec")}`,
@@ -6175,6 +6182,7 @@ reportsRouter.get(
 reportsRouter.get(
   "/cash-out-go-plan",
   asyncHandler(async (request, response) => {
+    await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
     const settings = await loadSettings();
     const financialYear = readString(request.query.financialYear) ?? settings.financialYear;
@@ -6183,6 +6191,10 @@ reportsRouter.get(
     }
     const includePreviousFySubmitted =
       readString(request.query.includePreviousFySubmitted) === "true";
+    const includeArchivedYears =
+      request.query.includeArchivedYears === undefined
+        ? true
+        : readBoolean(request.query.includeArchivedYears);
     const divisionId = readString(request.query.divisionId)?.trim() || "all";
     const fileCategories = readOptionalFileCategories(request.query.fileCategories);
     const planSections = readCashOutGoPlanSections(request.query.sections);
@@ -6192,16 +6204,22 @@ reportsRouter.get(
       canUseAllDivisions(user) &&
       !hasFileCategoryRestriction(user);
     const scopeKey = getCashOutGoPlanScopeKey(user);
-    const fileWhere = getCashOutGoPlanFileWhereSql(user, divisionId, fileCategories);
+    const fileWhere = getCashOutGoPlanFileWhereSql(
+      user,
+      divisionId,
+      fileCategories,
+      includeArchivedYears,
+    );
     const useSqlScopedLoad = process.env.CASH_OUT_GO_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.CASH_OUT_GO_FILE_SCOPE_COMPARE === "true";
     const cacheKey = `reports:cash-out-go-plan:${JSON.stringify({
-      version: 3,
+      version: 4,
       scope: getAuthScopeCacheKey(user),
       scopeKey,
       financialYear,
       currentFinancialYear: settings.financialYear,
       includePreviousFySubmitted,
+      includeArchivedYears,
       divisionId,
       fileCategories,
       useOrganizationWideMer,
@@ -6222,7 +6240,7 @@ reportsRouter.get(
             ? loadFiles(fileWhere.whereSql, fileWhere.values)
             : Promise.resolve(undefined),
           !useSqlScopedLoad || compareFileScope
-            ? loadFiles("", [], false)
+            ? loadFiles(`where ${fileWhere.searchableYearCondition}`, [], false)
             : Promise.resolve(undefined),
         ]);
       const applyFileScope = (sourceFiles: FileRecord[]) =>
@@ -6311,6 +6329,50 @@ reportsRouter.put(
     const client = await pool.connect();
     try {
       await client.query("begin");
+      const rowFileIds = new Set<string>();
+      const rowKeyFileIdPattern =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      for (const item of rows) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+        const row = item as Record<string, unknown>;
+        const rowKey = readString(row.rowKey)?.trim();
+        if (!rowKey) continue;
+        const fileId = rowKey.slice(0, rowKey.indexOf(":"));
+        if (!rowKey.includes(":") || !rowKeyFileIdPattern.test(fileId)) {
+          throw new HttpError(400, "Invalid Cash Out Go plan row reference.");
+        }
+        rowFileIds.add(fileId.toLowerCase());
+      }
+      if (rowFileIds.size) {
+        const rowFilesResult = await client.query<{
+          id: string;
+          division_id: string | null;
+          file_type: string | null;
+          file_type_group: string | null;
+        }>(
+          `select id, division_id, file_type, file_type_group
+           from files
+           where id = any($1::uuid[])
+             and archived_at is null`,
+          [Array.from(rowFileIds)],
+        );
+        const rowFilesById = new Map(
+          rowFilesResult.rows.map((file) => [file.id.toLowerCase(), file]),
+        );
+        for (const fileId of rowFileIds) {
+          const sourceFile = rowFilesById.get(fileId);
+          if (!sourceFile) throw new HttpError(403, "You cannot edit this file.");
+          if (!canAccessDivision(user, sourceFile.division_id)) {
+            throw new HttpError(403, "You cannot edit this division.");
+          }
+          if (!canAccessFileCategory(user, {
+            fileType: sourceFile.file_type ?? undefined,
+            fileTypeGroup: sourceFile.file_type_group ?? undefined,
+          })) {
+            throw new HttpError(403, "You cannot edit this file type.");
+          }
+        }
+      }
       if (canSaveSettings) {
         await client.query(
           `insert into cash_out_go_plan_settings
@@ -6861,7 +6923,7 @@ reportsRouter.get(
       values: reportWhere.values,
     })}`;
     const files = await getCached(cacheKey, cacheTtl.reportsSummaryMs, () =>
-      loadReportFiles(compactWhereSql, reportWhere.values, selectedYear === allFilesYear, mode),
+      loadReportFiles(compactWhereSql, reportWhere.values, false, mode),
     );
     response.json({ files });
   }),
@@ -6886,9 +6948,9 @@ reportsRouter.get(
       request.query.includeArchivedYears === undefined
         ? true
         : readBoolean(request.query.includeArchivedYears);
-    const delayDays = readNonNegativeInteger(
+    const delayDays = readDelayDays(
       request.query.delayDays,
-      settings.delayStatusDefaultDays ?? 5,
+      parseNonNegativeIntegerValue(settings.delayStatusDefaultDays) ?? 5,
     );
     const delayMilestone = readString(request.query.delayMilestone) ?? "all";
     const sections = readReportsSummarySections(request.query.sections);
@@ -6961,14 +7023,14 @@ reportsRouter.get(
           ? loadFiles(
               reportLoadWhere.whereSql,
               reportLoadWhere.values,
-              selectedYear === allFilesYear,
+              false,
             )
           : Promise.resolve(undefined),
         !useSqlScopedFileLoad || compareFileScope
           ? loadFiles(
               combinedScopeSql ? `where ${combinedScopeSql}` : "",
               scope.values,
-              selectedYear === allFilesYear,
+              false,
             )
           : Promise.resolve(undefined),
       ]);

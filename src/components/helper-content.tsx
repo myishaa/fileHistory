@@ -98,11 +98,13 @@ export function HelperContent({
   sectionOrder,
   showPdfExport = true,
   breadcrumb,
+  highlightText,
 }: {
   lines: string[];
   sectionOrder?: string[];
   showPdfExport?: boolean;
   breadcrumb?: string[];
+  highlightText?: string;
 }) {
   const groups = groupHelperLines(lines, sectionOrder);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -136,7 +138,7 @@ export function HelperContent({
                 {items.map((item, index) => (
                   <li
                     key={`${title}-${index}`}
-                    className={`rounded-sm border-l-2 border-primary/25 px-2 py-1 ${index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"}`}
+                    className={`rounded-sm border-l-2 border-primary/25 px-2 py-1 ${index % 2 === 0 ? "bg-primary/5" : "bg-muted/45"} ${item.replace(/^(?:Purpose|Details|Included and Excluded|Add or activate|Reorder|Remove):\s*/i, "").trim() === highlightText?.trim() ? "font-semibold text-destructive" : ""}`}
                   >
                     {item.replace(
                       /^(?:Purpose|Details|Included and Excluded|Add or activate|Reorder|Remove):\s*/i,

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   BellRing,
   Check,
@@ -15,6 +23,7 @@ import { useActiveUser, useDivisions, useUsers, type AppUser } from "@/lib/files
 import { hasCapability } from "@/lib/permissions";
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
+import { showAppAlert, showAppConfirm } from "@/components/app-dialog";
 
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
   /\/$/,
@@ -52,7 +61,7 @@ const snoozeOptions = [
   { value: 15, label: "15 minutes" },
   { value: 60, label: "1 hour" },
   { value: 240, label: "4 hours" },
-  { value: 1440, label: "Next working day" },
+  { value: 1440, label: "24 hours" },
 ];
 
 const URGENT_POPUP_DISMISS_MS = 15 * 60_000;
@@ -241,6 +250,15 @@ function UrgentMessageCard({
           >
             {message.body}
           </p>
+          {message.status === "snoozed" && message.snoozedUntil ? (
+            <p
+              className={`mt-1 font-medium text-warning-foreground ${
+                compact ? "text-[0.625rem] leading-4" : "text-xs"
+              }`}
+            >
+              Snoozed until {formatUrgentDate(message.snoozedUntil)}
+            </p>
+          ) : null}
         </div>
         <div
           className={`flex shrink-0 items-center ${compact ? "flex-row gap-1" : "flex-col items-end gap-1"}`}
@@ -335,6 +353,9 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
   );
   const [open, setOpen] = useState(false);
   const [dismissedUntil, setDismissedUntil] = useState<number>();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const skipFocusRestoreRef = useRef(false);
   const [rotationActive, setRotationActive] = useState(() =>
     typeof document !== "undefined" &&
     document.documentElement.dataset.noticeBoardRotation === "active",
@@ -355,6 +376,7 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
         // starts. The root-level suppress prop is intentionally mirrored here
         // so the prompt cannot remain over a rotating view during the brief
         // event/state update window.
+        skipFocusRestoreRef.current = true;
         setOpen(false);
       }
     };
@@ -363,14 +385,6 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
       window.removeEventListener("recordkeeper:notice-board-rotation", updateRotationState);
   }, []);
   const isSuppressed = suppress || rotationActive;
-  useEffect(() => {
-    if (!open) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") dismissPrompt();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [dismissPrompt, open]);
   useEffect(() => {
     if (isSuppressed) {
       setOpen(false);
@@ -390,7 +404,75 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
     }
     setOpen(true);
   }, [dismissedUntil, isSuppressed, visibleMessages.length]);
-  if (isSuppressed || !open || !visibleMessages.length || loading) return null;
+  const dialogVisible = !isSuppressed && open && visibleMessages.length > 0 && !loading;
+  useLayoutEffect(() => {
+    if (!dialogVisible) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    restoreFocusRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    skipFocusRestoreRef.current = false;
+    const focusableElements = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => {
+        const style = window.getComputedStyle(element);
+        return style.visibility !== "hidden" && style.display !== "none";
+      });
+    const initialFocus =
+      dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
+      focusableElements()[0] ??
+      dialog;
+    initialFocus.focus();
+
+    const containFocus = (event: FocusEvent) => {
+      const target = event.target as HTMLElement | null;
+      const ownerDialog = target?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+      if (dialog.contains(event.target as Node) || (ownerDialog && ownerDialog !== dialog)) return;
+      (dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
+        focusableElements()[0] ??
+        dialog).focus();
+    };
+    const trapTabAndEscape = (event: KeyboardEvent) => {
+      const active = document.activeElement as HTMLElement | null;
+      const ownerDialog = active?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+      if (ownerDialog && ownerDialog !== dialog) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        dismissPrompt();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = focusableElements();
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      if (event.shiftKey && (active === focusable[0] || active === dialog)) {
+        event.preventDefault();
+        focusable[focusable.length - 1].focus();
+      } else if (!event.shiftKey && (active === focusable[focusable.length - 1] || active === dialog)) {
+        event.preventDefault();
+        focusable[0].focus();
+      }
+    };
+
+    document.addEventListener("focusin", containFocus, true);
+    document.addEventListener("keydown", trapTabAndEscape, true);
+    return () => {
+      document.removeEventListener("focusin", containFocus, true);
+      document.removeEventListener("keydown", trapTabAndEscape, true);
+      if (skipFocusRestoreRef.current) {
+        skipFocusRestoreRef.current = false;
+        return;
+      }
+      if (restoreFocusRef.current?.isConnected) restoreFocusRef.current.focus();
+    };
+  }, [dialogVisible, dismissPrompt]);
+  if (!dialogVisible) return null;
   const updateState = (id: string, patch: Partial<UrgentMessage>) => {
     setMessages((current) =>
       current.map((item) => (item.id === id ? { ...item, ...patch } : item)),
@@ -408,7 +490,7 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
         doneAt: new Date().toISOString(),
       });
     } catch (reason) {
-      window.alert(reason instanceof Error ? reason.message : "Could not complete the reminder.");
+      await showAppAlert(reason instanceof Error ? reason.message : "Could not complete the reminder.");
     }
   };
   const snooze = async (message: UrgentMessage, minutes: number) => {
@@ -420,7 +502,7 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
       });
       updateState(message.id, { status: "snoozed", visibleNow: false, snoozedUntil });
     } catch (reason) {
-      window.alert(reason instanceof Error ? reason.message : "Could not snooze the reminder.");
+      await showAppAlert(reason instanceof Error ? reason.message : "Could not snooze the reminder.");
     }
   };
   const renderMessageGroup = (
@@ -451,6 +533,7 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
         {showClose ? (
           <button
             type="button"
+            data-dialog-initial-focus="true"
             onClick={() => {
               dismissPrompt();
             }}
@@ -489,13 +572,15 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
     <div
       data-urgent-message-prompt="true"
       className="fixed inset-0 z-[100] grid place-items-center bg-foreground/20 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Urgent reminders and messages"
       onClick={dismissPrompt}
     >
       <div
+        ref={dialogRef}
         className="relative flex max-h-[min(1040px,calc(100dvh-1rem))] w-full max-w-[1180px] flex-col overflow-hidden rounded-xl border border-border bg-card text-card-foreground shadow-[var(--shadow-elevated)]"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Urgent reminders and messages"
+        tabIndex={-1}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto bg-background p-5 sm:p-6">
@@ -569,7 +654,9 @@ export function UrgentMessageTicker({ kind }: { kind: "reminder" | "admin" }) {
               <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>
               <p className="mt-2 text-xs text-muted-foreground">
                 {message.kind === "admin"
-                  ? `From Admin · ${formatUrgentDate(message.createdAt)}`
+                  ? `From ${message.createdByName.trim() || "Unknown sender"} · ${formatUrgentDate(
+                      message.createdAt,
+                    )}`
                   : `Created ${formatUrgentDate(message.createdAt)}`}
               </p>
             </article>
@@ -690,9 +777,9 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
             recipientDivisionIds.length,
         ));
   useUnsavedChanges(`urgent-message-editor:${kind}`, messageDraftDirty);
-  const confirmDiscardComposer = () =>
+  const confirmDiscardComposer = async () =>
     !messageDraftDirty ||
-    window.confirm("You have unsaved changes. Leave without saving?");
+    (await showAppConfirm("You have unsaved changes. Leave without saving?"));
   const resetComposer = () => {
     setBody("");
     setAudience(defaultAudience);
@@ -701,13 +788,13 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
     setEditingMessage(undefined);
     setCreateOpen(false);
   };
-  const startCreate = () => {
+  const startCreate = async () => {
     if (createOpen && !editingMessage) {
-      if (!confirmDiscardComposer()) return;
+      if (!(await confirmDiscardComposer())) return;
       resetComposer();
       return;
     }
-    if (!confirmDiscardComposer()) return;
+    if (!(await confirmDiscardComposer())) return;
     setBody("");
     setAudience(defaultAudience);
     setRecipientUserIds([]);
@@ -715,8 +802,8 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
     setEditingMessage(undefined);
     setCreateOpen(true);
   };
-  const startEdit = (message: UrgentMessage) => {
-    if (!confirmDiscardComposer()) return;
+  const startEdit = async (message: UrgentMessage) => {
+    if (!(await confirmDiscardComposer())) return;
     setBody(message.body);
     setAudience(
       message.audience === "creator" || (isSubAdmin && message.audience === "all_users")
@@ -748,7 +835,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
       notifyUrgentMessagesUpdated();
       await reload();
     } catch (reason) {
-      window.alert(
+      await showAppAlert(
         reason instanceof Error
           ? reason.message
           : editingMessage
@@ -760,9 +847,18 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
     }
   };
   const done = async (message: UrgentMessage) => {
-    await urgentRequest(`/api/urgent-messages/${message.id}/done`, { method: "POST", body: "{}" });
-    notifyUrgentMessagesUpdated();
-    await reload();
+    try {
+      await urgentRequest(`/api/urgent-messages/${message.id}/done`, {
+        method: "POST",
+        body: "{}",
+      });
+      notifyUrgentMessagesUpdated();
+      await reload();
+    } catch (reason) {
+      await showAppAlert(
+        reason instanceof Error ? reason.message : "Could not mark this item as done.",
+      );
+    }
   };
   const snooze = async (message: UrgentMessage, minutes: number) => {
     setSnoozeId(message.id);
@@ -773,13 +869,22 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
       });
       notifyUrgentMessagesUpdated();
       await reload();
+    } catch (reason) {
+      await showAppAlert(reason instanceof Error ? reason.message : "Could not snooze this item.");
     } finally {
       setSnoozeId(undefined);
     }
   };
   const remove = async (message: UrgentMessage) => {
-    await urgentRequest(`/api/urgent-messages/${message.id}`, { method: "DELETE" });
-    await reload();
+    try {
+      await urgentRequest(`/api/urgent-messages/${message.id}`, { method: "DELETE" });
+      notifyUrgentMessagesUpdated();
+      await reload();
+    } catch (reason) {
+      await showAppAlert(
+        reason instanceof Error ? reason.message : "Could not delete this urgent message.",
+      );
+    }
   };
   if (messagingBlocked) return null;
   return (
@@ -877,7 +982,7 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
                     onChange={(event) => setAudience(event.target.value as typeof audience)}
                     className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm"
                   >
-                    {!isSubAdmin ? <option value="all_users">All users</option> : null}
+                    {!isSubAdmin ? <option value="all_users">MMG Users</option> : null}
                     <option value="users">Selected users</option>
                     <option value="divisions">Selected divisions</option>
                   </select>
@@ -924,7 +1029,9 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
               <button
                 type="button"
                 onClick={() => {
-                  if (confirmDiscardComposer()) resetComposer();
+                  void confirmDiscardComposer().then((confirmed) => {
+                    if (confirmed) resetComposer();
+                  });
                 }}
                 className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
               >

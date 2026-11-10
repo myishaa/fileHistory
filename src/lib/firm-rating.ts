@@ -21,12 +21,29 @@ function fieldIdFromLabel(label: string, index: number) {
   return id || `rating${index + 1}`;
 }
 
+export function createFirmRatingFieldId(fields: readonly Pick<FirmRatingField, "id">[]) {
+  const usedIds = new Set(fields.map((field) => field.id));
+  let id = "";
+  do {
+    id = `rating${crypto.randomUUID().replace(/-/g, "")}`;
+  } while (usedIds.has(id));
+  return id;
+}
+
 export function normalizeFirmRatingConfig(config?: FirmRatingConfig): FirmRatingConfig {
   const source = config?.fields?.length ? config.fields : defaultFirmRatingFields;
+  const usedIds = new Set<string>();
   const fields = source
     .map((field, index) => {
       const label = field.label?.trim() || `Rating ${index + 1}`;
-      const id = field.id?.trim() || fieldIdFromLabel(label, index);
+      const baseId = field.id?.trim() || fieldIdFromLabel(label, index);
+      let id = baseId;
+      let suffix = 2;
+      while (usedIds.has(id)) {
+        id = `${baseId}Copy${suffix}`;
+        suffix += 1;
+      }
+      usedIds.add(id);
       const parsedWeight = Number.parseFloat(String(field.weight ?? "1"));
       const minText = field.minValue?.trim() || "0";
       const maxText = field.maxValue?.trim() || "5";

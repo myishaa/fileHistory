@@ -1,4 +1,5 @@
 import { store } from "@/lib/files-store";
+import { showAppAlert } from "@/components/app-dialog";
 
 export function promptDeletionPassword(action: string) {
   return showPasswordPrompt(
@@ -22,7 +23,10 @@ export async function requestVerifiedDeletionPassword(action: string) {
     return entered;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Deletion password verification failed.";
-    alert(message === "Invalid deletion password." ? "Incorrect deletion password." : message);
+    await showAppAlert(
+      message === "Invalid deletion password." ? "Incorrect deletion password." : message,
+      { title: "Deletion password" },
+    );
     return false;
   }
 }

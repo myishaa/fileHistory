@@ -22,10 +22,19 @@ function pwbFile(order) {
     fileTypeGroup: "goodsServices",
     ir: "No",
     bg: "Yes",
+    gem: "No",
+    valueRevenue: "100000",
     demandCancelled: "No",
     supplyOrders: [
       {
+        financialSanctionDate: daysAgo(120),
+        soNo: "SO-1",
         soDate: daysAgo(100),
+        soValueRevenue: "100000",
+        firm: "Firm A",
+        firmType: "MSE",
+        stageDelivery: "No",
+        advancePayment: "No",
         bgCoverageType: "PWB",
         pwbBgNo: "PWB-TEST-1",
         pwbBgReceivedDate: "",
@@ -63,6 +72,7 @@ test("PWB delay uses stage Actual Job Completion Dates, not received dates", () 
   const summary = pwbDelaySummary(
     pwbFile({
       stageDelivery: "Yes",
+      stageDeliveryCount: "2",
       stagePayment: "Yes",
       stageDeliveries: [
         { actualJobCompletionDate: daysAgo(45), jobCompletionDate: daysAgo(2) },
@@ -86,9 +96,26 @@ test("missing actual completion date is not replaced by Job Completion Received 
   assert.equal(summary.reduce((total, row) => total + row.pwb, 0), 0);
 });
 
+test("Group-B PWB delay starts at the S.O. date", () => {
+  const summary = pwbDelaySummary({
+    ...pwbFile({
+      financialSanctionDate: daysAgo(120),
+      soDate: daysAgo(100),
+      materialReceiptDate: "",
+      jobCompletionDate: "",
+      actualJobCompletionDate: "",
+    }),
+    fileType: "AMC",
+    fileTypeGroup: "contract",
+  });
+
+  assert.equal(summary.find((row) => row.thresholdDays === 60)?.pwb, 1);
+});
+
 test("PWB delay Search predicate uses actual parent and stage completion dates", () => {
   const sql = dashboardFilterSql("bgReceiptDelay:pwb:30:60", []);
 
+  assert.match(sql, /then so\.so_date/);
   assert.match(sql, /so\.actual_job_completion_date/);
   assert.match(sql, /stage ->> 'actualJobCompletionDate'/);
   assert.doesNotMatch(sql, /jobCompletionDate/);

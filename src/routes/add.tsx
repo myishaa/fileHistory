@@ -42,6 +42,7 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import {
+  AlertTriangle,
   ChevronDown,
   ChevronRight,
   FileSpreadsheet,
@@ -70,6 +71,7 @@ import {
   fileSupplyOrders as expandedFileSupplyOrders,
   getParentStagePaymentDate,
   isParentStagePaymentOrder,
+  isPwbFollowUpStarted,
 } from "@/lib/effective-deliveries";
 import { latestBillReturnCycle } from "@/lib/refloat-returned-bill";
 import { isAutoTenderLive } from "@/lib/bidding-status";
@@ -81,6 +83,7 @@ import {
 import { ALL_FILES_YEAR, displayFinancialYearLabel } from "@/lib/year-filter";
 import { clearUnsavedChanges, useUnsavedChanges } from "@/lib/unsaved-changes";
 import { DateInput } from "@/components/date-input";
+import { showAppAlert, showAppConfirm } from "@/components/app-dialog";
 import { DeleteConfirmation, useDeleteConfirmation } from "@/components/delete-confirmation";
 import { HelperContent } from "@/components/helper-content";
 import {
@@ -106,6 +109,7 @@ import {
   type AddEditRibbonFieldKey,
 } from "@/lib/add-edit-ribbon-fields";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { TimelineStageSelect } from "@/components/timeline-stage-select";
 import {
   formatFirmRatingScore,
   calculateFirmRatingScore,
@@ -1037,6 +1041,7 @@ const emptyAdvancePayment: Required<AdvancePaymentDetail> = {
 };
 
 const emptyStageDelivery: Required<StageDeliveryDetail> = {
+  id: "",
   includeInPaymentTiming: true,
   stageAmountCapital: "",
   stageAmountRevenue: "",
@@ -1093,7 +1098,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
   { key: "combinedBgValidityDate", label: "PSB+PWB validity date", type: "date" },
   { key: "combinedBgReturnDate", label: "PSB+PWB return date", type: "date" },
   { key: "warrantyPeriodDate", label: "Warranty period", type: "date" },
-  { key: "dpExtension", label: "DP extension", options: yesNo },
+  { key: "dpExtension", label: "D.P. extension", options: yesNo },
   { key: "dpExtensionCount", label: "Extension count", type: "number" },
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
@@ -1135,7 +1140,7 @@ const supplyOrderFields: ExtraField<SupplyOrderKey>[] = [
     label: "No Further Action",
     options: yesNo,
     helper:
-      "Purpose: Controls whether unfinished delivery and payment follow-up continues for this S.O.\nExample table: Selection | Unfinished delivery/payment work | Existing records and BG/warranty tracking\nExample row: No | Follow-up continues. | Remain available.\nExample row: Yes | Follow-up stops, including open bill-return/resubmission work. | Recorded events and payments remain; BG receipt, validity, expiry, return, and warranty tracking continue.",
+      "Purpose: Controls whether unfinished delivery and payment follow-up continues for this S.O.\nExample table: Selection | Unfinished delivery/payment work | Existing records and BG/warranty tracking\nExample row: No | Follow-up continues. | Remain available.\nExample row: Yes | Follow-up stops, including open bill-return/resubmission work. | Recorded events and payments remain.\nStops pending BG receipt, delivery, and payment follow-up.\nReceived BG validity, expiry, and return tracking continues.",
   },
   { key: "soCancelled", label: "S.O. cancelled", options: yesNo },
   { key: "soCancelledDate", label: "S.O. cancelled date", type: "date" },
@@ -1162,7 +1167,7 @@ const stageDeliveryFields: ExtraField<StageDeliveryKey>[] = [
   { key: "paymentMode", label: "Payment mode(Online/Offline)", options: paymentModeOptions },
   { key: "deliveryPeriodStartDate", label: "Period start date", type: "date" },
   { key: "dpDate", label: "D.P. date", type: "date" },
-  { key: "dpExtension", label: "DP extension", options: yesNo },
+  { key: "dpExtension", label: "D.P. extension", options: yesNo },
   { key: "dpExtensionCount", label: "Extension count", type: "number" },
   { key: "ld", label: "LD", options: yesNo },
   { key: "revisedDp", label: "Revised D.P.", type: "date" },
@@ -1424,8 +1429,8 @@ const supplyOrderSubviewFields = {
 
 const supplyOrderSubviewTabs = [
   { key: "supplyOrder", label: "Supply order" },
-  { key: "bg", label: "Security/Warranty" },
   { key: "dp", label: "D.P." },
+  { key: "bg", label: "Security/Warranty" },
   { key: "delivery", label: "Delivery & Inspection" },
   { key: "payment", label: "Payment" },
   { key: "supplementaryBills", label: "Supplementary Bills" },
@@ -1782,6 +1787,19 @@ type TimelineItem = {
   label: string;
   date: string;
   order: number;
+  deliveryStatus?: TimelineDeliveryStatus;
+};
+
+type TimelineDeliveryStatus = "upcoming" | "due" | "overdue" | "complete" | "inactive";
+
+type TimelineStageProgress = {
+  total: number;
+  completed: number;
+  overdue: number;
+  dueToday: number;
+  upcoming: number;
+  unscheduled: number;
+  stopped: number;
 };
 
 type TimelineGroup = {
@@ -2294,7 +2312,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const configuredFileTypeOptions = useMemo(
     () =>
       filterFileTypeOptionsForUser(
-        getConfiguredFileTypes(settings.fileTypes, formWithLockedYear.fileType),
+        getConfiguredFileTypes(settings.fileTypes, isEditing ? formWithLockedYear.fileType : undefined),
         activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
       ),
     [
@@ -2504,7 +2522,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         setLoadedFile(updatedFile);
       } catch (error) {
         console.error("Failed to delete selected Supply Order(s)", error);
-        alert(
+        await showAppAlert(
           error instanceof Error
             ? error.message
             : "The selected Supply Order(s) could not be deleted.",
@@ -2650,7 +2668,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       return;
     }
     if (k === "demandCancelled" && isYes(v) && hasPlacedSupplyOrderRows(supplyOrders)) {
-      alert(
+      await showAppAlert(
         "Demand can be cancelled only before any Supply Order is placed. Use S.O. cancelled for placed Supply Orders.",
       );
       return;
@@ -2826,7 +2844,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       setSupplyOrders((current) =>
         current.map((order, orderIndex) => (orderIndex === index ? previousDraftOrder : order)),
       );
-      alert(
+      await showAppAlert(
         error instanceof Error
           ? error.message
           : "The destructive Supply Order change could not be applied.",
@@ -2849,12 +2867,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         { ...orderBeforeUpdate, stageDelivery: value },
         formWithLockedYear,
       );
-      const fieldsToClear = getSupplyOrderCleanupLabels(orderBeforeUpdate, candidate, [
-        String(key),
-      ]);
       const warning = [
         `Turning Stage Delivery off for ${getSupplyOrderDisplayTitle(orderBeforeUpdate, index)} will erase all stages and every field belonging to those stages.`,
-        fieldsToClear.length ? `Fields that will be erased: ${fieldsToClear.join(", ")}.` : "",
         "After you continue and enter the deletion password, this change will be applied immediately.",
       ]
         .filter(Boolean)
@@ -3030,7 +3044,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     );
     if (rejectedMessage) {
       window.setTimeout(() => {
-        alert(rejectedMessage);
+        void showAppAlert(rejectedMessage);
       }, 100);
     }
   };
@@ -3672,6 +3686,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     renderSectionUpdateButton({ testId: null, dirty });
   const renderSupplyOrderUpdateButton = (orderIndex: number, dirty?: boolean) => {
     if (readOnlyMode || !isEditing) return null;
+    const savedOrder = savedSupplyOrdersForLocks[orderIndex];
+    const savedOrderExists = Boolean(savedOrder?.id?.trim());
+    const savedOrderCount = savedSupplyOrdersForLocks.filter((order) => order.id?.trim()).length;
+    const canCreateReservedOrder =
+      !savedOrderExists &&
+      orderIndex === savedOrderCount &&
+      hasMeaningfulSupplyOrderData(supplyOrders[orderIndex] ?? emptySupplyOrder);
     return (
       <InlineUpdateButton
         saved={savedSupplyOrderIndex === orderIndex}
@@ -3681,7 +3702,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           cfaApprovalGateLocked ||
           saving ||
           !dirty ||
-          orderIndex >= savedSupplyOrdersForLocks.length
+          orderIndex >= savedSupplyOrdersForLocks.length ||
+          (!savedOrderExists && !canCreateReservedOrder)
         }
         testId={`add-supply-order-${orderIndex}-save`}
         onSave={() => save({ supplyOrderIndex: orderIndex })}
@@ -3959,6 +3981,25 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           />
         );
 
+        const tcecMeetingDateWarning = getTcecMinutesMeetingDateWarning(
+          field.key,
+          formWithLockedYear,
+        );
+        if (tcecMeetingDateWarning) {
+          return (
+            <div key={field.key} className="space-y-1.5">
+              {fieldControl}
+              <p
+                role="status"
+                aria-live="polite"
+                className="rounded-md border border-amber-300/70 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+              >
+                {tcecMeetingDateWarning}
+              </p>
+            </div>
+          );
+        }
+
         if (
           !["demandCancelled", "demandCancelledDate"].includes(field.key) ||
           fieldReadOnly ||
@@ -4060,7 +4101,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (!isScopedSupplyOrderSave && !hasFilledValue(formForSave.uniqueCode)) {
       if (!selectedDivisionName) {
         setSaving(false);
-        alert("Select Division before saving file details.");
+        await showAppAlert("Select Division before saving file details.");
         return;
       }
       try {
@@ -4071,7 +4112,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         });
         if (!hasFilledValue(uniqueCode)) {
           setSaving(false);
-          alert("Unique code could not be generated. Please try again.");
+          await showAppAlert("Unique code could not be generated. Please try again.");
           return;
         }
         setServerUniqueCode(uniqueCode);
@@ -4079,17 +4120,17 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       } catch (error) {
         console.error(error);
         setSaving(false);
-        alert("Unique code could not be generated. Please check connection and try again.");
+        await showAppAlert("Unique code could not be generated. Please check connection and try again.");
         return;
       }
     }
     const savedSupplyOrderCount = clampSupplyOrderCount(savedFormForLocks.noOfSo);
     if (isScopedSupplyOrderSave && scopedSupplyOrderIndex >= savedSupplyOrderCount) {
       setSaving(false);
-      alert("Save the updated No. of S.O. before saving this new Supply Order.");
+      await showAppAlert("Save the updated No. of S.O. before saving this new Supply Order.");
       return;
     }
-    const requestedSupplyOrderCount = isScopedSupplyOrderSave
+    let requestedSupplyOrderCount = isScopedSupplyOrderSave
       ? savedSupplyOrderCount
       : clampSupplyOrderCount(formForSave.noOfSo);
     const currentSupplyOrders = resizeSupplyOrders(
@@ -4097,7 +4138,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       clampSupplyOrderCount(formWithLockedYear.noOfSo),
       formWithLockedYear,
     );
-    const requestedSupplyOrders = isScopedSupplyOrderSave
+    let requestedSupplyOrders = isScopedSupplyOrderSave
       ? resizeSupplyOrders(
           savedSupplyOrdersForLocks,
           requestedSupplyOrderCount,
@@ -4106,6 +4147,33 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
           index === scopedSupplyOrderIndex ? (currentSupplyOrders[index] ?? order) : order,
         )
       : resizeSupplyOrders(supplyOrders, requestedSupplyOrderCount);
+    if (!isScopedSupplyOrderSave) {
+      const meaningfulSupplyOrders = requestedSupplyOrders.filter(hasMeaningfulSupplyOrderData);
+      if (
+        meaningfulSupplyOrders.length > 0 &&
+        meaningfulSupplyOrders.length < requestedSupplyOrderCount
+      ) {
+        const emptySupplyOrderCount = requestedSupplyOrderCount - meaningfulSupplyOrders.length;
+        const confirmed = await confirmDeletion(
+          `${emptySupplyOrderCount} empty S.O. row${emptySupplyOrderCount === 1 ? "" : "s"} will be removed. The remaining filled S.O.s will be renumbered sequentially.`,
+          "Continue",
+          {
+            title: "Reduce Supply Order count?",
+            description: `Empty S.O. rows are treated as nonexistent. The declared count will be reduced from ${requestedSupplyOrderCount} to ${meaningfulSupplyOrders.length}. No filled S.O. data will be removed.`,
+          },
+        );
+        if (!confirmed) {
+          setSaving(false);
+          return;
+        }
+        requestedSupplyOrderCount = meaningfulSupplyOrders.length;
+        requestedSupplyOrders = meaningfulSupplyOrders;
+        formForSave = {
+          ...formForSave,
+          noOfSo: String(requestedSupplyOrderCount),
+        };
+      }
+    }
     const supplyOrderForm = isScopedSupplyOrderSave ? savedFormForLocks : formForSave;
     const supplyOrderCurrentMilestone = isScopedSupplyOrderSave
       ? (editingFile?.currentMilestone ?? "")
@@ -4154,7 +4222,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
     const cleanedSupplyOrders = cleanedRequestedSupplyOrders;
     if (isYes(supplyOrderForm.demandCancelled) && hasPlacedSupplyOrderRows(cleanedSupplyOrders)) {
-      alert(
+      await showAppAlert(
         "Demand can be cancelled only before any Supply Order is placed. Use S.O. cancelled for placed Supply Orders.",
       );
       setSaving(false);
@@ -4199,7 +4267,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       const orderLabels = securityWarrantyReminderOrders
         .map((index) => `Supply Order ${index}`)
         .join(", ");
-      window.alert(
+      void showAppAlert(
         `${orderLabels} saved. Please review the Security/Warranty requirements and update applicable fields, if required.`,
       );
     };
@@ -4494,7 +4562,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     });
   };
 
-  const handleQuickEntrySaveKey = (event: KeyboardEvent<HTMLDivElement>) => {
+  const handleQuickEntrySaveKey = async (event: KeyboardEvent<HTMLDivElement>) => {
     if (readOnlyMode) return;
     if (!quickFocus || !isEditing || event.key !== "Enter" || event.metaKey || event.ctrlKey) {
       return;
@@ -4512,7 +4580,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     }
 
     event.preventDefault();
-    const confirmed = window.confirm(
+    const confirmed = await showAppConfirm(
       "Please verify the entry before saving.\n\nDo you want to save this update?",
     );
     if (!confirmed) return;
@@ -4672,7 +4740,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               items={[
                 ...drillPath,
                 {
-                  label: readOnlyMode ? "View File" : "File Details",
+                  label: readOnlyMode ? "View File" : "File details",
                   href: currentFileHref,
                 },
               ]}
@@ -5047,15 +5115,29 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         <DialogContent
           onPointerDownOutside={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => event.preventDefault()}
-          className="w-[min(34rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] [&>button.absolute]:hidden"
+          className="w-[min(36rem,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] overflow-hidden border-warning/40 p-0 [&>button.absolute]:hidden"
         >
-          <DialogHeader>
-            <DialogTitle>Review new stage details</DialogTitle>
-            <DialogDescription className="whitespace-pre-wrap text-foreground">
+          <div className="border-b border-warning/30 bg-warning/10 px-6 py-5">
+            <DialogHeader>
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full bg-warning/20 text-warning-foreground">
+                  <AlertTriangle className="size-5" aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <DialogTitle className="text-lg">Review new stage details</DialogTitle>
+                  <DialogDescription className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Advisory · no data will be erased
+                  </DialogDescription>
+                </div>
+              </div>
+            </DialogHeader>
+          </div>
+          <div className="px-6 py-5">
+            <div className="rounded-md border border-warning/30 bg-warning/10 p-4 text-sm leading-relaxed text-foreground">
               {stageCountAdvisoryPrompt}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
+            </div>
+          </div>
+          <DialogFooter className="border-t border-border bg-muted/20 px-6 py-4">
             <button
               type="button"
               onClick={dismissStageCountAdvisory}
@@ -6547,8 +6629,9 @@ function SupplyOrdersBlock({
   const orderQuickFocusAppliedRef = useRef("");
   const focusAppliedRef = useRef("");
   const latestOrdersRef = useRef(orders);
+  const selectedSupplyOrderKeyRef = useRef("order:0");
+  const selectedSupplyOrderNestedKeyRef = useRef<string | null>(null);
   const [activeSubview, setActiveSubview] = useState<SupplyOrderSubviewKey>("supplyOrder");
-  const [downstreamOverrideUnlocked, setDownstreamOverrideUnlocked] = useState(false);
   const [masterFirms, setMasterFirms] = useState<MasterFirm[]>([]);
   const [firmSuggestionQuery, setFirmSuggestionQuery] = useState("");
   const [firmSuggestionMatches, setFirmSuggestionMatches] = useState<MasterFirm[]>([]);
@@ -6690,11 +6773,31 @@ function SupplyOrdersBlock({
   });
 
   const setCardOpen = (key: string, open: boolean) => {
+    if (open) selectedSupplyOrderNestedKeyRef.current = key;
+    if (!open && selectedSupplyOrderNestedKeyRef.current === key) {
+      selectedSupplyOrderNestedKeyRef.current = null;
+    }
     setOpenCardKeys((current) => {
       if (open === current.has(key)) return current;
       const next = new Set(current);
-      if (open) next.add(key);
-      else next.delete(key);
+      if (open) {
+        if (!supplyOrderPanelsExpanded) {
+          const nestedOrderMatch = key.match(/^(?:stage|normalPayment|advance):([0-9]+)(?::|$)/);
+          if (nestedOrderMatch) {
+            const orderIndex = nestedOrderMatch[1];
+            for (const cardKey of next) {
+              if (
+                cardKey.startsWith(`stage:${orderIndex}:`) ||
+                cardKey === `normalPayment:${orderIndex}` ||
+                cardKey === `advance:${orderIndex}`
+              ) {
+                next.delete(cardKey);
+              }
+            }
+          }
+        }
+        next.add(key);
+      } else next.delete(key);
       return next;
     });
   };
@@ -6716,7 +6819,31 @@ function SupplyOrdersBlock({
     });
   };
 
+  const toggleSupplyOrderPanelMode = () => {
+    if (supplyOrderPanelsExpanded) {
+      const selectedOrderMatch = selectedSupplyOrderKeyRef.current.match(/^order:(\d+)$/);
+      const selectedOrderIndex = Math.min(
+        Math.max(Number.parseInt(selectedOrderMatch?.[1] ?? "0", 10), 0),
+        Math.max(orders.length - 1, 0),
+      );
+      const selectedOrderKey = `order:${selectedOrderIndex}`;
+      const selectedNestedKey = selectedSupplyOrderNestedKeyRef.current;
+      setOpenCardKeys((current) =>
+        new Set(
+          [...current].filter(
+            (key) => key === selectedOrderKey || key === selectedNestedKey,
+          ),
+        ),
+      );
+    }
+    setSupplyOrderPanelsExpanded((current) => !current);
+  };
+
   const setPaymentCardOpen = (orderIndex: number, key: string, open: boolean) => {
+    if (open) selectedSupplyOrderNestedKeyRef.current = key;
+    if (!open && selectedSupplyOrderNestedKeyRef.current === key) {
+      selectedSupplyOrderNestedKeyRef.current = null;
+    }
     setOpenCardKeys((current) => {
       const next = new Set(current);
       if (open) {
@@ -6731,12 +6858,6 @@ function SupplyOrdersBlock({
       }
       return next;
     });
-  };
-
-  const unlockDownstreamOverride = async () => {
-    if (disabled || downstreamOverrideUnlocked) return;
-    const allowed = await requestDeletionPassword("unlock downstream delivery/payment fields");
-    if (allowed) setDownstreamOverrideUnlocked(true);
   };
 
   const applyMasterFirmToOrder = (index: number, firm: MasterFirm) => {
@@ -6941,7 +7062,7 @@ function SupplyOrdersBlock({
         </div>
         <button
           type="button"
-          onClick={() => setSupplyOrderPanelsExpanded((current) => !current)}
+          onClick={toggleSupplyOrderPanelMode}
           className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-medium text-foreground hover:bg-accent"
           title={
             supplyOrderPanelsExpanded
@@ -7078,29 +7199,31 @@ function SupplyOrdersBlock({
                   ? ""
                   : " border-primary/70"
                 : "";
-            const downstreamLocked =
-              isDownstreamSubview(activeSubview) &&
-              !downstreamOverrideUnlocked &&
-              !isSupplyOrderAndDpComplete(order, form);
+            const downstreamMissingFields = getDownstreamPrerequisiteMissingLabels(order, form);
+            const downstreamPrerequisitesIncomplete =
+              isDownstreamSubview(activeSubview) && downstreamMissingFields.length > 0;
             const paidAdvanceFrozen =
               hasPaidAdvancePayment(lockedOrder?.advancePaymentDetail) &&
               !paidAdvanceUnfreezeKeys.has(index);
-            const advanceControlDisabled = disabled || downstreamLocked;
+            const advanceControlDisabled = disabled;
             const advanceLockFilledFields =
               (lockFilledFields || paidAdvanceFrozen) && !paidAdvanceUnfreezeKeys.has(index);
             const normalPaymentKey = `normalPayment:${index}`;
             const normalPaymentOpen =
+              supplyOrderPanelsExpanded ||
               openCardKeys.has(normalPaymentKey) ||
               (activeSubview === "payment" && directOrderFocusMatch && !childFocusMatch);
             const advancePaymentKey = `advance:${index}`;
             const advancePaymentOpen =
-              openCardKeys.has(advancePaymentKey) || focusBlockKeySet.has(advancePaymentKey);
+              supplyOrderPanelsExpanded ||
+              openCardKeys.has(advancePaymentKey) ||
+              focusBlockKeySet.has(advancePaymentKey);
             const orderMilestoneBlock =
               orderMilestones.length && !useStageCards ? (
                 <SupplyOrderMilestonesBlock
                   milestones={orderMilestones}
                   order={order}
-                  disabled={disabled || downstreamLocked}
+                  disabled={disabled}
                   lockFilledFields={lockFilledFields}
                   lockedOrder={lockedOrder}
                   fileType={form.fileType}
@@ -7131,7 +7254,12 @@ function SupplyOrdersBlock({
                   focusClass
                 }
               >
-                <summary className="flex cursor-pointer list-none flex-wrap items-center gap-3 px-4 py-3 text-sm font-semibold marker:hidden">
+                <summary
+                  className="flex cursor-pointer list-none flex-wrap items-center gap-3 px-4 py-3 text-sm font-semibold marker:hidden"
+                  onClick={() => {
+                    selectedSupplyOrderKeyRef.current = orderFocusKey;
+                  }}
+                >
                   <span
                     className={
                       "size-2.5 shrink-0 rounded-full " + getCompletionDotClass(completion.status)
@@ -7163,34 +7291,21 @@ function SupplyOrdersBlock({
                   </span>
                 </summary>
                 <div className="border-t border-border bg-secondary/15 p-4">
-                  {isDownstreamSubview(activeSubview) && downstreamLocked ? (
+                  {downstreamPrerequisitesIncomplete ? (
                     <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
                       <div>
                         <div className="font-medium">
-                          {orderTitle}: Complete Supply Order and D.P. details before editing this
-                          tab.
+                          Complete the following prerequisite fields before proceeding:
                         </div>
-                        <div className="text-xs">
-                          This order stays locked until its D.P. and Security/Warranty fields are
-                          unlocked.
+                        <ul className="mt-1 list-disc pl-5 text-xs">
+                          {downstreamMissingFields.map((field) => (
+                            <li key={field}>{field}</li>
+                          ))}
+                        </ul>
+                        <div className="mt-1 text-xs">
+                          This advisory updates as the fields are completed.
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={unlockDownstreamOverride}
-                        disabled={disabled || downstreamOverrideUnlocked}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 text-xs font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
-                      >
-                        {downstreamOverrideUnlocked ? (
-                          <>
-                            <Unlock className="size-3.5" /> Downstream unlocked
-                          </>
-                        ) : (
-                          <>
-                            <Lock className="size-3.5" /> Unlock with password
-                          </>
-                        )}
-                      </button>
                     </div>
                   ) : null}
                   {activeSubview === "firmRating" ? (
@@ -7198,7 +7313,7 @@ function SupplyOrdersBlock({
                       fields={ratingFields}
                       values={ratingValues}
                       score={ratingScore}
-                      disabled={disabled || downstreamLocked}
+                      disabled={disabled}
                       lockFilledFields={lockFilledFields}
                       lockedValues={lockedOrder?.firmRatingValues}
                       onChange={(fieldId, value) =>
@@ -7266,7 +7381,7 @@ function SupplyOrdersBlock({
                             <button
                               type="button"
                               onClick={() => onPaidAdvanceUnfreeze(index)}
-                              disabled={disabled || downstreamLocked}
+                              disabled={disabled}
                               className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
                             >
                               <Lock className="size-3.5" /> Unfreeze with password
@@ -7483,8 +7598,11 @@ function SupplyOrdersBlock({
                           paidStageUnfreezeKeys,
                         );
                         const stageControlDisabled =
-                          disabled || downstreamLocked || paidStageFrozen;
-                        const stageOpen = openCardKeys.has(stageFocusKey) || stageFocusMatch;
+                          disabled || paidStageFrozen;
+                        const stageOpen =
+                          supplyOrderPanelsExpanded ||
+                          openCardKeys.has(stageFocusKey) ||
+                          stageFocusMatch;
                         return (
                           <details
                             key={stageIndex}
@@ -7547,7 +7665,7 @@ function SupplyOrdersBlock({
                                 <PaymentTimingControl
                                   caseLabel={`S.O. ${index + 1}, stage ${stageIndex + 1} payment`}
                                   included={stage.includeInPaymentTiming !== false}
-                                  disabled={disabled || downstreamLocked}
+                                  disabled={disabled}
                                   onChange={(included) =>
                                     onOrderPatch(index, {
                                       stageDeliveries: stageDeliveries.map((item, itemIndex) =>
@@ -7567,7 +7685,7 @@ function SupplyOrdersBlock({
                                   <button
                                     type="button"
                                     onClick={() => onPaidStageUnfreeze(index, stageIndex)}
-                                    disabled={disabled || downstreamLocked}
+                                    disabled={disabled}
                                     className="inline-flex h-8 items-center gap-1.5 rounded-md border border-amber-400 bg-background px-2.5 font-medium text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
                                   >
                                     <Lock className="size-3.5" /> Unfreeze with password
@@ -7859,7 +7977,7 @@ function SupplyOrdersBlock({
                           <PaymentTimingControl
                             caseLabel={`S.O. ${index + 1} payment`}
                             included={order.includeInPaymentTiming !== false}
-                            disabled={disabled || downstreamLocked}
+                            disabled={disabled}
                             onChange={(included) =>
                               onOrderPatch(index, { includeInPaymentTiming: included })
                             }
@@ -7885,7 +8003,6 @@ function SupplyOrdersBlock({
                                 : (lockedOrder?.[key] ?? "");
                           const fieldDisabled =
                             disabled ||
-                            downstreamLocked ||
                             sequentiallyLocked ||
                             cancellationControlLocked ||
                             (lockFilledFields && hasFilledValue(String(lockedFieldValue))) ||
@@ -7913,7 +8030,7 @@ function SupplyOrdersBlock({
                                 revenueSelected={form.valueRevenueSelected === "Yes"}
                                 capitalValue={order.soValueCapital ?? ""}
                                 revenueValue={order.soValueRevenue ?? ""}
-                                disabled={disabled || downstreamLocked || sequentiallyLocked}
+                                disabled={disabled || sequentiallyLocked}
                                 lockFilledFields={lockFilledFields}
                                 testId={`add-field-supplyOrder-${index}-soValueCapital`}
                                 lockedValueFilled={
@@ -7985,7 +8102,7 @@ function SupplyOrdersBlock({
                                 revenueSelected={form.valueRevenueSelected === "Yes"}
                                 capitalValue={order.actualPaymentCapital ?? ""}
                                 revenueValue={order.actualPaymentRevenue ?? ""}
-                                disabled={disabled || downstreamLocked || sequentiallyLocked}
+                                disabled={disabled || sequentiallyLocked}
                                 lockFilledFields={lockFilledFields}
                                 testId={`add-field-supplyOrder-${index}-actualPaymentCapital`}
                                 lockedValueFilled={
@@ -8022,7 +8139,7 @@ function SupplyOrdersBlock({
                                 revenueSelected={form.valueRevenueSelected === "Yes"}
                                 capitalValue={order.billAmountCapital ?? ""}
                                 revenueValue={order.billAmountRevenue ?? ""}
-                                disabled={disabled || downstreamLocked || sequentiallyLocked}
+                                disabled={disabled || sequentiallyLocked}
                                 lockFilledFields={lockFilledFields}
                                 testId={`add-field-supplyOrder-${index}-billAmountCapital`}
                                 lockedValueFilled={
@@ -8063,7 +8180,6 @@ function SupplyOrdersBlock({
                                     ldPercentage={order.ldPercentage ?? ""}
                                     disabled={
                                       disabled ||
-                                      downstreamLocked ||
                                       sequentiallyLocked ||
                                       (lockFilledFields && detailLocked)
                                     }
@@ -8124,7 +8240,7 @@ function SupplyOrdersBlock({
                       savedBills={normalizeSupplementaryBillDrafts(
                         lockedOrders[index]?.supplementaryBills,
                       )}
-                      disabled={disabled || downstreamLocked}
+                      disabled={disabled}
                       capitalSelected={form.valueCapitalSelected === "Yes"}
                       revenueSelected={form.valueRevenueSelected === "Yes"}
                       focusBlockRefs={focusBlockRefs}
@@ -8348,7 +8464,7 @@ function SupplementaryBillsDraftBlock({
                     field={
                       {
                         key: "billSentForPaymentDate",
-                        label: "Supplementary bill submitted",
+                        label: "Supplementary bill sent for payment",
                         type: "date",
                       } as ExtraField<SupplyOrderKey>
                     }
@@ -8916,7 +9032,7 @@ function isFocusRowMatch(
 
   if (config.kind === "delivery") {
     if (isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
-      if (state === "completed" || state === "received") return isJobCompletionDone(row);
+      if (state === "completed" || state === "received") return isJobCompletionReceived(row);
       if (state === "overdue")
         return getDerivedJobCompletionMilestoneState(
           row,
@@ -8943,7 +9059,7 @@ function isFocusRowMatch(
 
   if (config.kind === "jobcompletion") {
     if (!isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) return false;
-    if (state === "completed" || state === "received") return isJobCompletionDone(row);
+    if (state === "completed" || state === "received") return isJobCompletionReceived(row);
     return getDerivedJobCompletionMilestoneState(row, form.fileType, form.ir, form.fileTypeGroup)
       .current;
   }
@@ -9035,6 +9151,20 @@ function isFocusRowMatch(
   return false;
 }
 
+function isPwbTriggerRecordedForForm(
+  row: SupplyOrderFocusRow | MilestoneRowState,
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+) {
+  return isPwbFollowUpStarted(
+    {
+      fileType: form.fileType,
+      fileTypeGroup: form.fileTypeGroup,
+      ir: form.ir,
+    } as FileRecord,
+    row as SupplyOrderDetail,
+  );
+}
+
 function isFocusBgStateMatch(
   row: SupplyOrderFocusRow,
   config: SupplyOrderFocusConfig,
@@ -9081,7 +9211,7 @@ function isFocusBgStateMatch(
   }
   if (current) return true;
   if (received) return false;
-  if (config.kind === "pwb") return hasFilledValue(row.materialReceiptDate);
+  if (config.kind === "pwb") return isPwbTriggerRecordedForForm(row, form);
   if (config.kind === "psb" || config.kind === "psbpwb") {
     return hasFilledValue(row.financialSanctionDate);
   }
@@ -9217,7 +9347,7 @@ function isPaymentDueByDeliveryOrPeriod(
   if (!isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
     return hasFilledValue(isYes(form.ir) ? row.materialReceiptDate : row.jobCompletionDate);
   }
-  return isJobCompletionDone(row);
+  return isJobCompletionReceived(row);
 }
 
 type SupplyOrderCompletionStatus = "empty" | "partial" | "complete";
@@ -9259,47 +9389,118 @@ function getFirmRatingCompletion(filled: number, total: number) {
   };
 }
 
-function isSupplyOrderAndDpComplete(order: SupplyOrderDetail, form: FormState) {
-  return isSupplyOrderTabComplete(order, form) && isDpDetailsComplete(order, form);
+function getDownstreamPrerequisiteMissingLabels(order: SupplyOrderDetail, form: FormState) {
+  const missing: string[] = [];
+  missing.push(...getDpDetailsMissingLabels(order, form));
+
+  const supplyOrderMissing = hasSupplyOrderTabData(order)
+    ? getMissingSupplyOrderTabFields(order, form).map((key) =>
+        getSupplyOrderTabFieldLabel(key, form),
+      )
+    : ["Supply Order details"];
+  missing.push(...supplyOrderMissing);
+
+  missing.push(
+    ...getSecurityWarrantyMissingKeys(order, form).map(
+      (key) => supplyOrderFields.find((field) => field.key === key)?.label ?? key,
+    ),
+  );
+  return [...new Set(missing)];
 }
 
-function isDpDetailsComplete(order: SupplyOrderDetail, form: FormState) {
+function getSecurityWarrantyMissingKeys(order: SupplyOrderDetail, form: FormState) {
+  const coverageType = normalizeBgCoverageType(order.bgCoverageType) ?? "None";
+  const warrantyEnabled = isYes(form.bg);
+  const effectiveCoverageType =
+    !warrantyEnabled &&
+    (coverageType === "PWB" ||
+      coverageType === "PSB+PWB" ||
+      coverageType === "PSB and PWB separately")
+      ? isYes(order.psbApplicable)
+        ? "PSB"
+        : "None"
+      : coverageType;
+  const psbApplies =
+    isYes(order.psbApplicable) &&
+    (effectiveCoverageType === "PSB" || effectiveCoverageType === "PSB and PWB separately");
+  const pwbApplies =
+    warrantyEnabled &&
+    (effectiveCoverageType === "PWB" || effectiveCoverageType === "PSB and PWB separately");
+  const combinedApplies = warrantyEnabled && effectiveCoverageType === "PSB+PWB";
+  const requiredKeys: SupplyOrderKey[] = ["psbApplicable", "bgCoverageType"];
+
+  if (effectiveCoverageType === "PSB" && !isYes(order.psbApplicable)) {
+    return ["psbApplicable"];
+  }
+  if (psbApplies) {
+    requiredKeys.push(
+      "psbBgNo",
+      "psbBgAmount",
+      "psbBgReceivedDate",
+      "psbBgValidityDate",
+    );
+  }
+  if (pwbApplies) {
+    requiredKeys.push(
+      "pwbBgNo",
+      "pwbBgAmount",
+      "pwbBgReceivedDate",
+      "pwbBgValidityDate",
+      "warrantyPeriodDate",
+    );
+  }
+  if (combinedApplies) {
+    requiredKeys.push(
+      "combinedBgNo",
+      "combinedBgAmount",
+      "combinedBgReceivedDate",
+      "combinedBgValidityDate",
+      "warrantyPeriodDate",
+    );
+  }
+
+  return requiredKeys.filter((key) => !hasFilledValue(String(order[key] ?? "")));
+}
+
+function getDpDetailsMissingLabels(order: SupplyOrderDetail, form: FormState) {
+  const missing: string[] = [];
   if (isYes(order.stageDelivery ?? "")) {
     const stageCount = getStageDeliveryCount(order.stageDeliveryCount);
-    if (stageCount <= 0) return false;
+    if (stageCount <= 0) return ["Stage count"];
     const stages = resizeStageDeliveries(order.stageDeliveries ?? [], stageCount);
-    return stages.every((stage) => isStageDpDetailsComplete(stage, form));
+    stages.forEach((stage, stageIndex) => {
+      const prefix = `Delivery-${stageIndex + 1}: `;
+      if (!hasStageAmount(stage, form)) missing.push(`${prefix}Stage amount`);
+      if (!isCompleteDateValue(stage.deliveryPeriodStartDate ?? "")) {
+        missing.push(`${prefix}Delivery period start date`);
+      }
+      if (!isCompleteDateValue(stage.dpDate ?? "")) missing.push(`${prefix}D.P. date`);
+      if (isYes(stage.dpExtension ?? "")) {
+        if (!hasFilledValue(stage.dpExtensionCount)) {
+          missing.push(`${prefix}Extension count`);
+        }
+        if (!isCompleteDateValue(stage.revisedDp ?? "")) {
+          missing.push(`${prefix}Revised D.P.`);
+        }
+      }
+      if (isYes(stage.ld ?? "")) {
+        if (!hasFilledValue(stage.ldType)) missing.push(`${prefix}LD type`);
+        if (!hasFilledValue(stage.ldPercentage)) missing.push(`${prefix}LD percentage`);
+      }
+    });
+    return missing;
   }
 
-  return isOrderDpDetailsComplete(order);
-}
-
-function isOrderDpDetailsComplete(order: SupplyOrderDetail) {
-  if (!isCompleteDateValue(order.dpDate ?? "")) return false;
+  if (!isCompleteDateValue(order.dpDate ?? "")) missing.push("D.P. date");
   if (isYes(order.dpExtension ?? "")) {
-    if (!hasFilledValue(order.dpExtensionCount)) return false;
-    if (!isCompleteDateValue(order.revisedDp ?? "")) return false;
+    if (!hasFilledValue(order.dpExtensionCount)) missing.push("Extension count");
+    if (!isCompleteDateValue(order.revisedDp ?? "")) missing.push("Revised D.P.");
   }
   if (isYes(order.ld ?? "")) {
-    if (!hasFilledValue(order.ldType)) return false;
-    if (!hasFilledValue(order.ldPercentage)) return false;
+    if (!hasFilledValue(order.ldType)) missing.push("LD type");
+    if (!hasFilledValue(order.ldPercentage)) missing.push("LD percentage");
   }
-  return true;
-}
-
-function isStageDpDetailsComplete(stage: StageDeliveryDetail, form: FormState) {
-  if (!hasStageAmount(stage, form)) return false;
-  if (!isCompleteDateValue(stage.deliveryPeriodStartDate ?? "")) return false;
-  if (!isCompleteDateValue(stage.dpDate ?? "")) return false;
-  if (isYes(stage.dpExtension ?? "")) {
-    if (!hasFilledValue(stage.dpExtensionCount)) return false;
-    if (!isCompleteDateValue(stage.revisedDp ?? "")) return false;
-  }
-  if (isYes(stage.ld ?? "")) {
-    if (!hasFilledValue(stage.ldType)) return false;
-    if (!hasFilledValue(stage.ldPercentage)) return false;
-  }
-  return true;
+  return missing;
 }
 
 function hasStageAmount(stage: StageDeliveryDetail, form: FormState) {
@@ -9340,10 +9541,10 @@ function getSupplyOrderSubviewCompletion({
   ) {
     const counts = useStageCards
       ? stageDeliveries.reduce<CompletionCount>(
-          (current, stage) => addSingleCompletion(current, isJobCompletionDone(stage)),
+          (current, stage) => addSingleCompletion(current, isActualJobCompletionDone(stage)),
           { filled: 0, total: 0 },
         )
-      : addSingleCompletion({ filled: 0, total: 0 }, isJobCompletionDone(order));
+      : addSingleCompletion({ filled: 0, total: 0 }, isActualJobCompletionDone(order));
     const status = getCompletionStatus(counts);
     return {
       ...counts,
@@ -9465,8 +9666,10 @@ function getSingleStageCompletion({
     activeSubview === "delivery" &&
     isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
   ) {
-    let counts = addSingleCompletion({ filled: 0, total: 0 }, isJobCompletionDone(stage));
-    counts = addSingleCompletion(counts, hasFilledValue(stage.jobCompletionDate));
+    const counts = addSingleCompletion(
+      { filled: 0, total: 0 },
+      isActualJobCompletionDone(stage),
+    );
     const status = getCompletionStatus(counts);
     return {
       ...counts,
@@ -9788,7 +9991,11 @@ function getDerivedDeliveryMilestoneState(
   return { current, completed };
 }
 
-function isJobCompletionDone(row: MilestoneRowState) {
+function isActualJobCompletionDone(row: MilestoneRowState) {
+  return isCompleteDateValue(String(row.actualJobCompletionDate ?? ""));
+}
+
+function isJobCompletionReceived(row: MilestoneRowState) {
   return isCompleteDateValue(String(row.jobCompletionDate ?? ""));
 }
 
@@ -9859,7 +10066,7 @@ function getDerivedJobCompletionMilestoneState(
   fileTypeGroup?: string,
 ) {
   const completed =
-    isJobCompletionWorkflow(fileType, ir, fileTypeGroup) && isJobCompletionDone(row);
+    isJobCompletionWorkflow(fileType, ir, fileTypeGroup) && isJobCompletionReceived(row);
   const effectiveDp = String(row.revisedDp ?? "") || String(row.dpDate ?? "") || undefined;
   const autoCurrent =
     isJobCompletionWorkflow(fileType, ir, fileTypeGroup) &&
@@ -9935,8 +10142,13 @@ function isAutoCurrentSupplyOrderMilestone(
       !isCompleteDateValue(String(row.billSentForPaymentDate ?? ""))
     );
   }
+  if (milestone === "PWB") {
+    return (
+      isPwbTriggerRecordedForForm(row, { fileType, fileTypeGroup, ir }) &&
+      !isCompleteDateValue(String(row.pwbBgReceivedDate ?? ""))
+    );
+  }
   if (!isCompleteDateValue(String(row.materialReceiptDate ?? ""))) return false;
-  if (milestone === "PWB") return !isCompleteDateValue(String(row.pwbBgReceivedDate ?? ""));
   if (milestone === "IR Preparation") {
     return !isCompleteDateValue(String(row.irPreparationDate ?? ""));
   }
@@ -10465,6 +10677,7 @@ function TimelineBlock({
 }) {
   const [showAllDates, setShowAllDates] = useState(false);
   const [activeTimelineOrderIndex, setActiveTimelineOrderIndex] = useState<number | null>(null);
+  const [activeTimelineStageIndex, setActiveTimelineStageIndex] = useState<number | null>(null);
   const enabledTimelineFields = getEnabledTimelineFields(form);
   const fileItems = enabledTimelineFields.map((field, index) => ({
     id: `file:${field.key}`,
@@ -10472,16 +10685,21 @@ function TimelineBlock({
     date: form[field.key],
     order: index,
   }));
+  const fileTimelineGroup = { title: "File Level Timeline", items: fileItems };
+  const orderScopes = supplyOrders.map((order, orderIndex) => {
+    const startOrder = enabledTimelineFields.length + orderIndex * 100;
+    const stages = getTimelineStages(order);
+    return {
+      order,
+      stages,
+      group: getSupplyOrderTimelineGroup(form, order, orderIndex, startOrder),
+      stageGroups: getStageTimelineGroups(form, order, orderIndex, startOrder, stages),
+      progress: getTimelineStageProgress(form, order, stages),
+    };
+  });
   const timelineGroups = [
-    { title: "File Level Timeline", items: fileItems },
-    ...supplyOrders.map((order, orderIndex) =>
-      getSupplyOrderTimelineGroup(
-        form,
-        order,
-        orderIndex,
-        enabledTimelineFields.length + orderIndex * 100,
-      ),
-    ),
+    fileTimelineGroup,
+    ...orderScopes.flatMap((scope) => [scope.group, ...scope.stageGroups]),
   ];
   const allItems = timelineGroups.flatMap((group) => group.items);
   const filledItems = getFilledTimelineItems(allItems);
@@ -10489,18 +10707,23 @@ function TimelineBlock({
     activeTimelineOrderIndex !== null && activeTimelineOrderIndex < supplyOrders.length
       ? activeTimelineOrderIndex
       : null;
-  const activeTimelineGroup =
-    selectedTimelineOrderIndex === null
-      ? timelineGroups[0]
-      : timelineGroups[selectedTimelineOrderIndex + 1] ?? timelineGroups[0];
-  const visibleGroups = [
-    {
-      ...activeTimelineGroup,
-      items: showAllDates
-        ? getFullTimelineItems(activeTimelineGroup.items)
-        : getFilledTimelineItems(activeTimelineGroup.items),
-    },
-  ];
+  const activeOrderScope =
+    selectedTimelineOrderIndex === null ? undefined : orderScopes[selectedTimelineOrderIndex];
+  const selectedStageIndex =
+    activeTimelineStageIndex !== null &&
+    activeOrderScope &&
+    activeTimelineStageIndex < activeOrderScope.stageGroups.length
+      ? activeTimelineStageIndex
+      : null;
+  const activeTimelineGroup = selectedStageIndex === null
+    ? activeOrderScope?.group ?? fileTimelineGroup
+    : activeOrderScope?.stageGroups[selectedStageIndex] ?? fileTimelineGroup;
+  const visibleGroup = {
+    ...activeTimelineGroup,
+    items: showAllDates
+      ? getFullTimelineItems(activeTimelineGroup.items)
+      : getFilledTimelineItems(activeTimelineGroup.items),
+  };
 
   return (
     <section
@@ -10513,6 +10736,10 @@ function TimelineBlock({
           <span className="text-xs text-muted-foreground">
             {filledItems.length} of {allItems.length} date fields filled
           </span>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Each delivery stage has its own timeline. Incomplete future D.P. dates are red; due or
+            overdue incomplete delivery is yellow; completed delivery is green.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
@@ -10563,7 +10790,10 @@ function TimelineBlock({
           type="button"
           role="tab"
           aria-selected={selectedTimelineOrderIndex === null}
-          onClick={() => setActiveTimelineOrderIndex(null)}
+          onClick={() => {
+            setActiveTimelineOrderIndex(null);
+            setActiveTimelineStageIndex(null);
+          }}
           className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedTimelineOrderIndex === null ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
         >
           File Level
@@ -10574,7 +10804,10 @@ function TimelineBlock({
             type="button"
             role="tab"
             aria-selected={selectedTimelineOrderIndex === orderIndex}
-            onClick={() => setActiveTimelineOrderIndex(orderIndex)}
+            onClick={() => {
+              setActiveTimelineOrderIndex(orderIndex);
+              setActiveTimelineStageIndex(null);
+            }}
             className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedTimelineOrderIndex === orderIndex ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
           >
             Supply Order {orderIndex + 1}
@@ -10582,15 +10815,64 @@ function TimelineBlock({
         ))}
       </div>
 
-      {visibleGroups[0].items.length === 0 && !showAllDates ? (
+      {activeOrderScope?.stageGroups.length ? (
+        <>
+          <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border bg-card px-3 py-2 text-xs">
+            <span className="font-semibold text-foreground">Delivery progress</span>
+            <span
+              className={`font-medium ${activeOrderScope.progress.completed === activeOrderScope.progress.total ? "text-success" : "text-foreground"}`}
+            >
+              {activeOrderScope.progress.completed} of {activeOrderScope.progress.total} stages complete
+            </span>
+            {activeOrderScope.progress.overdue ? (
+              <span className="font-medium text-warning">{activeOrderScope.progress.overdue} overdue</span>
+            ) : null}
+            {activeOrderScope.progress.dueToday ? (
+              <span className="font-medium text-warning">{activeOrderScope.progress.dueToday} due today</span>
+            ) : null}
+            {activeOrderScope.progress.upcoming ? (
+              <span className="font-medium text-destructive">{activeOrderScope.progress.upcoming} upcoming</span>
+            ) : null}
+            {activeOrderScope.progress.unscheduled ? (
+              <span className="text-muted-foreground">{activeOrderScope.progress.unscheduled} without D.P.</span>
+            ) : null}
+            {activeOrderScope.progress.stopped ? (
+              <span className="text-muted-foreground">{activeOrderScope.progress.stopped} stopped</span>
+            ) : null}
+          </div>
+          <div className="mb-4">
+            <TimelineStageSelect
+              value={selectedStageIndex === null ? "order" : String(selectedStageIndex)}
+              onValueChange={(value) =>
+                setActiveTimelineStageIndex(value === "order" ? null : Number(value))
+              }
+              ariaLabel={`Supply Order ${selectedTimelineOrderIndex! + 1} timeline stage`}
+              options={[
+                { value: "order", label: "S.O. dates" },
+                ...activeOrderScope.stageGroups.map((_, stageIndex) => ({
+                  value: String(stageIndex),
+                  label: `Stage ${stageIndex + 1}`,
+                  status: getTimelineStageStatusLabel(
+                    form,
+                    activeOrderScope.order,
+                    activeOrderScope.stages[stageIndex],
+                  ),
+                })),
+              ]}
+            />
+          </div>
+        </>
+      ) : null}
+
+      {visibleGroup.items.length === 0 && !showAllDates ? (
         <div>
           <div className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
-            {visibleGroups[0].title}
+            {visibleGroup.title}
           </div>
           <p className="text-sm text-muted-foreground">No dates recorded for this level.</p>
         </div>
       ) : (
-        <TimelineGroupBlock group={visibleGroups[0]} />
+        <TimelineGroupBlock group={visibleGroup} />
       )}
     </section>
   );
@@ -10604,9 +10886,27 @@ function TimelineGroupBlock({ group }: { group: TimelineGroup }) {
         {group.title}
       </div>
       <ol className="relative space-y-0">
-        <span className="absolute left-[5.75rem] top-2 bottom-2 w-px bg-success/60" />
+        <span className="absolute left-[5.75rem] top-2 bottom-2 w-px bg-border" />
         {group.items.map((item) => {
           const metrics = timelineMetrics.get(getTimelineItemKey(item));
+          const dotClass = !item.date
+            ? "bg-muted-foreground/35"
+            : item.deliveryStatus === "upcoming"
+              ? "bg-destructive"
+              : item.deliveryStatus === "due" || item.deliveryStatus === "overdue"
+                ? "bg-warning"
+                : item.deliveryStatus === "inactive"
+                  ? "bg-muted-foreground/50"
+                  : "bg-success";
+          const dateClass =
+            item.deliveryStatus === "upcoming"
+              ? "text-destructive"
+              : item.deliveryStatus === "due" || item.deliveryStatus === "overdue"
+                ? "text-warning"
+                : item.deliveryStatus === "complete"
+                  ? "text-success"
+                  : "text-muted-foreground";
+          const statusText = getTimelineDeliveryStatusText(item);
           return (
             <li key={item.id} className="relative pb-4 last:pb-0">
               <div className="grid grid-cols-[4.5rem_1.5rem_minmax(0,1fr)] items-start gap-2">
@@ -10615,12 +10915,9 @@ function TimelineGroupBlock({ group }: { group: TimelineGroup }) {
                 </div>
                 <div className="relative flex h-5 justify-center">
                   <span
-                    className={
-                      "mt-1.5 size-3 rounded-full border-2 border-card " +
-                      (item.date
-                        ? "bg-success shadow-[0_0_0_3px_var(--color-success)]/10"
-                        : "bg-muted-foreground/35")
-                    }
+                    aria-label={statusText}
+                    title={statusText}
+                    className={`mt-1.5 size-3 rounded-full border-2 border-card ${dotClass}`}
                   />
                 </div>
                 <div className="rounded-md border border-border bg-card px-3 py-2.5">
@@ -10638,9 +10935,12 @@ function TimelineGroupBlock({ group }: { group: TimelineGroup }) {
                       {item.date ? formatDayCount(metrics?.cumulativeDays) : "-"}
                     </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">
+                  <div className={`text-xs ${dateClass}`}>
                     {item.date ? formatTimelineDate(item.date) : "Not filled"}
                   </div>
+                  {statusText ? (
+                    <div className={`mt-0.5 text-[0.625rem] ${dateClass}`}>{statusText}</div>
+                  ) : null}
                 </div>
               </div>
             </li>
@@ -11052,10 +11352,178 @@ function getTimelineMetrics(items: TimelineItem[]) {
   );
 }
 
+function getTimelineDeliveryStatusText(item: TimelineItem) {
+  if (item.deliveryStatus === "upcoming") {
+    const dueIn = getTimelineDayGap(formatLocalDate(new Date()), item.date);
+    return dueIn === undefined
+      ? "Future D.P."
+      : `Future D.P. · Due in ${formatDayCount(dueIn)}`;
+  }
+  if (item.deliveryStatus === "due") return "D.P. due today; delivery incomplete";
+  if (item.deliveryStatus === "overdue") {
+    const overdueDays = getTimelineDayGap(item.date, formatLocalDate(new Date()));
+    return overdueDays === undefined
+      ? "D.P. passed; delivery incomplete"
+      : `D.P. passed; ${formatDayCount(overdueDays)} overdue`;
+  }
+  if (item.deliveryStatus === "complete") return "Delivery complete";
+  if (item.deliveryStatus === "inactive") return "Delivery follow-up stopped";
+  return undefined;
+}
+
 function getFilledTimelineItems(items: TimelineItem[]) {
   return items
     .filter((item) => item.date)
     .sort((a, b) => a.date.localeCompare(b.date) || a.order - b.order);
+}
+
+function getDeliveryPeriodTimelineStatus(
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+  order: SupplyOrderDetail,
+  dueDate: string,
+  stage?: StageDeliveryDetail,
+): TimelineDeliveryStatus | undefined {
+  const today = formatLocalDate(new Date());
+  if (!isValidTimelineDate(dueDate)) return undefined;
+
+  const followUpStopped =
+    isYes(order.soCancelled ?? "") ||
+    isYes(order.shortclosure ?? "") ||
+    isYes(order.noFurtherAction ?? "");
+
+  const isJobCompletion = isJobCompletionWorkflow(
+    form.fileType,
+    form.ir,
+    form.fileTypeGroup,
+  );
+  const isDeliveryCompleteByToday = (delivery: {
+    materialReceiptDate?: string;
+    actualJobCompletionDate?: string;
+  }) => {
+    const completionDate = isJobCompletion
+      ? delivery.actualJobCompletionDate
+      : delivery.materialReceiptDate;
+    return Boolean(
+      completionDate &&
+        isValidTimelineDate(completionDate) &&
+        completionDate <= today,
+    );
+  };
+
+  let deliveryComplete = false;
+  if (stage) {
+    deliveryComplete = isDeliveryCompleteByToday(stage);
+  } else if (isYes(order.stageDelivery ?? "")) {
+    const stages = resizeStageDeliveries(
+      order.stageDeliveries ?? [],
+      getStageDeliveryCount(order.stageDeliveryCount),
+    );
+    deliveryComplete = stages.length > 0 && stages.every(isDeliveryCompleteByToday);
+  } else {
+    deliveryComplete = isDeliveryCompleteByToday(order);
+  }
+
+  if (deliveryComplete) return "complete";
+  if (followUpStopped) return "inactive";
+  if (dueDate > today) return "upcoming";
+  return dueDate === today ? "due" : "overdue";
+}
+
+function isTimelineDeliveryCompleteByToday(
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+  delivery: Pick<StageDeliveryDetail, "materialReceiptDate" | "actualJobCompletionDate"> |
+    Pick<SupplyOrderDetail, "materialReceiptDate" | "actualJobCompletionDate">,
+) {
+  const completionDate = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
+    ? delivery.actualJobCompletionDate
+    : delivery.materialReceiptDate;
+  const today = formatLocalDate(new Date());
+  return Boolean(
+    completionDate &&
+      isValidTimelineDate(completionDate) &&
+      completionDate <= today,
+  );
+}
+
+function isTimelineDeliveryFollowUpStopped(order: SupplyOrderDetail) {
+  return (
+    isYes(order.soCancelled ?? "") ||
+    isYes(order.shortclosure ?? "") ||
+    isYes(order.noFurtherAction ?? "")
+  );
+}
+
+function getTimelineStages(order: SupplyOrderDetail) {
+  if (!isYes(order.stageDelivery ?? "")) return [];
+  return resizeStageDeliveries(
+    order.stageDeliveries ?? [],
+    getStageDeliveryCount(order.stageDeliveryCount),
+  );
+}
+
+function getTimelineStageProgress(
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+  order: SupplyOrderDetail,
+  stages: StageDeliveryDetail[],
+): TimelineStageProgress {
+  const today = formatLocalDate(new Date());
+  const progress: TimelineStageProgress = {
+    total: stages.length,
+    completed: 0,
+    overdue: 0,
+    dueToday: 0,
+    upcoming: 0,
+    unscheduled: 0,
+    stopped: 0,
+  };
+
+  for (const stage of stages) {
+    if (isTimelineDeliveryCompleteByToday(form, stage)) {
+      progress.completed += 1;
+      continue;
+    }
+    if (isTimelineDeliveryFollowUpStopped(order)) {
+      progress.stopped += 1;
+      continue;
+    }
+    const dueDate = stage.revisedDp || stage.dpDate;
+    if (!isValidTimelineDate(dueDate)) {
+      progress.unscheduled += 1;
+    } else if (dueDate > today) {
+      progress.upcoming += 1;
+    } else if (dueDate === today) {
+      progress.dueToday += 1;
+    } else {
+      progress.overdue += 1;
+    }
+  }
+  return progress;
+}
+
+function getTimelineStageStatusLabel(
+  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+  order: SupplyOrderDetail,
+  stage: StageDeliveryDetail,
+) {
+  if (isTimelineDeliveryCompleteByToday(form, stage)) return "Complete";
+  if (isTimelineDeliveryFollowUpStopped(order)) return "Stopped";
+  const status = getDeliveryPeriodTimelineStatus(
+    form,
+    order,
+    String(stage.revisedDp || stage.dpDate || ""),
+    stage,
+  );
+  if (!status) return "No D.P.";
+  if (status === "upcoming") return "Upcoming";
+  if (status === "due") return "Due today";
+  if (status === "overdue") return "Overdue";
+  return status === "complete" ? "Complete" : "Stopped";
+}
+
+function isValidTimelineDate(value: string | undefined) {
+  if (!value) return false;
+  const parsed = parseLocalDate(value);
+  return Boolean(parsed && formatLocalDate(parsed) === value);
 }
 
 function getFullTimelineItems(items: TimelineItem[]) {
@@ -11073,12 +11541,16 @@ function getSupplyOrderTimelineGroup(
   orderIndex: number,
   startOrder: number,
 ): TimelineGroup {
-  const titleParts = [`Supply Order ${orderIndex + 1}`];
-  if (hasFilledValue(order.soNo)) titleParts.push(String(order.soNo));
   return {
-    title: titleParts.join(" - "),
+    title: getSupplyOrderTimelineTitle(order, orderIndex),
     items: getSupplyOrderTimelineItemsForOrder(form, order, orderIndex, startOrder),
   };
+}
+
+function getSupplyOrderTimelineTitle(order: SupplyOrderDetail, orderIndex: number) {
+  const titleParts = [`Supply Order ${orderIndex + 1}`];
+  if (hasFilledValue(order.soNo)) titleParts.push(String(order.soNo));
+  return titleParts.join(" - ");
 }
 
 function getSupplyOrderTimelineItemsForOrder(
@@ -11100,6 +11572,14 @@ function getSupplyOrderTimelineItemsForOrder(
         label: field.label,
         date: String(order[key] ?? ""),
         order: startOrder + fieldIndex,
+        deliveryStatus:
+          key === "dpDate" || key === "revisedDp"
+            ? getDeliveryPeriodTimelineStatus(
+                form,
+                order,
+                String(order[key] ?? ""),
+              )
+            : undefined,
       };
     });
   return [
@@ -11110,49 +11590,56 @@ function getSupplyOrderTimelineItemsForOrder(
       "Bill return",
       billReturnOrder,
     ),
-    ...getStageTimelineItems(form, order, orderIndex, startOrder + dateFields.length),
     ...getAdvancePaymentTimelineItems(order, orderIndex, startOrder + dateFields.length + 50),
     ...getSupplementaryBillTimelineItems(order, orderIndex, startOrder + dateFields.length + 70),
   ];
 }
 
-function getStageTimelineItems(
+function getStageTimelineGroups(
   form: Pick<FormState, "fileType" | "ir" | "fileTypeGroup">,
   order: SupplyOrderDetail,
   orderIndex: number,
   startOrder: number,
-) {
-  if (!isYes(order.stageDelivery ?? "") || !order.stageDeliveries?.length) return [];
+  stages: StageDeliveryDetail[],
+): TimelineGroup[] {
+  if (!stages.length) return [];
   const stageDateFields = stageDeliveryFields.filter((field) => field.type === "date");
   const billSentIndex = stageDateFields.findIndex(
     (field) => field.key === "billSentForPaymentDate",
   );
-  const stageLabel = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
-    ? "Delivery Period"
-    : "Delivery";
-  return resizeStageDeliveries(
-    order.stageDeliveries,
-    getStageDeliveryCount(order.stageDeliveryCount),
-  ).flatMap((stage, stageIndex) => {
+  return stages.map((stage, stageIndex) => {
     const stageStartOrder = startOrder + stageIndex * (stageDateFields.length + 2);
     const stageItems = stageDateFields.map((field, fieldIndex) => {
       const key = field.key as StageDeliveryKey;
       return {
         id: `so:${orderIndex}:stage:${stageIndex}:${key}`,
-        label: `${stageLabel}-${stageIndex + 1}: ${field.label}`,
+        label: field.label,
         date: String(stage[key] ?? ""),
         order: stageStartOrder + fieldIndex,
+        deliveryStatus:
+          key === "dpDate" || key === "revisedDp"
+            ? getDeliveryPeriodTimelineStatus(
+                form,
+                order,
+                String(stage[key] ?? ""),
+                stage,
+              )
+            : undefined,
       };
     });
-    return [
+    const items = [
       ...stageItems,
       ...getBillReturnTimelineItems(
         stage.billReturnCycles,
         `so:${orderIndex}:stage:${stageIndex}:billReturn`,
-        `${stageLabel}-${stageIndex + 1}: Bill return`,
+        "Bill return",
         stageStartOrder + (billSentIndex === -1 ? stageDateFields.length : billSentIndex) + 0.1,
       ),
     ];
+    return {
+      title: `${getSupplyOrderTimelineTitle(order, orderIndex)} - Stage ${stageIndex + 1}`,
+      items,
+    };
   });
 }
 
@@ -11328,7 +11815,7 @@ function exportTimelineReport(
       : [detailTable, ...timelineTables],
     sheets: format === "excel"
       ? timelineGroups.slice(1).map((group, index) => ({
-          name: `Supply Order ${index + 1}`,
+          name: `${index + 1}. ${group.title}`.replace(/[\\/*?:\[\]]/g, " ").slice(0, 31),
           tables: [detailTable, timelineTableForGroup(group)],
         }))
       : undefined,
@@ -11593,17 +12080,17 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
   const values = (milestones ?? [])
     .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
     .filter((item) => item && normalizeMilestoneName(item) !== "bankguarantee");
-  const configured = values.length ? values : defaultMilestones;
+  if (values.length) return appendFileClosedMilestone(values);
   return appendFileClosedMilestone(
     insertSupplyOrderBgMilestones(
-      insertBillSentMilestone(insertFinancialSanctionMilestone(configured)),
+      insertBillSentMilestone(insertFinancialSanctionMilestone(defaultMilestones)),
     ),
   );
 }
 
 function getConfiguredFirmTypes(firmTypes: string[] | undefined) {
   const seen = new Set<string>();
-  const values = [...(firmTypes?.length ? firmTypes : defaultFirmTypes), "Other"]
+  const values = [...(firmTypes ?? []), "Other"]
     .map((firmType) => firmType.trim())
     .filter((firmType) => {
       if (!firmType) return false;
@@ -11612,12 +12099,12 @@ function getConfiguredFirmTypes(firmTypes: string[] | undefined) {
       seen.add(key);
       return true;
     });
-  return values.length ? values : defaultFirmTypes;
+  return values;
 }
 
 function getConfiguredFileTypes(fileTypes: string[] | undefined, currentFileType?: string) {
   const seen = new Set<string>();
-  const values = [...defaultFileTypeOptions, ...(fileTypes ?? []), currentFileType ?? ""]
+  const values = [...(fileTypes ?? []), currentFileType ?? ""]
     .map((fileType) => fileType.trim())
     .filter((fileType) => {
       if (!fileType) return false;
@@ -11626,7 +12113,7 @@ function getConfiguredFileTypes(fileTypes: string[] | undefined, currentFileType
       seen.add(key);
       return true;
     });
-  return values.length ? values : defaultFileTypeOptions;
+  return values;
 }
 
 function filterFileTypeOptionsForUser(
@@ -11648,22 +12135,12 @@ function filterFileTypeOptionsForUser(
 }
 
 function expandLegacyAllowedFileCategories(categories: string[]) {
-  const categorySet = new Set(categories);
-  if (
-    categorySet.has("goodsServices") &&
-    categorySet.has("amc") &&
-    categorySet.has("mpc") &&
-    categorySet.has("cars") &&
-    !categorySet.has("om")
-  ) {
-    categorySet.add("om");
-  }
-  return Array.from(categorySet);
+  return categories;
 }
 
 function getConfiguredModes(modes: string[] | undefined, currentMode?: string) {
   const seen = new Set<string>();
-  const values = [...(modes?.length ? modes : defaultModeOptions), currentMode ?? ""]
+  const values = [...(modes ?? []), currentMode ?? ""]
     .map((mode) => mode.trim())
     .filter((mode) => {
       if (!mode) return false;
@@ -11672,7 +12149,7 @@ function getConfiguredModes(modes: string[] | undefined, currentMode?: string) {
       seen.add(normalized);
       return true;
     });
-  return values.length ? values : defaultModeOptions;
+  return values;
 }
 
 function filterModeOptionsForUser(modes: string[], allowedCategories: string[] | null | undefined) {
@@ -12016,7 +12493,7 @@ function getDeliveryMilestoneProgress(
   );
   if (!rows.length) return undefined;
   if (isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
-    const completed = rows.filter(isJobCompletionDone).length;
+    const completed = rows.filter(isJobCompletionReceived).length;
     const current =
       rows.some(
         (order) => getDerivedJobCompletionMilestoneState(order, form.fileType, form.ir).current,
@@ -12253,7 +12730,7 @@ function isSupplyOrderMilestoneComplete(
   if (milestone === "PSB+PWB") return isCompleteDateValue(order.combinedBgReceivedDate ?? "");
   if (milestone === "IR Preparation") return isCompleteDateValue(order.irPreparationDate ?? "");
   if (milestone === "IR Receipt") return isCompleteDateValue(order.irReceiptDate ?? "");
-  if (milestone === "Job Completion") return isJobCompletionDone(order);
+  if (milestone === "Job Completion") return isJobCompletionReceived(order);
   if (milestone === "Bill preparation") {
     return isCompleteDateValue(order.billPreparationDate ?? "");
   }
@@ -13111,6 +13588,7 @@ function clearParentStagePaymentData(order: SupplyOrderDetail): SupplyOrderDetai
 function hasStageDeliveryData(stages: StageDeliveryDetail[]) {
   return stages.some((stage) =>
     Object.entries(stage).some(([key, value]) => {
+      if (key === "id") return false;
       if ((key === "dpExtension" || key === "ld") && isNo(value)) return false;
       if (Array.isArray(value)) {
         return value.some((item) =>
@@ -13146,7 +13624,8 @@ function hasWrongAmountSide(
 }
 
 function hasFilledObjectValue(value: Record<string, unknown>): boolean {
-  return Object.values(value).some((item) => {
+  return Object.entries(value).some(([key, item]) => {
+    if (key === "id") return false;
     if (Array.isArray(item))
       return item.some((row) => hasFilledObjectValue(row as Record<string, unknown>));
     return hasFilledValue(String(item ?? ""));
@@ -13208,7 +13687,7 @@ function cleanStageDeliveryRows(
         (milestone) => !["delivery", "jobcompletion"].includes(normalizeMilestoneName(milestone)),
       )
       .concat(deliveryState.completed ? ["Delivery"] : [])
-      .concat(isJobCompletionDone(normalized) ? ["Job Completion"] : []);
+      .concat(isJobCompletionReceived(normalized) ? ["Job Completion"] : []);
     const normalizedCurrent = normalizeMilestoneName(normalized.currentMilestone ?? "");
     const jobCompletionWorkflow = isJobCompletionWorkflow(
       form?.fileType,
@@ -13233,6 +13712,7 @@ function cleanStageDeliveryRows(
       currentMilestone = "";
     }
     return {
+      id: normalized.id,
       includeInPaymentTiming: normalized.includeInPaymentTiming === false ? false : undefined,
       stageAmountCapital: normalized.stageAmountCapital || undefined,
       stageAmountRevenue: normalized.stageAmountRevenue || undefined,
@@ -14151,7 +14631,7 @@ function normalizeSupplyOrderMilestoneState(
       normalizeMilestoneName(manualCurrentMilestone) === "billpreparation");
   const jobCompletionMovesToPayment =
     isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
-    isJobCompletionDone(order) &&
+    isJobCompletionReceived(order) &&
     !isCompleteDateValue(order.paymentDate ?? "") &&
     Boolean(paymentMilestone) &&
     (!manualCurrentMilestone || normalizeMilestoneName(manualCurrentMilestone) === "jobcompletion");
@@ -14183,7 +14663,7 @@ function normalizeSupplyOrderMilestoneState(
     isJobCompletionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
     !isContractNoInspectionWorkflow(form?.fileType, form?.ir, form?.fileTypeGroup) &&
     normalizeMilestoneName(manualCurrentMilestone) === "payment" &&
-    !isJobCompletionDone(order);
+    !isJobCompletionReceived(order);
   const supplyOrderRollsBackToFinancialSanction =
     !isCompleteDateValue(order.financialSanctionDate ?? "") &&
     Boolean(financialSanctionMilestone) &&
@@ -14574,7 +15054,11 @@ function applyStageDeliveryRules(
   stage: StageDeliveryDetail,
   form?: Partial<Pick<FormState, "fileType" | "fileTypeGroup" | "ir">>,
 ) {
-  let next: StageDeliveryDetail = { ...emptyStageDelivery, ...stage };
+  let next: StageDeliveryDetail = {
+    ...emptyStageDelivery,
+    ...stage,
+    id: stage.id?.trim() || createDetailRowId(),
+  };
   if (form && isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)) {
     next = {
       ...next,
@@ -15369,7 +15853,7 @@ function DynamicField({
           disabled={disabled}
           data-testid={testId}
           style={
-            compactWidth || tcecCommitteeKeys.includes(field.key)
+            compactWidth || tcecCommitteeKeys.includes(field.key as FieldKey)
               ? { width: 160, minWidth: 160, maxWidth: 160 }
               : undefined
           }
@@ -15495,7 +15979,7 @@ function SecurityWarrantyBgRulesHelper() {
                     <tr>
                       <th className="border border-sky-200 px-3 py-2 font-semibold">Coverage type</th>
                       <th className="border border-sky-200 px-3 py-2 font-semibold">Required settings and fields</th>
-                      <th className="border border-sky-200 px-3 py-2 font-semibold">When Current activates</th>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">Condition for BG requirement</th>
                     </tr>
                   </thead>
                   <tbody className="bg-background">
@@ -15504,7 +15988,7 @@ function SecurityWarrantyBgRulesHelper() {
                       <td className="border border-sky-200 px-3 py-2">
                         No PSB, PWB, or combined guarantee details apply.
                       </td>
-                      <td className="border border-sky-200 px-3 py-2">No BG milestone becomes Current.</td>
+                      <td className="border border-sky-200 px-3 py-2">No BG requirement applies.</td>
                     </tr>
                     <tr>
                       <td className="border border-sky-200 px-3 py-2 font-medium">PSB</td>
@@ -15521,7 +16005,7 @@ function SecurityWarrantyBgRulesHelper() {
                         Warranty = Yes. Enter the PWB details and Warranty Period.
                       </td>
                       <td className="border border-sky-200 px-3 py-2">
-                        Material Receipt date is recorded and PWB received date is blank.
+                        The applicable PWB trigger is recorded and the PWB received date is blank.
                       </td>
                     </tr>
                     <tr>
@@ -15541,14 +16025,14 @@ function SecurityWarrantyBgRulesHelper() {
                         PSB Applicable = Yes for PSB; Warranty = Yes for PWB. Enter each guarantee and its own dates; Warranty Period applies to PWB.
                       </td>
                       <td className="border border-sky-200 px-3 py-2">
-                        PSB Current follows the Financial Sanction rule; PWB Current follows the Material Receipt rule. Each clears when its own received date is recorded.
+                        PSB becomes required after Financial Sanction. PWB uses its applicable trigger (S.O. for contract files, IR Receipt for Goods & Services with IR = Yes, or Job Completion otherwise). Each requirement is cleared when its own received date is recorded.
                       </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
               <p className="mt-2">
-                Current is derived automatically. A guarantee is completed by its corresponding received date: PSB, PWB, or combined PSB+PWB.
+                BG requirements are derived automatically. Each requirement is completed when its corresponding received date is recorded: PSB, PWB, or combined PSB+PWB.
               </p>
             </div>
           </TooltipContent>
@@ -15735,6 +16219,42 @@ function disabledCls(disabled: boolean) {
 
 function hasFilledValue(value: unknown) {
   return Boolean(String(value ?? "").trim());
+}
+
+function getTcecMinutesMeetingDateWarning(fieldKey: FieldKey, form: FormState) {
+  const datePair =
+    fieldKey === "preTcecMinutesDate"
+      ? {
+          minutesDate: form.preTcecMinutesDate,
+          meetingDate: form.preTcecDate,
+          minutesLabel: "Pre-TCEC minutes date",
+          meetingLabel: "Pre-TCEC meeting date",
+        }
+      : fieldKey === "postTcecMinutesDate"
+        ? {
+            minutesDate: form.postTcecMinutesDate,
+            meetingDate: form.postTcecDate,
+            minutesLabel: "Post-TCEC minutes date",
+            meetingLabel: "Post-TCEC meeting date",
+          }
+        : fieldKey === "refloatPostTcecMinutesDate"
+          ? {
+              minutesDate: form.refloatPostTcecMinutesDate,
+              meetingDate: form.refloatPostTcecDate,
+              minutesLabel: "Refloat Post-TCEC minutes date",
+              meetingLabel: "Refloat Post-TCEC meeting date",
+            }
+          : undefined;
+
+  if (
+    !datePair ||
+    !hasFilledValue(datePair.minutesDate) ||
+    hasFilledValue(datePair.meetingDate)
+  ) {
+    return undefined;
+  }
+
+  return `${datePair.minutesLabel} is entered without the ${datePair.meetingLabel}. Add the meeting date; otherwise, this record is omitted from FY, month, and date views grouped by meeting date.`;
 }
 
 function hasSelectablePaymentMode(value: unknown) {

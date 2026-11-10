@@ -30,6 +30,72 @@ function postTcecRows(file, delayDays = 5) {
   }).delayRows.filter((row) => row.milestoneKey === "postTcec");
 }
 
+function prePostTcecRows(file, delayDays = 5) {
+  return buildReportsSummary({
+    files: [{ id: file.id, demandCancelled: "No", completedMilestones: [], ...file }],
+    division: "all",
+    delayDays,
+    delayMilestone: "prePostTcec",
+  }).delayRows.filter((row) => row.milestoneKey === "prePostTcec");
+}
+
+test("closed files are excluded from generic file and S.O. delay paths", () => {
+  const closedFileMilestone = {
+    id: "closed-file-milestone-delay",
+    currentMilestone: "AD",
+    ad: "Yes",
+    tcec: "Yes",
+    preTcecMinutesDate: daysAgo(20),
+    completedMilestones: ["File Closed"],
+  };
+  const closedSupplyOrder = {
+    id: "closed-supply-order-delay",
+    mode: "LPC",
+    completedMilestones: ["File Closed"],
+    supplyOrders: [
+      {
+        soNo: "SO-1",
+        currentMilestone: "Supply Order",
+        financialSanctionDate: daysAgo(20),
+        soDate: "",
+        soCancelled: "No",
+      },
+    ],
+  };
+  const openFileMilestone = { ...closedFileMilestone, completedMilestones: [] };
+  const openSupplyOrder = { ...closedSupplyOrder, completedMilestones: [] };
+
+  const fileMilestoneSummary = buildReportsSummary({
+    files: [{ demandCancelled: "No", ...closedFileMilestone }],
+    division: "all",
+    delayDays: 5,
+    delayMilestone: "ad",
+  });
+  const openFileMilestoneSummary = buildReportsSummary({
+    files: [{ demandCancelled: "No", ...openFileMilestone }],
+    division: "all",
+    delayDays: 5,
+    delayMilestone: "ad",
+  });
+  const supplyOrderSummary = buildReportsSummary({
+    files: [{ demandCancelled: "No", ...closedSupplyOrder }],
+    division: "all",
+    delayDays: 5,
+    delayMilestone: "supplyOrder",
+  });
+  const openSupplyOrderSummary = buildReportsSummary({
+    files: [{ demandCancelled: "No", ...openSupplyOrder }],
+    division: "all",
+    delayDays: 5,
+    delayMilestone: "supplyOrder",
+  });
+
+  assert.equal(openFileMilestoneSummary.delayRows.length, 1);
+  assert.equal(openSupplyOrderSummary.delayRows.length, 1);
+  assert.equal(fileMilestoneSummary.delayRows.length, 0);
+  assert.equal(supplyOrderSummary.delayRows.length, 0);
+});
+
 test("file-milestone delay ignores dates under inapplicable workflows in summary and Search", () => {
   const file = {
     id: "ad-delay-ignores-inapplicable-date",
@@ -76,7 +142,7 @@ test("file-milestone delay and cumulative days use the latest completed date out
   );
 });
 
-test("TCEC Post-TCEC delay requires TCEC Yes and Bidding Stage Over Yes in the summary and Search", async () => {
+test("TCEC Post-TCEC delay requires a Post-TCEC Date, TCEC Yes, and Bidding Stage Over Yes", () => {
   const eligible = {
     id: "post-tcec-delay-eligible",
     currentMilestone: "Post-TCEC",
@@ -84,6 +150,7 @@ test("TCEC Post-TCEC delay requires TCEC Yes and Bidding Stage Over Yes in the s
     biddingStageOver: "Yes",
     bidOpeningDate: daysAgo(10),
     preTcecMinutesDate: daysAgo(20),
+    postTcecDate: daysAgo(10),
     postTcecMinutesDate: "",
   };
   const tcecNo = {
@@ -101,6 +168,7 @@ test("TCEC Post-TCEC delay requires TCEC Yes and Bidding Stage Over Yes in the s
     id: "post-tcec-delay-bid-closing-missing",
     bidOpeningDate: "",
     bidDate: daysAgo(30),
+    postTcecDate: "",
   };
 
   assert.equal(postTcecRows(eligible).length, 1);
@@ -116,30 +184,59 @@ test("TCEC Post-TCEC delay requires TCEC Yes and Bidding Stage Over Yes in the s
   );
 });
 
-test("Post-TCEC uses Bid Closing when Bidding is the latest predecessor and never falls back to Bid Date", () => {
+test("A blank Post-TCEC Date is reported as Pre-Post-TCEC from Bid Opening", () => {
   const file = {
-    id: "post-tcec-latest-bidding-predecessor",
+    id: "pre-post-tcec-delay",
     fileType: "Goods & Services",
-    currentMilestone: "Post-TCEC",
+    currentMilestone: "Bidding",
     tcec: "Yes",
     biddingStageOver: "Yes",
     bidDate: daysAgo(30),
     bidOpeningDate: daysAgo(10),
     preTcecMinutesDate: daysAgo(20),
+    postTcecDate: "",
     postTcecMinutesDate: "",
   };
-  const row = postTcecRows(file)[0];
+  const row = prePostTcecRows(file)[0];
+  assert.equal(row.milestoneKey, "prePostTcec");
   assert.equal(row.stageStartDate, file.bidOpeningDate);
+  assert.deepEqual(
+    searchFiles([file], { dashboardFilter: "delayStatus:5:prePostTcec" }).map(({ id }) => id),
+    [file.id],
+  );
+  assert.equal(postTcecRows(file).length, 0);
+
+  const laterRqa = {
+    ...file,
+    id: "pre-post-tcec-later-rqa-date",
+    rqa: "Yes",
+    rqaApprovalDate: daysAgo(8),
+  };
+  assert.equal(prePostTcecRows(laterRqa)[0].stageStartDate, laterRqa.bidOpeningDate);
+});
+
+test("Post-TCEC starts at Post-TCEC Date and ends at Post-TCEC Minutes Date", () => {
+  const file = {
+    id: "post-tcec-stage-transition",
+    currentMilestone: "Post-TCEC",
+    tcec: "Yes",
+    biddingStageOver: "Yes",
+    bidOpeningDate: daysAgo(20),
+    postTcecDate: daysAgo(10),
+    postTcecMinutesDate: "",
+  };
+
+  assert.equal(prePostTcecRows(file).length, 0);
+  assert.equal(postTcecRows(file)[0].stageStartDate, file.postTcecDate);
   assert.deepEqual(
     searchFiles([file], { dashboardFilter: "delayStatus:5:postTcec" }).map(({ id }) => id),
     [file.id],
   );
 
-  const laterRqa = {
-    ...file,
-    id: "post-tcec-later-rqa-predecessor",
-    rqa: "Yes",
-    rqaApprovalDate: daysAgo(8),
-  };
-  assert.equal(postTcecRows(laterRqa)[0].stageStartDate, laterRqa.rqaApprovalDate);
+  const completed = { ...file, postTcecMinutesDate: daysAgo(2) };
+  assert.equal(postTcecRows(completed).length, 0);
+  assert.deepEqual(
+    searchFiles([completed], { dashboardFilter: "delayStatus:5:postTcec" }).map(({ id }) => id),
+    [],
+  );
 });

@@ -30,7 +30,9 @@ function DivisionsPage() {
 
   const add = () => {
     if (!name.trim()) return;
-    store.addDivision(name.trim(), code.trim() || undefined);
+    void store.addDivision(name.trim(), code.trim() || undefined).catch((error) => {
+      console.error(error);
+    });
     setName("");
     setCode("");
   };

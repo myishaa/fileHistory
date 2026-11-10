@@ -36,6 +36,23 @@ test("numeric export columns are written as Excel numbers", () => {
   assert.doesNotMatch(sheet, /<c r="B4"[^>]*t="inlineStr"/);
 });
 
+test("native numeric and Date cells retain their types without column hints", () => {
+  const workbook = renderXlsxDocument({
+    title: "Typed cells",
+    tables: [
+      {
+        headers: ["Identifier", "Count", "Amount", "Timestamp"],
+        rows: [["0002", 2, 10.25, new Date("2026-10-21T12:34:56.000Z")]],
+      },
+    ],
+  });
+  const sheet = readZipEntry(workbook, "xl/worksheets/sheet1.xml");
+  assert.match(sheet, /<c r="A4"[^>]*t="inlineStr"[^>]*>.*>0002<\/t>/);
+  assert.match(sheet, /<c r="B4" s="\d+"><v>2<\/v><\/c>/);
+  assert.match(sheet, /<c r="C4" s="\d+"><v>10.25<\/v><\/c>/);
+  assert.match(sheet, /<c r="D4" s="10"><v>46316\.524259259255<\/v><\/c>/);
+});
+
 test("date and date-time export columns are Excel serials and missing values stay blank", () => {
   const workbook = renderXlsxDocument({
     title: "Quick Entry",

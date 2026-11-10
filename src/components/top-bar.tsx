@@ -43,8 +43,13 @@ import {
   type AppFontScale,
 } from "@/lib/font-scale";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { showAppAlert } from "@/components/app-dialog";
 import { HelperContent } from "@/components/helper-content";
-import { hasCapability } from "@/lib/permissions";
+import {
+  canViewFileProcessing,
+  hasCapability,
+  isDivisionScopedUser,
+} from "@/lib/permissions";
 import {
   Dialog,
   DialogContent,
@@ -142,7 +147,7 @@ export function TopBar() {
   const [filterScopeRevision, setFilterScopeRevision] = useState(0);
   const isDark = settings.theme === "dark";
   const canManageAdminSettings = hasCapability(activeUser, "canManageUsers");
-  const canUpdateAppearance = Boolean(activeUser);
+  const canUpdateAppearance = Boolean(activeUser && activeUser.role !== "viewer");
   const canSelectYear = Boolean(activeUser) && pathname !== "/quick-entry";
   const canViewUserSettings = Boolean(activeUser);
   const fontScale = normalizeAppFontScale(settings.fontScale ?? defaultAppFontScale);
@@ -380,7 +385,7 @@ export function TopBar() {
       }
     } catch (error) {
       setFilterWarningSuppressed(!nextSuppressed);
-      window.alert(
+      void showAppAlert(
         error instanceof Error ? error.message : "Could not save filter warning preference.",
       );
     }
@@ -399,6 +404,8 @@ export function TopBar() {
   });
   const messagingBlocked = !hasCapability(activeUser, "canSendFileMessages");
   const isViewer = !messagingBlocked && activeUser?.role === "division_user";
+  const canAccessFileProcessing = canViewFileProcessing(activeUser);
+  const canViewAnomalyWarnings = Boolean(activeUser && !isDivisionScopedUser(activeUser));
   const pendingMessages = useMemo(
     () => messages.filter((message) => message.status === "pending"),
     [messages],
@@ -416,17 +423,20 @@ export function TopBar() {
     : isViewer
       ? pendingMessages.length + viewerUnreadResolved.length
       : pendingMessages.length;
-  const fileProcessingWarningCount = isViewer
+  const fileProcessingWarningCount = canAccessFileProcessing
     ? fileProcessingNotifications.filter((notification) => notification.status === "pending").length
     : 0;
-  const displayedAnomalyWarningCount =
-    anomalyWarningError && anomalyWarningCount === 0 ? 1 : anomalyWarningCount;
+  const displayedAnomalyWarningCount = canViewAnomalyWarnings
+    ? anomalyWarningError && anomalyWarningCount === 0
+      ? 1
+      : anomalyWarningCount
+    : 0;
   const bellCount = messageWarningCount + displayedAnomalyWarningCount + fileProcessingWarningCount;
   const adminBellCount = bellCount + ipAccessWarningCount;
   const refreshAnomalyWarningCount = useCallback(() => {
     if (pathname === "/reports" && !reportsMainPanelReadyRef.current) return;
     const requestId = ++anomalyRequestId.current;
-    if (!activeUser) {
+    if (!activeUser || !canViewAnomalyWarnings) {
       setAnomalyWarningCount(0);
       setAnomalyWarningError(false);
       return;
@@ -445,9 +455,9 @@ export function TopBar() {
         if (requestId !== anomalyRequestId.current) return;
         setAnomalyWarningError(true);
       });
-  }, [activeUser, pathname, settings.financialYear, settings.selectedYear]);
+  }, [activeUser, canViewAnomalyWarnings, pathname, settings.financialYear, settings.selectedYear]);
   useEffect(() => {
-    if (!activeUser) {
+    if (!activeUser || !canViewAnomalyWarnings) {
       setAnomalyWarningCount(0);
       setAnomalyWarningError(false);
       return;
@@ -507,7 +517,14 @@ export function TopBar() {
       window.removeEventListener("recordkeeper:anomaly-data-updated", loadAnomalyCount);
       window.removeEventListener("storage", refreshFromStorage);
     };
-  }, [activeUser, pathname, reportMode, settings.financialYear, settings.selectedYear]);
+  }, [
+    activeUser,
+    canViewAnomalyWarnings,
+    pathname,
+    reportMode,
+    settings.financialYear,
+    settings.selectedYear,
+  ]);
   useEffect(() => {
     if (activeUser?.role !== "admin") {
       setIpAccessWarningCount(0);
@@ -559,6 +576,7 @@ export function TopBar() {
     });
   };
   const openSuspectedAnomalies = () => {
+    if (!canViewAnomalyWarnings) return;
     setWarningsOpen(false);
     navigate({
       to: "/dashboard",
@@ -639,7 +657,7 @@ export function TopBar() {
       setSavedFilterCombination(nextLock);
       setFilterCombinationLocked(true);
     } catch (error) {
-      window.alert(
+      void showAppAlert(
         error instanceof Error ? error.message : "Could not save the filter combination.",
       );
     }
@@ -656,7 +674,7 @@ export function TopBar() {
       setSavedFilterCombination(undefined);
       setFilterCombinationLocked(false);
     } catch (error) {
-      window.alert(
+      void showAppAlert(
         error instanceof Error ? error.message : "Could not unlock the filter combination.",
       );
     }
@@ -806,7 +824,7 @@ export function TopBar() {
               type="button"
               onClick={() => {
                 setWarningsOpen((open) => {
-                  if (!open) refreshAnomalyWarningCount();
+                  if (!open && canViewAnomalyWarnings) refreshAnomalyWarningCount();
                   return !open;
                 });
               }}
@@ -830,7 +848,7 @@ export function TopBar() {
                   Warnings
                 </div>
                 <div className="mt-2 space-y-1">
-                  {isViewer ? (
+                  {canAccessFileProcessing ? (
                     <button
                       type="button"
                       onClick={openFileProcessing}
@@ -864,23 +882,25 @@ export function TopBar() {
                       </span>
                     </button>
                   ) : null}
-                  <button
-                    type="button"
-                    onClick={openSuspectedAnomalies}
-                    className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
-                  >
-                    <span>
-                      <span className="block text-sm font-medium">Suspected anomaly observed</span>
-                      <span className="block text-xs text-muted-foreground">
-                        {anomalyWarningError
-                          ? "Could not refresh anomaly count"
-                          : "Count follows Dashboard anomaly filters"}
+                  {canViewAnomalyWarnings ? (
+                    <button
+                      type="button"
+                      onClick={openSuspectedAnomalies}
+                      className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-2 text-left hover:bg-accent"
+                    >
+                      <span>
+                        <span className="block text-sm font-medium">Suspected anomaly observed</span>
+                        <span className="block text-xs text-muted-foreground">
+                          {anomalyWarningError
+                            ? "Could not refresh anomaly count"
+                            : "Count follows Dashboard anomaly filters"}
+                        </span>
                       </span>
-                    </span>
-                    <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
-                      {anomalyWarningError && anomalyWarningCount === 0 ? "!" : anomalyWarningCount}
-                    </span>
-                  </button>
+                      <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
+                        {anomalyWarningError && anomalyWarningCount === 0 ? "!" : anomalyWarningCount}
+                      </span>
+                    </button>
+                  ) : null}
                   {!messagingBlocked ? (
                     <button
                       type="button"
@@ -1479,14 +1499,18 @@ function getFilterGuideCombinations(
       {
         globalFilter: "All active files",
         subfilter: "Not available",
-        files: "Currently active files, subject to the Search criteria.",
-        example: "A closed file is excluded even if it has a payment in the chosen date range.",
+        files:
+          "Currently active files, subject to Search criteria. A file with at least one live S.O. remains eligible even if another S.O. is cancelled.",
+        example:
+          "A file with all S.O.s cancelled is excluded; Search's Cancelled S.O. Include can bypass the active-status scope, subject to the archived-FY checkbox.",
       },
       {
         globalFilter: "All files",
         subfilter: "Not available",
-        files: "All accessible files, subject to the Search criteria.",
-        example: "A payment-date search can find matching payments on files initiated in any FY.",
+        files:
+          "All accessible files except individually archived files, subject to Search criteria and the archived-FY checkbox.",
+        example:
+          "For an archived FY, the checkbox includes only active carry-forward files; it does not bring in closed or cancelled files from that FY.",
       },
     ];
   }
@@ -1496,9 +1520,9 @@ function getFilterGuideCombinations(
         globalFilter: "Not applied",
         subfilter: "Not available",
         files:
-          "Quick Entry looks up the specific file or code entered; filter combinations do not change its scope.",
+          "Quick Entry looks up the specific file or code entered. Its archived-FY checkbox allows active carry-forward files from archived years when checked; individually archived files remain excluded.",
         example:
-          "Entering a file code opens that file regardless of its initiation FY, status, or activity dates.",
+          "A code from an archived FY is found only when its file is active and the checkbox is checked.",
       },
     ];
   }
@@ -1530,7 +1554,7 @@ function getFilterGuideCombinations(
     {
       globalFilter: "Active + current FY closed",
       subfilter: "All file years",
-      files: `Files active today plus files closed during ${currentFy}, across initiation years.`,
+      files: `Files active today plus files closed during ${currentFy}, across initiation years. Demand-cancelled files are excluded; all-S.O.-cancelled files are excluded from the active branch, but files closed during ${currentFy} may still qualify.`,
       example: `An older file active today is included even without an event dated in ${currentFy}; files closed before ${currentFy} are excluded.`,
     },
     {
@@ -1549,7 +1573,7 @@ function getFilterGuideCombinations(
       globalFilter: "All active files",
       subfilter: "All file years",
       files:
-        "Files active now across all initiation years; closed and cancelled files are excluded by this Global Filter rule.",
+        "Files active now across all initiation years; closed, demand-cancelled, and all-S.O.-cancelled files are excluded. A file with both live and cancelled S.O.s remains eligible.",
       example:
         "This is a current active-file scope, not a list of every file that had activity during the FY.",
     },
@@ -1563,14 +1587,15 @@ function getFilterGuideCombinations(
       globalFilter: "All files",
       subfilter: "All file years",
       files:
-        "All accessible files across all initiation years and closure states; individual measures may still apply their own exclusions.",
+        "All accessible files except individually archived files across all initiation years and statuses. Archived FYs contribute active carry-forward files only when the Include active files from archived years checkbox is checked; otherwise those FYs are excluded.",
       example:
         "Use for a broad database view. A selected Global FY is not implied, and event-based measures may have their own date scope.",
     },
     {
       globalFilter: "All files",
       subfilter: "Any specific FY",
-      files: "All accessible files initiated in the selected FY, regardless of closure status.",
+      files:
+        "All accessible files initiated in the selected FY, regardless of closure status, subject to the archived-FY checkbox and individual-archive exclusion.",
       example: `For example, choose ${currentFy} or ${previousFy} to see all accessible files started in that FY; events are not date-limited by this choice.`,
     },
   ];
@@ -1616,6 +1641,10 @@ function SectionFilterGuideDialog({
           [
             "Activity Year",
             "The FY containing a dated event, but only for measures that use that event date. Other measures may show current status or recorded history.",
+          ],
+          [
+            "Cancelled S.O. filter (Search)",
+            "Include finds files with at least one cancelled S.O. Exclude removes only files whose S.O.s are all cancelled, so a file with one live and one cancelled S.O. remains visible. Include can bypass the active-status file scope, but not the archived-FY checkbox rule.",
           ],
         ],
         columnWidths: [140, 440],
@@ -1688,15 +1717,40 @@ function SectionFilterGuideDialog({
             <ul className="mt-1 list-disc space-y-1 pl-5 text-sm leading-6 text-muted-foreground">
               <li>
                 <strong>Active + current FY closed:</strong> Files active now, plus files closed
-                during the current FY. Cancelled files are excluded.
+                during the current FY, except demand-cancelled files. The active branch excludes
+                files with all S.O.s cancelled; files closed this FY may still qualify. Measures
+                may apply additional S.O. rules.
               </li>
               <li>
                 <strong>All active files:</strong> Files active now, across all initiation years.
-                Closed and cancelled files are excluded.
+                Closed files, demand-cancelled files, and files with all S.O.s cancelled are
+                excluded. A file with at least one live S.O. can remain eligible even if another
+                S.O. is cancelled.
               </li>
               <li>
                 <strong>All files:</strong> All accessible files, across all initiation years,
-                including closed and cancelled files.
+                including closed files, cancelled demands, and files with some or all S.O.s
+                cancelled, except individually archived files. Files from archived FYs follow the
+                separate archived-FY checkbox rule.
+              </li>
+              <li>
+                <strong>Include active files from archived years:</strong> When checked, active
+                carry-forward files from archived FYs can appear; closed, demand-cancelled, and
+                fully S.O.-cancelled files from those FYs remain excluded. When unchecked, all
+                files from archived FYs are excluded. Individually archived files are always
+                excluded.
+              </li>
+              <li>
+                Global filters select files, not individual S.O.s. A file with one live and one
+                cancelled S.O. can remain in an active file scope; a file with all S.O.s cancelled
+                is excluded from the active branch. A file closed during the current FY may still
+                qualify under the closed-file branch.
+              </li>
+              <li>
+                In Search, <strong>Cancelled S.O. — Include</strong> finds files with a cancelled
+                S.O.; <strong>Exclude</strong> removes only files whose S.O.s are all cancelled.
+                Include can bypass the active-status scope, but the archived-FY checkbox still
+                applies. Individual panels may exclude cancelled S.O. rows from their counts.
               </li>
               <li>
                 <strong>Specific FY:</strong> Files initiated in that FY, plus older files that were
@@ -1915,7 +1969,7 @@ function getSectionFilterGuide(currentFinancialYear: string): FilterGuideSection
       globalFilter: "User's selection (recommended: Active + current FY closed)",
       subfilter: "Not available on this page",
       fileScope:
-        "Global Filter and Search criteria select matching files. Division, File Type, and date filters narrow the results further.",
+        "Global Filter and Search criteria select matching files. Division, File Type, and date filters narrow the results further. All Files includes closed and cancelled files from unarchived FYs, but individually archived files are excluded; files from archived FYs follow the Include active files from archived years checkbox.",
       activityYear:
         "A date filter searches the selected date, such as Payment Date. Without one, Global Filter selects files; it does not set a payment date range.",
       examples: [
@@ -1929,10 +1983,10 @@ function getSectionFilterGuide(currentFinancialYear: string): FilterGuideSection
       globalFilter: "Not applied",
       subfilter: "Not available",
       fileScope:
-        "Quick Entry opens the file or record identified by the code entered. Global Filter does not restrict it.",
+        "Quick Entry opens the file or record identified by the code entered. Global Filter does not restrict it, but the Include active files from archived years checkbox controls whether active carry-forward files from archived FYs can be found. Individually archived files remain excluded.",
       activityYear: "Quick Entry does not filter by Activity Year.",
       examples: [
-        "Entering a file code opens that file regardless of its initiation year or activity dates.",
+        "A code from an archived FY is found only when its file is active and the checkbox is checked.",
       ],
     },
   ];
@@ -1987,8 +2041,8 @@ function FilterCombinationGuideDialog({
         rows: [
           [
             "Specific FY",
-            "Files started in that FY appear, along with active files carried forward from earlier years. Cancelled files may also appear.",
-            `For ${displayFinancialYearLabel(currentFinancialYear)}: files started in that FY, plus active files carried forward from earlier years. Files closed during that FY are included too. Active + current FY closed excludes cancelled/all-S.O.-cancelled files.`,
+            "Files started in that FY appear, along with older files connected to that FY. Files with cancelled S.O.s may also qualify; measures can apply separate S.O. rules.",
+            `For ${displayFinancialYearLabel(currentFinancialYear)}: files started in that FY, plus older files connected to it. Active + current FY closed excludes demand-cancelled files; its active branch excludes all-S.O.-cancelled files, while files closed during the FY may still qualify.`,
           ],
           [
             "File Initiation Year",
@@ -2006,7 +2060,7 @@ function FilterCombinationGuideDialog({
           "Old active file",
           "File closed in selected/current FY",
           "File closed before selected/current FY",
-          "Cancelled demand / all S.O.s cancelled",
+          "Cancelled demand / cancelled S.O.s",
         ],
         rows: [
           [
@@ -2015,15 +2069,15 @@ function FilterCombinationGuideDialog({
             specificFyOlderFileRule,
             "Included.",
             "Excluded, unless specifically marked active in that FY.",
-            "Can be included when the file belongs to that FY; panels may still exclude cancelled rows by their own rules.",
+            "A file started in the selected FY may qualify even if its S.O.s are cancelled. Older files must meet the selected-FY carry-forward rule. Individual S.O. rows may follow separate filters.",
           ],
           [
             "All files",
-            "Full accessible database.",
-            "Included.",
-            "Included.",
-            "Included.",
-            "Included in full database, but many working/value panels still exclude cancelled rows by their own rules.",
+            "All accessible files except individually archived files; archived-FY files follow the separate checkbox rule.",
+            "Included if its FY is unarchived; from an archived FY, only if active and the checkbox is checked.",
+            "Included if its FY is unarchived; excluded if its FY is archived.",
+            "Included if its FY is unarchived; excluded if its FY is archived.",
+            "From an unarchived FY, cancelled-demand files and files with some or all S.O.s cancelled are included. From an archived FY, only an active file is included when the checkbox is checked; a mixed live/cancelled file can qualify, an all-cancelled file cannot. Panels may apply further S.O. exclusions.",
           ],
           [
             "All active files",
@@ -2031,7 +2085,7 @@ function FilterCombinationGuideDialog({
             "Included if still active today.",
             "Excluded.",
             "Excluded.",
-            "Excluded.",
+            "Cancelled-demand files and files with all S.O.s cancelled are excluded; a file with at least one live S.O. remains eligible. Measures may omit its cancelled S.O. rows.",
           ],
           [
             "Active + current FY closed",
@@ -2039,7 +2093,7 @@ function FilterCombinationGuideDialog({
             "Included if still active today.",
             "Included.",
             "Excluded.",
-            "Excluded. This is the main difference from Specific FY.",
+            "The active-file branch excludes files with all S.O.s cancelled; files closed during this FY may still qualify unless demand-cancelled. Measures may omit cancelled S.O. rows.",
           ],
         ],
         columnWidths: [95, 105, 100, 115, 125, 170],
@@ -2115,11 +2169,23 @@ function FilterCombinationGuideDialog({
           </div>
 
           <div className="mb-4 rounded-md border border-primary/25 bg-primary/5 px-4 py-3">
+            <div className="text-sm font-bold text-foreground">Financial-year archiving</div>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              The <strong>Include active files from archived years</strong> checkbox applies across
+              Search File, Quick Entry, Dashboard, and Reports. When checked, archived FYs
+              contribute active carry-forward files only; when unchecked, files from archived FYs
+              are excluded. All Files still includes closed and cancelled files from unarchived
+              FYs. Individually archived files are always excluded.
+            </p>
+          </div>
+
+          <div className="mb-4 rounded-md border border-primary/25 bg-primary/5 px-4 py-3">
             <div className="text-sm font-bold text-foreground">How Specific FY Works</div>
             <p className="mt-1 text-sm leading-6 text-muted-foreground">
               A specific FY includes files started in that year and active files carried forward
               from earlier years. Active + current FY closed shows today's active files plus files
-              closed this FY; it excludes cancelled demands and files with only cancelled S.O.s.
+              closed this FY; it excludes demand-cancelled files. The active branch excludes files
+              with all S.O.s cancelled, but files closed this FY may still qualify.
             </p>
             <div className="mt-3">
               <HelperContent
@@ -2193,7 +2259,7 @@ function FilterCombinationGuideDialog({
                     File Closed Before Selected/Current FY
                   </th>
                   <th className="border-b border-border px-3 py-2 text-left font-semibold">
-                    Cancelled Demand / All S.O.s Cancelled
+                    Cancelled demand / cancelled S.O.s
                   </th>
                 </tr>
               </thead>
@@ -2206,16 +2272,20 @@ function FilterCombinationGuideDialog({
                     closed: "Included.",
                     oldOpen: "Excluded, unless specifically marked active in that FY.",
                     cancelled:
-                      "Can be included when the file belongs to that FY; panels may still exclude cancelled rows by their own rules.",
+            "A file started in the selected FY may qualify even if its S.O.s are cancelled. Older files must meet the selected-FY carry-forward rule. Individual S.O. rows may follow separate filters.",
                   },
                   {
                     filter: "All files",
-                    meaning: "Full accessible database.",
-                    older: "Included.",
-                    closed: "Included.",
-                    oldOpen: "Included.",
+                    meaning:
+                      "All accessible files except individually archived files; archived-FY files follow the separate checkbox rule.",
+                    older:
+                      "Included if its FY is unarchived; from an archived FY, only if active and the checkbox is checked.",
+                    closed:
+                      "Included if its FY is unarchived; excluded if its FY is archived.",
+                    oldOpen:
+                      "Included if its FY is unarchived; excluded if its FY is archived.",
                     cancelled:
-                      "Included in full database, but many working/value panels still exclude cancelled rows by their own rules.",
+                      "From an unarchived FY, cancelled-demand files and files with some or all S.O.s cancelled are included. From an archived FY, only an active file is included when the checkbox is checked; a mixed live/cancelled file can qualify, an all-cancelled file cannot. Panels may apply further S.O. exclusions.",
                   },
                   {
                     filter: "All active files",
@@ -2223,7 +2293,8 @@ function FilterCombinationGuideDialog({
                     older: "Included if still active today.",
                     closed: "Excluded.",
                     oldOpen: "Excluded.",
-                    cancelled: "Excluded.",
+                    cancelled:
+                      "Cancelled-demand files and files with all S.O.s cancelled are excluded; a file with at least one live S.O. remains eligible. Measures may omit its cancelled S.O. rows.",
                   },
                   {
                     filter: "Active + current FY closed",
@@ -2231,7 +2302,8 @@ function FilterCombinationGuideDialog({
                     older: "Included if still active today.",
                     closed: "Included.",
                     oldOpen: "Excluded.",
-                    cancelled: "Excluded. This is the main difference from Specific FY.",
+                    cancelled:
+                      "The active-file branch excludes files with all S.O.s cancelled; files closed during this FY may still qualify unless demand-cancelled. Measures may omit cancelled S.O. rows.",
                   },
                 ].map((row) => (
                   <tr key={row.filter} className="border-t border-border">
@@ -2380,35 +2452,48 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
       },
       {
         filter: "All files",
-        useWhen: "Review the full accessible database.",
-        shows: "All accessible files, irrespective of FY or open/closed status.",
+        useWhen: "Review all accessible, non-individually archived files.",
+        shows:
+          "Files from unarchived FYs are included regardless of status. Files from archived FYs follow the Include active files from archived years checkbox: checked includes active carry-forward files only; unchecked excludes them all.",
         examples: [
-          "Old open file: included.",
-          "Old closed file: included.",
-          "Cancelled file: included here, unless the selected panel excludes it.",
-          "Cumulative review across the accessible database.",
+          "Closed or cancelled file in an unarchived FY: included, unless the selected panel excludes it.",
+          "Active file from an archived FY: included only when the checkbox is checked.",
+          "Closed or cancelled file from an archived FY: excluded.",
+          "File individually moved to Archive: excluded.",
+        ],
+      },
+      {
+        filter: "Cancelled S.O. (Search filter)",
+        useWhen: "Find files with cancelled S.O.s or hide fully cancelled-S.O. files.",
+        shows:
+          "Include finds files with at least one cancelled S.O. Exclude removes a file only when all its S.O.s are cancelled, so a file with one live and one cancelled S.O. remains visible. Include can bypass the active-status scope, but archived FYs still follow the Include active files from archived years checkbox.",
+        examples: [
+          "One live S.O. + one cancelled S.O.: included by Include and retained by Exclude.",
+          "All S.O.s cancelled: included by Include and removed by Exclude.",
+          "Archived FY + all S.O.s cancelled: still excluded because the file is not active.",
         ],
       },
       {
         filter: "All active files",
         useWhen: "Review active files only.",
-        shows: "Active, non-cancelled files across all initiation years.",
+        shows:
+          "Files not closed or demand-cancelled and not with all S.O.s cancelled, across all initiation years. A file with both live and cancelled S.O.s remains eligible.",
         examples: [
-          "Old file still active today: included.",
-          "File closed today or earlier: excluded.",
-          "Cancelled file: excluded.",
+          "File with one live and one cancelled S.O.: included as a file; a measure may omit the cancelled S.O.",
+          "File with all S.O.s cancelled: excluded.",
+          "Closed or demand-cancelled file: excluded.",
           "Today's live list of active files.",
         ],
       },
       {
         filter: "Active + current FY closed",
         useWhen: "Review active files plus files closed this FY.",
-        shows: `Active, non-cancelled files plus files closed during ${currentFyLabel}.`,
+        shows: `Active files plus files closed during ${currentFyLabel}, except demand-cancelled files. The active branch excludes files with all S.O.s cancelled; closed-this-FY files may still qualify.`,
         examples: [
           "Old file still active today: included.",
           `File closed during ${currentFyLabel}: included.`,
           `File closed before ${currentFyLabel}: excluded.`,
-          "Cancelled file: excluded.",
+          "Demand-cancelled file: excluded; a closed-this-FY file with cancelled S.O.s may still qualify.",
         ],
       },
       {
@@ -2452,7 +2537,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
         useFor: "Day-to-day current monitoring.",
-        note: "Active files and files closed this FY appear. Cancelled demands and files with only cancelled S.O.s are excluded.",
+        note: "Active files and files closed this FY can appear. The active-file branch excludes cancelled demands and files with all S.O.s cancelled; a file closed this FY may still qualify. Individual measures may apply further S.O. rules.",
         examples: [
           "Best starting point for today's pending and recently completed work.",
           "Files still in progress appear alongside files closed during the current FY.",
@@ -2478,7 +2563,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: softwareDefault,
         fileInitiationYear: allFileYears,
         useFor: "Current milestone/status breakup.",
-        note: "Status-3 includes the same files as Status-1; cancelled demands and files with only cancelled S.O.s are excluded.",
+        note: "Status-3 includes the same file scope as Status-1. The active-file branch excludes cancelled demands and files with all S.O.s cancelled; a file closed this FY may still qualify. Individual measures may apply further S.O. rules.",
         examples: [
           "Status-3 presents Status-1 information in a compact table.",
           "Compare S.O., delivery, payment, and related stage counts in one table.",
@@ -2583,7 +2668,7 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         activityYear: "No change",
         fileInitiationYear: "No change",
         useFor: "Barcode/status/file entry.",
-        note: "Quick Entry opens exact files only and should not change analytical filters.",
+        note: "Quick Entry opens exact files and follows its Include active files from archived years checkbox; it does not change analytical filters.",
         examples: [
           "Quick Entry supports fast entry, barcode lookup, and direct file opening.",
           "Opening a file here does not change Dashboard or Reports filters.",
@@ -2920,11 +3005,11 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
           : `FY ${selectedFyLabel}`;
   const description =
     normalizedSelected === ALL_FILES_YEAR
-      ? "All accessible files are included. File Initiation Year can restrict results by start FY."
+      ? "All accessible files except individually archived files are included. From unarchived FYs, this includes closed files, cancelled demands, and files with some or all S.O.s cancelled. On pages with the Include active files from archived years checkbox, archived FYs contribute active carry-forward files only when checked; when unchecked, all files from archived FYs are excluded."
       : normalizedSelected === ALL_ACTIVE_FILES_YEAR
-        ? "Active, non-cancelled files are included. File Initiation Year can restrict results by start FY."
+        ? "Files not closed or demand-cancelled and not with all S.O.s cancelled are included. A file with both live and cancelled S.O.s remains eligible. File Initiation Year can restrict results by start FY."
         : normalizedSelected === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
-          ? `Shows active files plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Cancelled files remain excluded.`
+          ? `Shows active files plus files closed during current FY ${currentFyLabel}${currentFyRange ? ` (${currentFyRange})` : ""}. Demand-cancelled files are excluded; files with all S.O.s cancelled are excluded from the active branch, but files closed this FY may still qualify.`
           : `Shows files started in FY ${selectedFyLabel}, plus active files carried forward from earlier years. Files closed during that FY are also included.`;
 
   return {
@@ -2933,12 +3018,14 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
     fyRows: [
       {
         filter: "All files",
-        filePool: "All accessible database files",
+        filePool:
+          "All accessible files except individually archived files; archived FYs follow the separate checkbox rule",
         reportFy: `Current FY from Settings: ${currentFyLabel}`,
       },
       {
         filter: "All active files",
-        filePool: "Active, non-cancelled files",
+        filePool:
+          "Files not closed or demand-cancelled and not with all S.O.s cancelled; mixed live/cancelled S.O. files remain eligible",
         reportFy: `Current FY from Settings: ${currentFyLabel}`,
       },
       {
@@ -2971,21 +3058,21 @@ function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialY
       {
         label: "Specific FY vs operational set",
         description:
-          "A specific FY can include cancelled demands and files whose S.O.s were all cancelled. Active + current FY closed excludes those files.",
+          "A file started in the selected FY may qualify even if its S.O.s are all cancelled. Active + current FY closed excludes all-S.O.-cancelled files from its active branch, but files closed during this FY may still qualify. Demand-cancelled files remain excluded from that operational scope.",
       },
       {
         label: "All files",
         description:
-          "All accessible files are included, whether active, closed, or cancelled. Choose File Initiation Year = Entire database for no start-year restriction, or select one FY to limit results to files started that year.",
+          "Closed and cancelled files from unarchived FYs are included. Individually archived files are excluded. On pages with the Include active files from archived years checkbox, archived FYs contribute active carry-forward files only when checked; when unchecked, those FYs are excluded. Choose File Initiation Year = Entire database for no start-year restriction, or select one FY to limit results to files started that year.",
       },
       {
         label: "All active files",
         description:
-          "Only currently active files are included. File Initiation Year can include every start year or limit results to one FY.",
+          "Only currently active files are included. Files with all S.O.s cancelled are excluded, but a file with at least one live S.O. remains eligible. File Initiation Year can include every start year or limit results to one FY.",
       },
       {
         label: "Active + current FY closed",
-        description: `Shows currently active files plus files closed during current FY ${currentFyLabel}. Cancelled files remain excluded.`,
+        description: `Shows currently active files plus files closed during current FY ${currentFyLabel}, except demand-cancelled files. The active branch excludes files with all S.O.s cancelled; files closed during this FY may still qualify.`,
       },
       {
         label: "FY Activity: specific FY",

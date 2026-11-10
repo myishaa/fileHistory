@@ -14,7 +14,7 @@ const settings = {
   bgReturnOffsetDays: 60,
 };
 
-test("Financial Sanction ranking uses one CNC-to-sanction sample per recorded TCEC S.O.", () => {
+test("Financial Sanction (TCEC) ranking uses one CNC-to-sanction sample per recorded TCEC S.O.", () => {
   const summary = buildDashboardSummary({
     files: [
       {
@@ -40,13 +40,77 @@ test("Financial Sanction ranking uses one CNC-to-sanction sample per recorded TC
   });
 
   const row = summary.analytics.milestoneClearingRanking.find(
-    (item) => item.name === "Financial Sanction",
+    (item) => item.name === "Financial Sanction (TCEC)",
   );
   assert.ok(row);
   assert.equal(row.sampleSize, 2);
   assert.equal(row.fileCount, 1);
   assert.equal(row.averageDays, 4);
   assert.equal(row.fileIds, "financial-sanction-ranking-tcec");
+});
+
+test("Financial Sanction (TCEC) drill-down excludes Non-TCEC files", () => {
+  const files = [
+    {
+      id: "financial-sanction-drilldown-tcec",
+      tcec: "Yes",
+      receivedDate: "2025-12-01",
+      cncApprovalDate: "2026-01-01",
+      supplyOrders: [{ financialSanctionDate: "2026-01-03" }],
+    },
+    {
+      id: "financial-sanction-drilldown-non-tcec",
+      tcec: "No",
+      receivedDate: "2025-12-01",
+      supplyOrders: [{ financialSanctionDate: "2026-01-03" }],
+    },
+  ];
+
+  assert.deepEqual(
+    searchFiles(files, {
+      dashboardFilter: "analyticsMilestoneClearing:financialSanction",
+    }).map(({ id }) => id),
+    ["financial-sanction-drilldown-tcec"],
+  );
+});
+
+test("Supply Order drill-down rejects TCEC orders without valid CNC chronology", () => {
+  const files = [
+    {
+      id: "supply-order-drilldown-valid-tcec",
+      tcec: "Yes",
+      receivedDate: "2026-01-01",
+      cncApprovalDate: "2026-04-20",
+      supplyOrders: [{ soDate: "2026-04-20" }],
+    },
+    {
+      id: "supply-order-drilldown-before-cnc",
+      tcec: "Yes",
+      receivedDate: "2026-01-01",
+      cncApprovalDate: "2026-04-20",
+      supplyOrders: [{ soDate: "2026-04-15" }],
+    },
+    {
+      id: "supply-order-drilldown-missing-cnc",
+      tcec: "Yes",
+      receivedDate: "2026-01-01",
+      cncApprovalDate: "",
+      supplyOrders: [{ soDate: "2026-04-20" }],
+    },
+    {
+      id: "supply-order-drilldown-valid-non-tcec",
+      tcec: "No",
+      receivedDate: "2026-01-01",
+      supplyOrders: [{ financialSanctionDate: "2026-04-10", soDate: "2026-04-20" }],
+    },
+  ];
+
+  assert.deepEqual(
+    searchFiles(files, {
+      dashboardFilter: "analyticsMilestoneClearing:supplyOrder",
+    }).map(({ id }) => id),
+    ["supply-order-drilldown-valid-tcec", "supply-order-drilldown-valid-non-tcec"],
+  );
 });
 
 test("GeM Undertaking ranking combines normal and Non-TCEC Refloat samples", () => {

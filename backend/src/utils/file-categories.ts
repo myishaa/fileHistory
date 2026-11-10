@@ -38,15 +38,6 @@ export function normalizeFileCategories(values: string[] | undefined): FileCateg
       seen.add(getFileTypeCategoryKey(fileType));
     }
   });
-  if (
-    seen.has("goodsServices") &&
-    seen.has("amc") &&
-    seen.has("mpc") &&
-    seen.has("cars") &&
-    !seen.has("om")
-  ) {
-    seen.add("om");
-  }
   return [
     ...allFileCategoryKeys.filter((key) => seen.has(key)),
     ...Array.from(seen).filter((key) => !fileCategoryKeySet.has(key)),

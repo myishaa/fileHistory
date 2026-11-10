@@ -91,16 +91,24 @@ function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
       ? (value as Record<string, unknown>)
       : {};
   const fields = Array.isArray(source.fields) ? source.fields : defaultFirmRatingConfig.fields;
+  const usedIds = new Set<string>();
   const normalized = fields.reduce<FirmRatingField[]>((result, item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return result;
     const candidate = item as Record<string, unknown>;
     const label = toDbText(candidate.label) || `Rating ${index + 1}`;
     const rawId = toDbText(candidate.id) || label;
-    const id =
+    const baseId =
       rawId
         .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
         .replace(/^[^a-zA-Z]+/, "")
         .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
+    let id = baseId;
+    let suffix = 2;
+    while (usedIds.has(id)) {
+      id = `${baseId}Copy${suffix}`;
+      suffix += 1;
+    }
+    usedIds.add(id);
     const weight = Number.parseFloat(toDbText(candidate.weight) ?? "1");
     result.push({
       id,
@@ -438,8 +446,34 @@ firmsRouter.patch(
     if (!canManageFirms(user)) throw new HttpError(403, "You cannot edit firms.");
     const id = requireParam(request.params.id, "id");
     const payload = readFirmPayload(requireObjectBody(request.body));
+    const normalizedFirmName = payload.firmName.trim().toLowerCase();
+    const normalizedFirmUniqueNo = payload.firmUniqueNo?.trim().toLowerCase() ?? "";
+    const duplicateLockKeys = [
+      `master-firm-name:${normalizedFirmName}`,
+      ...(normalizedFirmUniqueNo ? [`master-firm-unique-no:${normalizedFirmUniqueNo}`] : []),
+    ].sort();
+    const client = await pool.connect();
     try {
-      const result = await pool.query<MasterFirmRow>(
+      await client.query("begin");
+      for (const lockKey of duplicateLockKeys) {
+        await client.query("select pg_advisory_xact_lock(hashtext($1))", [lockKey]);
+      }
+      const duplicate = await client.query<{ id: string }>(
+        `select id
+         from master_firms
+         where id <> $3
+           and archived_at is null
+           and (
+             lower(trim(coalesce(firm_name, ''))) = $1
+             or ($2 <> '' and lower(trim(coalesce(firm_unique_no, ''))) = $2)
+           )
+         limit 1`,
+        [normalizedFirmName, normalizedFirmUniqueNo, id],
+      );
+      if (duplicate.rowCount) {
+        throw new HttpError(409, "Firm already exists in the firm database. Select it instead.");
+      }
+      const result = await client.query<MasterFirmRow>(
         `update master_firms
          set firm_name = $2, firm_type = $3, firm_type_other = $4, email_id = $5, city = $6, address = $7, firm_unique_no = $8, contact_no = $9
          where id = $1 and archived_at is null
@@ -457,12 +491,16 @@ firmsRouter.patch(
         ],
       );
       if (!result.rows[0]) throw new HttpError(404, "Firm was not found.");
+      await client.query("commit");
       response.json({ firm: mapFirm(result.rows[0]) });
     } catch (error) {
+      await client.query("rollback").catch(() => undefined);
       if (isUniqueViolation(error)) {
         throw new HttpError(409, "Firm Unique No. already exists.");
       }
       throw error;
+    } finally {
+      client.release();
     }
   }),
 );

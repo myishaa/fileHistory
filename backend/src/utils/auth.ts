@@ -219,6 +219,14 @@ export function requireAuth(request: AuthRequest) {
   return request.authUser;
 }
 
+export function isDivisionScopedUser(user: Pick<AuthUser, "role"> | null | undefined) {
+  return user?.role === "division_user" || user?.role === "viewer";
+}
+
+export function canViewFileProcessing(user: AuthUser) {
+  return user.role === "viewer" || canSendFileMessages(user);
+}
+
 export function requireAdmin(request: AuthRequest) {
   const user = requireAuth(request);
   if (!canManageUsers(user)) throw new HttpError(403, "Admin access required.");

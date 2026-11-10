@@ -9,7 +9,7 @@ import {
 
 const file = {
   fileType: "Goods & Services",
-  fileTypeGroup: "Group-A",
+  fileTypeGroup: "goodsServices",
   ir: "No",
 };
 

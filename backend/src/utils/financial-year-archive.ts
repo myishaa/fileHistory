@@ -24,8 +24,8 @@ export function ensureFinancialYearArchiveSchema() {
  * `files` table as `f`. By default, active carry-forward files whose origin
  * year is archived remain visible while inactive archived-origin files stay
  * out of normal views. When the option is turned off, all files from archived
- * origin years are excluded. Explicit historical/all-files scopes bypass this
- * predicate at the caller.
+ * origin years are excluded. This predicate also applies to all-years scopes;
+ * individually archived file records are excluded separately.
  */
 export function getSearchableFinancialYearSql(
   activeFilesSql: string,

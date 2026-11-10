@@ -207,32 +207,6 @@ function combineRowsForMonth(monthKey, rowGroups) {
   return capital + revenue > 0 ? [{ monthKey, capital, revenue }] : [];
 }
 
-function combineRowsThroughMonthAsSingleMonth(monthKey, rowGroups) {
-  let capital = 0;
-  let revenue = 0;
-  for (const rows of rowGroups) {
-    for (const row of rows ?? []) {
-      if (!row.monthKey || row.monthKey > monthKey) continue;
-      capital += n(row.capital);
-      revenue += n(row.revenue);
-    }
-  }
-  return capital + revenue > 0 ? [{ monthKey, capital, revenue }] : [];
-}
-
-function combinePendingLiabilityRows(monthKey, rowGroups) {
-  let capital = 0;
-  let revenue = 0;
-  for (const rows of rowGroups) {
-    for (const row of rows ?? []) {
-      if (!row.monthKey || row.monthKey > monthKey) continue;
-      capital += n(row.capital);
-      revenue += n(row.revenue);
-    }
-  }
-  return capital + revenue > 0 ? [{ monthKey, capital, revenue }] : [];
-}
-
 function collectCashOutgo(checks, passName, summary, pass) {
   const offset = pass.expectedCashOutgoDays ?? 10;
   const selectedMonth = pass.month ?? todayMonth;
@@ -240,28 +214,16 @@ function collectCashOutgo(checks, passName, summary, pass) {
     (row) => row.monthKey >= "2026-04" && row.monthKey <= "2027-03",
   );
   const billsPaidInMonthRows = combineRowsForMonth(selectedMonth, [summary.actualCashOutgoRows]);
-  const currentLiabilityRows = combinePendingLiabilityRows(selectedMonth, [
-    summary.expectedCashOutgoReceiptPendingBillRows,
-    summary.expectedCashOutgoBillPreparationRows,
-    summary.billSentForPaymentRows,
-  ]);
   const cashOutgoForMonthRows = combineRowsForMonth(selectedMonth, [
     summary.expectedCashOutgoBillPreparationRows,
     summary.billSentForPaymentRows,
     expectedCashOutgoFyRows,
-  ]);
-  const expectedExpenditureTillMonthRows = combineRowsThroughMonthAsSingleMonth(selectedMonth, [
-    summary.actualCashOutgoRows,
-    summary.expectedCashOutgoBillPreparationRows,
-    summary.billSentForPaymentRows,
-    summary.expectedCashOutgoReceiptPendingBillRows,
   ]);
   const sources = [
     ["Delivery / D.P. Done, Bill Preparation Pending", "expectedReceiptPendingBill", summary.expectedCashOutgoReceiptPendingBillRows],
     ["Delivery / D.P. Done, Bill Prepared", "billPreparation", summary.expectedCashOutgoBillPreparationRows],
     ["Bills Submitted, Payment Pending", "billSent", summary.billSentForPaymentRows],
     ["Expected Cash Outgo by D.P.", "expectedDp", summary.expectedCashOutgoDpRows],
-    ["Recorded Cash Outgo as on Date", "actual", summary.actualCashOutgoRows],
     ["Bills Paid in Selected Month", "actual", billsPaidInMonthRows],
     ["Supplementary bills submitted, payment pending", "supplementaryBillSent", summary.supplementaryBillSentForPaymentRows],
     ["Supplementary bills paid", "supplementaryActual", summary.supplementaryActualCashOutgoRows],
@@ -289,19 +251,9 @@ function collectCashOutgo(checks, passName, summary, pass) {
   }
   const combinedSources = [
     [
-      "Cumulative Liability Up to Month",
-      ["expectedReceiptPendingBillThrough", "billPreparationThrough", "billSentThrough"],
-      currentLiabilityRows,
-    ],
-    [
       "Expected cash outgo exclusively for selected month",
       ["billPreparation", "billSent", "expectedDp"],
       cashOutgoForMonthRows,
-    ],
-    [
-      "Expected Expenditure Up to Selected Month",
-      ["actualThrough", "billPreparationThrough", "billSentThrough", "expectedReceiptPendingBillThrough"],
-      expectedExpenditureTillMonthRows,
     ],
   ];
   for (const [area, modes, rows] of combinedSources) {

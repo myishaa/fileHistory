@@ -925,6 +925,7 @@ type SettingsRow = {
   gem_bidding_modes: unknown;
   milestones: unknown;
   table_field_presets: unknown;
+  table_field_presets_configured: boolean;
   mmg_live_enabled: boolean;
   mmg_live_options: unknown;
   mmg_summary_fields: unknown;
@@ -1536,6 +1537,16 @@ function normalizeNoticeBoardPersonalPreferences(value: unknown) {
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
+  const noticeBoardItems = Array.isArray(source.noticeBoardItems)
+    ? [
+        ...new Set(
+          source.noticeBoardItems.filter(
+            (id): id is string =>
+              typeof id === "string" && /^[a-zA-Z0-9_-]{1,120}$/.test(id),
+          ),
+        ),
+      ].slice(0, 250)
+    : undefined;
   const readInteger = (key: string, fallback: number, min: number, max: number) => {
     const candidate = Number(source[key]);
     return Number.isInteger(candidate) ? Math.min(max, Math.max(min, candidate)) : fallback;
@@ -1576,6 +1587,7 @@ function normalizeNoticeBoardPersonalPreferences(value: unknown) {
       100,
       30000,
     ),
+    ...(noticeBoardItems ? { noticeBoardItems } : {}),
   };
 }
 
@@ -1662,6 +1674,7 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
     valueThresholdLevels: await loadValueThresholdLevels(),
     milestones: fromDbJsonArray(row.milestones) as string[],
     tableFieldPresets: [...globalPresets, ...personalPresets],
+    tableFieldPresetsConfigured: row.table_field_presets_configured === true,
     mmgLiveEnabled: row.mmg_live_enabled,
     mmgLiveOptions: fromDbJsonArray(row.mmg_live_options).filter(
       (option): option is string => typeof option === "string",
@@ -1694,10 +1707,12 @@ async function mapSettings(row: SettingsRow, user?: AuthRequest["authUser"]): Pr
 
 async function replaceTcecCommittees(financialYear: string, committees: unknown[]) {
   await pool.query("delete from tcec_committees where financial_year = $1", [financialYear]);
+  const storedNames: string[] = [];
   let sortOrder = 0;
   for (const committee of committees) {
     const name = toDbText(committee);
     if (!name) continue;
+    storedNames.push(name);
     await pool.query(
       `insert into tcec_committees (financial_year, name, sort_order)
        values ($1, $2, $3)
@@ -1705,6 +1720,9 @@ async function replaceTcecCommittees(financialYear: string, committees: unknown[
       [financialYear, name, sortOrder++],
     );
   }
+  await pool.query("update app_settings set tcec_committees = $1::jsonb where id = true", [
+    JSON.stringify(storedNames),
+  ]);
 }
 
 function readOptionalAmount(value: unknown, field: string) {
@@ -1712,14 +1730,44 @@ function readOptionalAmount(value: unknown, field: string) {
   if (!text) return null;
   const parsed = Number(text.replace(/,/g, ""));
   if (!Number.isFinite(parsed) || parsed < 0) {
-    throw new HttpError(400, `${field} must be a positive number.`);
+    throw new HttpError(400, `${field} must be a non-negative number.`);
   }
   return parsed.toFixed(2);
 }
 
+function validateRangeContinuity(
+  ranges: Array<{ label: string; min?: number; max?: number }>,
+  unitGap: number,
+) {
+  const sorted = [...ranges].sort(
+    (a, b) => (a.min ?? Number.NEGATIVE_INFINITY) - (b.min ?? Number.NEGATIVE_INFINITY),
+  );
+  for (let index = 0; index < sorted.length; index += 1) {
+    const current = sorted[index];
+    if (current.min !== undefined && current.max !== undefined && current.min > current.max) {
+      return `${current.label}: minimum cannot be greater than maximum.`;
+    }
+    const next = sorted[index + 1];
+    if (!next) continue;
+    if (current.max === undefined) {
+      return `${current.label}: open-ended range must be the last range.`;
+    }
+    if (next.min === undefined) {
+      return `${next.label}: minimum is required after another range.`;
+    }
+    if (next.min <= current.max) {
+      return `${next.label} overlaps with ${current.label}. Next minimum must be higher than previous maximum.`;
+    }
+    if (next.min > current.max + unitGap) {
+      return `Gap found between ${current.label} and ${next.label}.`;
+    }
+  }
+  return "";
+}
+
 function readValueThresholdLevels(value: unknown) {
   if (!Array.isArray(value)) throw new HttpError(400, "valueThresholdLevels must be an array.");
-  return value.map((item, index) => {
+  const normalized = value.map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) {
       throw new HttpError(400, "Each threshold level must be an object.");
     }
@@ -1741,6 +1789,60 @@ function readValueThresholdLevels(value: unknown) {
     }
     return { label, levelNumber, minValue, maxValue, appliesTo };
   });
+  const metrics: Array<{ key: ValueThresholdAppliesTo; label: string }> = [
+    { key: "capital", label: "Capital value" },
+    { key: "revenue", label: "Revenue value" },
+  ];
+  for (const metric of metrics) {
+    const ranges = normalized
+      .filter((level) => level.appliesTo === "both" || level.appliesTo === metric.key)
+      .map((level) => ({
+        label: `${metric.label} ${level.label}`,
+        min: level.minValue === null ? undefined : Number(level.minValue),
+        max: level.maxValue === null ? undefined : Number(level.maxValue),
+      }));
+    const message = validateRangeContinuity(ranges, 1);
+    if (message) throw new HttpError(400, message);
+  }
+  return normalized;
+}
+
+function readDemandProcessingDayRanges(value: unknown) {
+  if (!Array.isArray(value)) {
+    throw new HttpError(400, "demandProcessingDayRanges must be an array.");
+  }
+  if (value.length === 0) throw new HttpError(400, "At least one day range is required.");
+  const ranges = value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpError(400, "Each day range must be an object.");
+    }
+    const candidate = item as Record<string, unknown>;
+    const label = toDbText(candidate.label) ?? "";
+    if (!label) throw new HttpError(400, "Each day range needs a label.");
+    const minText = toDbText(candidate.minDays) ?? "";
+    const maxText = toDbText(candidate.maxDays) ?? "";
+    const min = Number(minText);
+    const max = maxText ? Number(maxText) : undefined;
+    if (!minText || !Number.isInteger(min) || min < 0) {
+      throw new HttpError(400, `${label}: minimum days must be a non-negative whole number.`);
+    }
+    if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
+      throw new HttpError(400, `${label}: maximum days must be a non-negative whole number.`);
+    }
+    return {
+      id: toDbText(candidate.id) ?? `range${index + 1}`,
+      label,
+      minDays: String(min),
+      maxDays: max === undefined ? "" : String(max),
+      numericRange: { label, min, max },
+    };
+  });
+  const message = validateRangeContinuity(
+    ranges.map((range) => range.numericRange),
+    1,
+  );
+  if (message) throw new HttpError(400, message);
+  return ranges.map(({ id, label, minDays, maxDays }) => ({ id, label, minDays, maxDays }));
 }
 
 async function replaceValueThresholdLevels(levels: unknown[]) {
@@ -1774,7 +1876,7 @@ async function getSettings(user?: AuthRequest["authUser"]) {
     const result = await pool.query<SettingsRow>(
       `select financial_year, selected_year, coalesce(setup_year, financial_year) as setup_year, year_selection_locked, theme, theme_tint,
               global_chart_color_order, global_chart_colors_enforced,
-              tcec_committees, firm_types, file_types, file_type_groups, modes, gem_bidding_modes, milestones, table_field_presets, mmg_live_enabled, mmg_live_options,
+              tcec_committees, firm_types, file_types, file_type_groups, modes, gem_bidding_modes, milestones, table_field_presets, table_field_presets_configured, mmg_live_enabled, mmg_live_options,
               mmg_summary_fields, demand_processing_presets, demand_processing_day_ranges,
               bg_receipt_delay_days, special_file_markers, firm_unique_no_label, firm_rating_config, active_user_id,
               pre_so_default_so_offset_days, pre_so_default_payment_offset_days, bg_return_offset_days,
@@ -1806,7 +1908,14 @@ function ensurePreSoSettingsSchema() {
        alter table app_settings
          add column if not exists global_chart_color_order jsonb not null default '["#0f766e", "#2563eb", "#d97706", "#be123c", "#7c3aed", "#65a30d", "#0891b2", "#475569", "#e11d48", "#ea580c", "#4f46e5", "#16a34a", "#9333ea", "#0284c7", "#a16207", "#0d9488", "#c026d3", "#dc2626", "#84cc16", "#0369a1", "#b45309", "#7e22ce", "#15803d", "#be185d", "#64748b"]'::jsonb;
        alter table app_settings
-         add column if not exists global_chart_colors_enforced boolean not null default false`,
+         add column if not exists global_chart_colors_enforced boolean not null default false;
+       alter table app_settings
+         add column if not exists table_field_presets_configured boolean not null default false;
+       update app_settings
+       set table_field_presets_configured = true
+       where table_field_presets_configured = false
+         and jsonb_typeof(table_field_presets) = 'array'
+         and jsonb_array_length(table_field_presets) > 0`,
     )
     .then(() => undefined);
   return preSoSettingsSchemaReady;
@@ -1955,6 +2064,31 @@ function readArrayValue(value: unknown, field: string) {
   return value;
 }
 
+function readDemandProcessingPresets(value: unknown) {
+  const source = readArrayValue(value, "demandProcessingPresets");
+  const seenIds = new Set<string>();
+  return source.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new HttpError(400, `Demand processing preset ${index + 1} must be an object.`);
+    }
+    const candidate = item as Record<string, unknown>;
+    const id = toDbText(candidate.id);
+    const name = toDbText(candidate.name);
+    const fromFieldId = toDbText(candidate.fromFieldId);
+    const toFieldId = toDbText(candidate.toFieldId);
+    if (!id) throw new HttpError(400, `Demand processing preset ${index + 1} needs an id.`);
+    if (seenIds.has(id)) {
+      throw new HttpError(400, `Demand processing preset ${index + 1} has a duplicate id.`);
+    }
+    seenIds.add(id);
+    if (!name) throw new HttpError(400, `Demand processing preset ${index + 1} needs a name.`);
+    if (!fromFieldId || !toFieldId) {
+      throw new HttpError(400, `Demand processing preset ${index + 1} needs both date fields.`);
+    }
+    return { id, name, fromFieldId, toFieldId, active: candidate.active !== false };
+  });
+}
+
 function normalizeSpecialFileMarkers(value: unknown) {
   const source = Array.isArray(value) ? value : [];
   const seen = new Set<string>();
@@ -2064,29 +2198,7 @@ async function reconcileFileTypeChanges(
   const nextGroupByType = new Map(
     normalizedNextFileTypeGroups.map((entry) => [entry.fileType.trim().toLowerCase(), entry.group]),
   );
-  const nextSet = new Set(nextFileTypes.map((fileType) => fileType.trim().toLowerCase()));
-  const removedFileTypes = currentFileTypes
-    .map((fileType) => fileType.trim())
-    .filter((fileType) => fileType && !nextSet.has(fileType.toLowerCase()));
-
   await assertUsedFileTypeGroupsUnchanged(currentFileTypes, currentGroupByType, nextGroupByType);
-  if (!removedFileTypes.length) return;
-
-  const result = await pool.query<{ file_type: string; count: string }>(
-    `select coalesce(nullif(trim(file_type), ''), '(blank)') as file_type, count(*)::text
-     from files
-     where lower(trim(coalesce(file_type, ''))) = any($1::text[])
-     group by 1
-     order by 1`,
-    [removedFileTypes.map((fileType) => fileType.toLowerCase())],
-  );
-  if (!result.rows.length) return;
-
-  const usedTypes = result.rows.map((row) => `${row.file_type} (${row.count})`).join(", ");
-  throw new HttpError(
-    400,
-    `This file type is used by active or archived files, so its name cannot be changed or deleted: ${usedTypes}.`,
-  );
 }
 
 async function assertUsedFileTypeGroupsUnchanged(
@@ -2144,36 +2256,6 @@ async function assertRemovedValuesUnused(
   throw new HttpError(409, `Cannot remove ${label} currently used by files: ${usedValues}.`);
 }
 
-async function assertFirmTypesCanChange(nextFirmTypes: string[]) {
-  const settings = await getSettings();
-  const removed = removedMasterValues(settings.firmTypes, nextFirmTypes);
-  await assertRemovedValuesUnused(
-    "firm types",
-    removed,
-    `select value, count(distinct file_id)::text as count
-     from (
-       select f.id as file_id, trim(f.firm_type) as value from files f
-       union all
-       select so.file_id, trim(so.firm_type) from supply_orders so
-     ) used
-     where lower(trim(value)) = any($1::text[])
-     group by value`,
-  );
-}
-
-async function assertModesCanChange(nextModes: string[]) {
-  const settings = await getSettings();
-  const removed = removedMasterValues(settings.modes, nextModes);
-  await assertRemovedValuesUnused(
-    "modes",
-    removed,
-    `select trim(mode) as value, count(*)::text as count
-     from files
-     where lower(trim(coalesce(mode, ''))) = any($1::text[])
-     group by trim(mode)`,
-  );
-}
-
 async function assertGemBiddingModesCanChange(nextModes: string[]) {
   const settings = await getSettings();
   const removed = removedMasterValues(settings.gemBiddingModes ?? [], nextModes);
@@ -2188,81 +2270,6 @@ async function assertGemBiddingModesCanChange(nextModes: string[]) {
      ) used
      where lower(trim(coalesce(value, ''))) = any($1::text[])
      group by trim(value)`,
-  );
-}
-
-async function assertSpecialFileMarkersCanChange(nextMarkers: Array<{ code: string }>) {
-  const settings = await getSettings();
-  const currentCodes = normalizeSpecialFileMarkers(settings.specialFileMarkers).map(
-    (marker) => marker.code,
-  );
-  const nextCodes = nextMarkers.map((marker) => marker.code);
-  const removed = removedMasterValues(currentCodes, nextCodes);
-  await assertRemovedValuesUnused(
-    "special file marker codes",
-    removed,
-    `select trim(fm.text) as value, count(distinct fm.file_id)::text as count
-     from file_markers fm
-     where lower(trim(coalesce(fm.text, ''))) = any($1::text[])
-     group by trim(fm.text)`,
-  );
-}
-
-async function assertTcecCommitteesCanChange(financialYear: string, nextCommittees: string[]) {
-  const settings = await getSettings();
-  const current = await loadTcecCommittees(financialYear, settings.tcecCommittees);
-  const removed = removedMasterValues(
-    current.filter((item): item is string => typeof item === "string"),
-    nextCommittees,
-  );
-  await assertRemovedValuesUnused(
-    "TCEC committees",
-    removed,
-    `select value, count(distinct file_id)::text as count
-     from (
-       select f.id as file_id, trim(f.pre_tcec_committee_no) as value from files f
-       union all
-       select f.id, trim(f.post_tcec_committee_number) from files f
-       union all
-       select f.id, trim(f.refloat_post_tcec_committee_no) from files f
-     ) used
-     where lower(trim(value)) = any($1::text[])
-     group by value`,
-  );
-}
-
-async function assertMilestonesCanChange(nextMilestones: string[]) {
-  const settings = await getSettings();
-  const removed = removedMasterValues(settings.milestones, nextMilestones);
-  await assertRemovedValuesUnused(
-    "milestones",
-    removed,
-    `select value, count(distinct file_id)::text as count
-     from (
-       select f.id as file_id, trim(f.current_milestone) as value from files f
-       union all
-       select cm.file_id, trim(cm.milestone) from file_completed_milestones cm
-       union all
-       select so.file_id, trim(so.current_milestone) from supply_orders so
-       union all
-       select so.file_id, trim(completed.value)
-       from supply_orders so
-       cross join lateral jsonb_array_elements_text(coalesce(so.completed_milestones, '[]'::jsonb)) completed(value)
-       union all
-       select so.file_id, trim(so.advance_payment_detail ->> 'currentMilestone') from supply_orders so
-       union all
-       select so.file_id, trim(completed.value)
-       from supply_orders so
-       cross join lateral jsonb_array_elements_text(
-         case
-           when jsonb_typeof(so.advance_payment_detail -> 'completedMilestones') = 'array'
-             then so.advance_payment_detail -> 'completedMilestones'
-           else '[]'::jsonb
-         end
-       ) completed(value)
-     ) used
-     where lower(trim(value)) = any($1::text[])
-     group by value`,
   );
 }
 
@@ -2281,22 +2288,54 @@ function readMmgSummaryFields(value: unknown) {
     .filter(Boolean);
 }
 
+function normalizeFirmRatingFieldId(rawId: string, index: number) {
+  return (
+    rawId
+      .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
+      .replace(/^[^a-zA-Z]+/, "")
+      .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`
+  );
+}
+
+function assertUniqueFirmRatingFieldIds(value: unknown) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  if (!Array.isArray(source.fields)) return;
+  const usedIds = new Set<string>();
+  source.fields.forEach((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return;
+    const candidate = item as Record<string, unknown>;
+    const label = toDbText(candidate.label) || `Rating ${index + 1}`;
+    const id = normalizeFirmRatingFieldId(toDbText(candidate.id) || label, index);
+    if (usedIds.has(id)) {
+      throw new HttpError(400, "Firm rating field IDs must be unique.");
+    }
+    usedIds.add(id);
+  });
+}
+
 function normalizeFirmRatingConfig(value: unknown): FirmRatingConfig {
   const source =
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
       : {};
   const fields = Array.isArray(source.fields) ? source.fields : defaultFirmRatingConfig.fields;
+  const usedIds = new Set<string>();
   const normalized = fields.reduce<FirmRatingConfig["fields"]>((result, item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return result;
     const candidate = item as Record<string, unknown>;
     const label = toDbText(candidate.label) || `Rating ${index + 1}`;
     const rawId = toDbText(candidate.id) || label;
-    const id =
-      rawId
-        .replace(/[^a-zA-Z0-9]+(.)/g, (_match, chr: string) => chr.toUpperCase())
-        .replace(/^[^a-zA-Z]+/, "")
-        .replace(/^./, (chr) => chr.toLowerCase()) || `rating${index + 1}`;
+    const baseId = normalizeFirmRatingFieldId(rawId, index);
+    let id = baseId;
+    let suffix = 2;
+    while (usedIds.has(id)) {
+      id = `${baseId}Copy${suffix}`;
+      suffix += 1;
+    }
+    usedIds.add(id);
     const weightText = toDbText(candidate.weight);
     const parsedWeight = Number.parseFloat(weightText ?? "");
     const minText = toDbText(candidate.minValue);
@@ -2399,6 +2438,24 @@ async function replaceUserReportPreferences(
      values ($1, $2, $3::jsonb)
      on conflict (user_id, report_key)
      do update set preferences = excluded.preferences, updated_at = now()`,
+    [userId, reportKey, JSON.stringify(preferences)],
+  );
+}
+
+async function mergeUserReportPreferences(
+  userId: string,
+  reportKey: string,
+  preferences: Record<string, unknown>,
+) {
+  await ensureUserReportPreferencesTable();
+  await pool.query(
+    `insert into user_report_preferences (user_id, report_key, preferences)
+     values ($1, $2, $3::jsonb)
+     on conflict (user_id, report_key)
+     do update set preferences =
+       (case when jsonb_typeof(user_report_preferences.preferences) = 'object'
+         then user_report_preferences.preferences else '{}'::jsonb end) || excluded.preferences,
+       updated_at = now()`,
     [userId, reportKey, JSON.stringify(preferences)],
   );
 }
@@ -3626,12 +3683,21 @@ settingsRouter.get(
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     if (!isStoredAppUser(user)) {
-      response.json({ preferences: noticeBoardPersonalDefaults, saved: false });
+      response.json({
+        preferences: noticeBoardPersonalDefaults,
+        saved: false,
+        sectionSelectionSaved: false,
+      });
       return;
     }
     const stored = await loadUserReportPreferences(user.id, "noticeBoard");
     response.json({
       preferences: normalizeNoticeBoardPersonalPreferences(stored),
+      sectionSelectionSaved:
+        Boolean(stored) &&
+        typeof stored === "object" &&
+        !Array.isArray(stored) &&
+        Array.isArray((stored as Record<string, unknown>).noticeBoardItems),
       saved: Boolean(
         stored &&
         typeof stored === "object" &&
@@ -3649,8 +3715,29 @@ settingsRouter.patch(
     if (!isStoredAppUser(user))
       throw new HttpError(403, "This account cannot save Notice Board preferences.");
     const body = requireObjectBody(request.body);
-    const preferences = normalizeNoticeBoardPersonalPreferences(body);
-    await replaceUserReportPreferences(user.id, "noticeBoard", preferences);
+    if ("noticeBoardItems" in body && !Array.isArray(body.noticeBoardItems)) {
+      throw new HttpError(400, "Notice Board section selection must be a list.");
+    }
+    const normalized = normalizeNoticeBoardPersonalPreferences(body);
+    const patch: Record<string, unknown> = {};
+    for (const key of [
+      "intervalSeconds",
+      "transitionEffect",
+      "slideDurationMs",
+      "fadeOutDurationMs",
+      "fadeInDurationMs",
+      "verticalScrollDurationMs",
+      "noticeBoardItems",
+    ] as const) {
+      if (key in body && key in normalized) patch[key] = normalized[key];
+    }
+    if (!Object.keys(patch).length) {
+      throw new HttpError(400, "Provide at least one Notice Board preference to save.");
+    }
+    await mergeUserReportPreferences(user.id, "noticeBoard", patch);
+    const preferences = normalizeNoticeBoardPersonalPreferences(
+      await loadUserReportPreferences(user.id, "noticeBoard"),
+    );
     response.json({ preferences });
   }),
 );
@@ -3791,6 +3878,30 @@ settingsRouter.patch(
     await ensurePreSoSettingsSchema();
     const body = requireObjectBody(request.body);
     const bodyFields = Object.keys(body);
+    const nonPersistentUserPreferenceFields = new Set([
+      "theme",
+      "themeTint",
+      "appearancePreset",
+      "fontFamily",
+      "fontScale",
+      "topRibbonColor",
+      "topRibbonTextColor",
+      "chartBarColor",
+      "chartColorOrder",
+      "addEditRibbonFields",
+    ]);
+    const attemptedNonPersistentUserPreferenceFields = bodyFields.filter((field) =>
+      nonPersistentUserPreferenceFields.has(field),
+    );
+    if (
+      attemptedNonPersistentUserPreferenceFields.length > 0 &&
+      (user.role === "viewer" || !isStoredAppUser(user))
+    ) {
+      throw new HttpError(
+        403,
+        "This account cannot save display preferences. Use a named account for personal settings.",
+      );
+    }
     // These values change shared application behaviour for every account. Keep
     // them separate from personal display preferences so a non-admin cannot
     // smuggle a global update through an otherwise valid preference request.
@@ -3906,6 +4017,14 @@ settingsRouter.patch(
     if ("financialYear" in body) {
       const financialYear = normalizeYearLabel(body.financialYear, "financialYear");
       await ensureFinancialYear(financialYear);
+      await ensureFinancialYearArchiveSchema();
+      const archiveStatus = await pool.query<{ is_archived: boolean }>(
+        "select is_archived from financial_years where label = $1",
+        [financialYear],
+      );
+      if (archiveStatus.rows[0]?.is_archived === true) {
+        throw new HttpError(400, "Archived financial year cannot be set as current.");
+      }
       addField("financial_year", financialYear);
     }
     if ("selectedYear" in body) {
@@ -4039,7 +4158,6 @@ settingsRouter.patch(
           ? body.setupYear.trim()
           : settings.setupYear;
       const tcecCommittees = readStringArray(body.tcecCommittees, "tcecCommittees");
-      await assertTcecCommitteesCanChange(financialYear, tcecCommittees);
       await replaceTcecCommittees(financialYear, tcecCommittees);
     }
     if ("valueThresholdLevels" in body) {
@@ -4049,12 +4167,10 @@ settingsRouter.patch(
     }
     if ("milestones" in body) {
       const milestones = readStringArray(body.milestones, "milestones");
-      await assertMilestonesCanChange(milestones);
       addField("milestones", JSON.stringify(milestones), "::jsonb");
     }
     if ("firmTypes" in body) {
       const firmTypes = readStringArray(body.firmTypes, "firmTypes");
-      await assertFirmTypesCanChange(firmTypes);
       addField("firm_types", JSON.stringify(firmTypes), "::jsonb");
     }
     if ("fileTypes" in body || "fileTypeGroups" in body) {
@@ -4072,7 +4188,6 @@ settingsRouter.patch(
     }
     if ("modes" in body) {
       const modes = readStringArray(body.modes, "modes");
-      await assertModesCanChange(modes);
       addField("modes", JSON.stringify(modes), "::jsonb");
     }
     if ("gemBiddingModes" in body) {
@@ -4101,13 +4216,13 @@ settingsRouter.patch(
     if ("demandProcessingPresets" in body)
       addField(
         "demand_processing_presets",
-        JSON.stringify(readArrayValue(body.demandProcessingPresets, "demandProcessingPresets")),
+        JSON.stringify(readDemandProcessingPresets(body.demandProcessingPresets)),
         "::jsonb",
       );
     if ("demandProcessingDayRanges" in body)
       addField(
         "demand_processing_day_ranges",
-        JSON.stringify(readArrayValue(body.demandProcessingDayRanges, "demandProcessingDayRanges")),
+        JSON.stringify(readDemandProcessingDayRanges(body.demandProcessingDayRanges)),
         "::jsonb",
       );
     if ("bgReceiptDelayDays" in body)
@@ -4118,12 +4233,12 @@ settingsRouter.patch(
       );
     if ("specialFileMarkers" in body) {
       const specialFileMarkers = readSpecialFileMarkers(body.specialFileMarkers);
-      await assertSpecialFileMarkersCanChange(specialFileMarkers);
       addField("special_file_markers", JSON.stringify(specialFileMarkers), "::jsonb");
     }
     if ("firmUniqueNoLabel" in body)
       addField("firm_unique_no_label", toDbText(body.firmUniqueNoLabel) || "Firm Unique No.");
     if ("firmRatingConfig" in body) {
+      assertUniqueFirmRatingFieldIds(body.firmRatingConfig);
       const firmRatingConfig = normalizeFirmRatingConfig(body.firmRatingConfig);
       for (const field of firmRatingConfig.fields) {
         if (Number(field.minValue) > Number(field.maxValue)) {
@@ -4207,6 +4322,7 @@ settingsRouter.patch(
         JSON.stringify(readPresetArray(body.tableFieldPresets, "tableFieldPresets")),
         "::jsonb",
       );
+      addField("table_field_presets_configured", true);
     } else if ("tableFieldPresets" in body) {
       const personalPresets = readArrayValue(body.tableFieldPresets, "tableFieldPresets")
         .filter(

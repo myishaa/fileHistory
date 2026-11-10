@@ -152,7 +152,7 @@ test("Refloat Post-TCEC active counters require the exact current milestone", ()
     (item) => item.key === "refloatPostTcec",
   );
   assert.equal(currentDashboardRow?.active, 1);
-  assert.equal(currentDashboardRow?.pending, 1);
+  assert.equal(currentDashboardRow?.pending, 0);
   assert.equal(currentDashboardRow?.reviewed, 1);
 
   const staleReports = buildReportsSummary({

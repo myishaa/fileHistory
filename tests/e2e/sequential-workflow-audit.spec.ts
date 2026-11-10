@@ -174,7 +174,7 @@ async function openStage(page: Page, orderIndex: number, stageIndex: number) {
   if (!isOpen) await card.locator("summary").click();
 }
 
-async function openPaymentCard(page: Page, label: "Advance Payment" | "Normal Payment") {
+async function openPaymentCard(page: Page, label: "Advance Payment" | "Regular Payment") {
   const summary = page.locator("summary").filter({ has: page.getByText(label, { exact: true }) }).first();
   const card = summary.locator("..");
   if (!(await card.evaluate((element) => (element as HTMLDetailsElement).open))) {
@@ -373,7 +373,7 @@ async function fillPayment(page: Page, scenario: AuditScenario, order: OrderScen
   }
   if (order.stageDelivery) return;
   if (scenario.fileType === "Goods & Services") {
-    await openPaymentCard(page, "Normal Payment");
+    await openPaymentCard(page, "Regular Payment");
     await fillDate(page, `add-field-supplyOrder-${orderIndex}-billPreparationDate`, "2026-07-28");
     if (order.completePayment) {
       await fillDate(page, `add-field-supplyOrder-${orderIndex}-billSentForPaymentDate`, "2026-07-29");

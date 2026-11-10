@@ -23,6 +23,7 @@ import appCss from "../styles.css?url";
 import { chartColorVariables } from "@/lib/chart-colors";
 import { TopBar } from "@/components/top-bar";
 import { UrgentMessagePrompt } from "@/components/urgent-messages";
+import { AppDialogProvider } from "@/components/app-dialog";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
 import { defaultAppFontScale, normalizeAppFontScale } from "@/lib/font-scale";
@@ -223,23 +224,24 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <div
-        className={
-          `${themeClass} ${tintClass} ${fontClass} min-h-screen w-full overflow-x-clip overflow-y-auto overscroll-x-none text-foreground ` +
-          (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
-        }
-        data-font-scale={fontScale}
-        style={
-          {
-            "--chart-bar-color":
-              settings.chartColorOrder?.[0] ?? settings.chartBarColor ?? "#0f766e",
-            ...chartColorVariables(settings.chartColorOrder),
-            "--font-sans": fontFamily,
-            "--font-display": fontFamily,
-            fontFamily,
-          } as CSSProperties
-        }
-      >
+      <AppDialogProvider>
+        <div
+          className={
+            `${themeClass} ${tintClass} ${fontClass} min-h-screen w-full overflow-x-clip overflow-y-auto overscroll-x-none text-foreground ` +
+            (filterScopeWarningActive ? "filter-scope-warning" : "bg-background")
+          }
+          data-font-scale={fontScale}
+          style={
+            {
+              "--chart-bar-color":
+                settings.chartColorOrder?.[0] ?? settings.chartBarColor ?? "#0f766e",
+              ...chartColorVariables(settings.chartColorOrder),
+              "--font-sans": fontFamily,
+              "--font-display": fontFamily,
+              fontFamily,
+            } as CSSProperties
+          }
+        >
         {isPublicLivePage ? (
           <Outlet />
         ) : isOpeningSession ? (
@@ -332,7 +334,8 @@ function RootComponent() {
             </section>
           </div>
         ) : null}
-      </div>
+        </div>
+      </AppDialogProvider>
     </QueryClientProvider>
   );
 }

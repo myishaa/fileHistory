@@ -69,10 +69,13 @@ export function YearSetupPanel({
   const [newCode, setNewCode] = useState("");
   const [newCapital, setNewCapital] = useState("");
   const [newRevenue, setNewRevenue] = useState("");
+  const [addDivisionError, setAddDivisionError] = useState("");
+  const [addDivisionSaving, setAddDivisionSaving] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [mergeSourceIds, setMergeSourceIds] = useState<string[]>([]);
   const [mergeTargetId, setMergeTargetId] = useState("");
-  const [mergeEffectiveDate, setMergeEffectiveDate] = useState(todayIsoDate);
+  const [defaultEffectiveDate] = useState(todayIsoDate);
+  const [mergeEffectiveDate, setMergeEffectiveDate] = useState(defaultEffectiveDate);
   const [mergeNotes, setMergeNotes] = useState("");
   const [moveActiveFiles, setMoveActiveFiles] = useState(true);
   const [deactivateSourceDivisions, setDeactivateSourceDivisions] = useState(true);
@@ -90,7 +93,7 @@ export function YearSetupPanel({
   const [splitTargetId, setSplitTargetId] = useState("");
   const [splitCapital, setSplitCapital] = useState("");
   const [splitRevenue, setSplitRevenue] = useState("");
-  const [splitEffectiveDate, setSplitEffectiveDate] = useState(todayIsoDate);
+  const [splitEffectiveDate, setSplitEffectiveDate] = useState(defaultEffectiveDate);
   const [splitNotes, setSplitNotes] = useState("");
   const [deactivateSplitSource, setDeactivateSplitSource] = useState(false);
   const [splitSaving, setSplitSaving] = useState(false);
@@ -262,7 +265,7 @@ export function YearSetupPanel({
       mergeSourceIds.length ||
       mergeTargetId ||
       mergeNotes.trim() ||
-      mergeEffectiveDate !== todayIsoDate() ||
+      mergeEffectiveDate !== defaultEffectiveDate ||
       !moveActiveFiles ||
       !deactivateSourceDivisions ||
       splitSourceDivisionId ||
@@ -271,7 +274,7 @@ export function YearSetupPanel({
       splitCapital.trim() ||
       splitRevenue.trim() ||
       splitNotes.trim() ||
-      splitEffectiveDate !== todayIsoDate() ||
+      splitEffectiveDate !== defaultEffectiveDate ||
       deactivateSplitSource,
   );
   useUnsavedChanges("year-setup-editor", yearSetupDraftDirty);
@@ -292,7 +295,7 @@ export function YearSetupPanel({
     setNewRevenue("");
     setMergeSourceIds([]);
     setMergeTargetId("");
-    setMergeEffectiveDate(todayIsoDate);
+    setMergeEffectiveDate(defaultEffectiveDate);
     setMergeNotes("");
     setMoveActiveFiles(true);
     setDeactivateSourceDivisions(true);
@@ -302,7 +305,7 @@ export function YearSetupPanel({
     setSplitTargetId("");
     setSplitCapital("");
     setSplitRevenue("");
-    setSplitEffectiveDate(todayIsoDate);
+    setSplitEffectiveDate(defaultEffectiveDate);
     setSplitNotes("");
     setDeactivateSplitSource(false);
     setAllocationFeedback({});
@@ -393,20 +396,29 @@ export function YearSetupPanel({
     }
   };
 
-  const addDivision = () => {
+  const addDivision = async () => {
     if (!newName.trim()) return;
-    store.addDivision(
-      newName.trim(),
-      newCode.trim() || undefined,
-      newCapital.trim() || undefined,
-      newRevenue.trim() || undefined,
-      undefined,
-      setupYear,
-    );
-    setNewName("");
-    setNewCode("");
-    setNewCapital("");
-    setNewRevenue("");
+    setAddDivisionSaving(true);
+    setAddDivisionError("");
+    try {
+      await store.addDivision(
+        newName.trim(),
+        newCode.trim() || undefined,
+        newCapital.trim() || undefined,
+        newRevenue.trim() || undefined,
+        undefined,
+        setupYear,
+      );
+      setNewName("");
+      setNewCode("");
+      setNewCapital("");
+      setNewRevenue("");
+      setReloadKey((value) => value + 1);
+    } catch (error) {
+      setAddDivisionError(error instanceof Error ? error.message : "Could not add division.");
+    } finally {
+      setAddDivisionSaving(false);
+    }
   };
 
   const toggleMergeSource = (divisionId: string, checked: boolean) => {
@@ -567,13 +579,23 @@ export function YearSetupPanel({
               />
               <button
                 type="button"
-                onClick={addDivision}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90"
+                onClick={() => void addDivision()}
+                disabled={addDivisionSaving}
+                className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <Plus className="size-4" />
-                Add
+                {addDivisionSaving ? (
+                  <RotateCw className="size-4 animate-spin" />
+                ) : (
+                  <Plus className="size-4" />
+                )}
+                {addDivisionSaving ? "Adding…" : "Add"}
               </button>
             </div>
+            {addDivisionError ? (
+              <p role="alert" className="mt-2 text-xs text-destructive">
+                {addDivisionError}
+              </p>
+            ) : null}
           </div>
 
           <div className="overflow-x-auto rounded-md border border-border bg-card shadow-[var(--shadow-card)]">

@@ -10,6 +10,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { AlertTriangle } from "lucide-react";
 
 type DeleteConfirmationProps = {
   children: ReactNode;
@@ -128,6 +129,9 @@ export function useDeleteConfirmation() {
     resolve?.(confirmed);
   };
 
+  const pendingIsDestructive = Boolean(
+    pending?.applyImmediately || pending?.actionLabel === "Delete",
+  );
   const confirmationDialog = (
     <AlertDialog
       open={Boolean(pending)}
@@ -135,28 +139,70 @@ export function useDeleteConfirmation() {
         if (!open) settle(false);
       }}
     >
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {pending?.title ??
-              (pending?.applyImmediately ? "Confirm destructive change?" : "Confirm field cleanup?")}
-          </AlertDialogTitle>
+      <AlertDialogContent
+        className={`overflow-hidden p-0 ${
+          pendingIsDestructive ? "border-destructive/30" : "border-warning/40"
+        }`}
+      >
+        <div
+          className={
+            pendingIsDestructive
+              ? "border-b border-destructive/20 bg-destructive/5"
+              : "border-b border-warning/30 bg-warning/10"
+          }
+        >
+          <AlertDialogHeader className="px-6 pb-5 pt-6">
+            <div className="flex items-start gap-3">
+              <div
+                className={`mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full ${
+                  pendingIsDestructive
+                    ? "bg-destructive/10 text-destructive"
+                    : "bg-warning/20 text-warning-foreground"
+                }`}
+              >
+                <AlertTriangle className="size-5" aria-hidden="true" />
+              </div>
+              <div className="min-w-0">
+                <AlertDialogTitle className="text-lg">
+                  {pending?.title ??
+                    (pending?.applyImmediately
+                      ? "Confirm destructive change?"
+                      : "Confirm field cleanup?")}
+                </AlertDialogTitle>
+                <p className="mt-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                  {pendingIsDestructive ? "Permanent change" : "Review before continuing"}
+                </p>
+              </div>
+            </div>
+          </AlertDialogHeader>
+        </div>
+        <div className="px-6 py-5">
           <AlertDialogDescription>
             {pending?.description ??
               (pending?.applyImmediately
                 ? "The listed values will be erased immediately after deletion-password verification."
                 : "The listed values will be removed from the current form. Save the form to apply these changes.")}
             {pending?.details ? (
-              <span className="mt-2 block whitespace-pre-wrap text-foreground">
+              <span
+                className={`mt-4 block whitespace-pre-wrap rounded-md border p-3 text-sm leading-relaxed text-foreground ${
+                  pendingIsDestructive
+                    ? "border-destructive/25 bg-destructive/5"
+                    : "border-warning/30 bg-warning/10"
+                }`}
+              >
                 {pending.details}
               </span>
             ) : null}
           </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
+        </div>
+        <AlertDialogFooter className="border-t border-border bg-muted/20 px-6 py-4">
           <AlertDialogCancel onClick={() => settle(false)}>Cancel</AlertDialogCancel>
           <AlertDialogAction
-            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            className={
+              pendingIsDestructive
+                ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                : "bg-primary text-primary-foreground hover:opacity-90"
+            }
             onClick={() => settle(true)}
           >
             {pending?.actionLabel ?? "Continue"}

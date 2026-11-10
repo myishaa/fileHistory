@@ -96,13 +96,6 @@ const dateFieldConfigs: DateFieldConfig[] = [
     key: "receivedDate",
   },
   {
-    id: "file.demandCancelledDate",
-    label: "Demand cancelled date",
-    group: "File details",
-    scope: "file",
-    key: "demandCancelledDate",
-  },
-  {
     id: "file.scrutinyDate",
     label: "Scrutiny date",
     group: "Scrutiny",
@@ -471,7 +464,7 @@ const dateFieldConfigs: DateFieldConfig[] = [
   },
   {
     id: "order.paymentDate",
-    label: "Payment date",
+    label: "Payment Date",
     group: "Bill / Payment",
     scope: "order",
     key: "paymentDate",
@@ -496,13 +489,6 @@ const dateFieldConfigs: DateFieldConfig[] = [
     group: "Bill / Payment",
     scope: "order",
     key: "__unifiedPaymentDate",
-  },
-  {
-    id: "order.soCancelledDate",
-    label: "S.O. cancelled date",
-    group: "Cancellation / Closure",
-    scope: "order",
-    key: "soCancelledDate",
   },
   {
     id: "stage.deliveryPeriodStartDate",
@@ -597,7 +583,7 @@ const dateFieldConfigs: DateFieldConfig[] = [
   },
   {
     id: "advance.paymentDate",
-    label: "Advance payment date",
+    label: "Advance Payment Date",
     group: "Advance payment",
     scope: "advance",
     key: "paymentDate",
@@ -977,7 +963,7 @@ type UnifiedPaymentEvent = {
   paymentObjectKey: string;
 };
 
-function isUnifiedPaymentField(fieldId: string) {
+export function isUnifiedPaymentField(fieldId: string) {
   return fieldId.startsWith("payment.unified");
 }
 

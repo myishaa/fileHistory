@@ -180,22 +180,12 @@ function collectStatus2Counters(summary) {
 }
 
 function collectStatus3Counters(summary) {
-  const counters = [];
-  for (const group of summary.statusSummaryGroups ?? []) {
-    for (const row of group.rows ?? []) {
-      for (const column of group.columns ?? []) {
-        const value = row.counts?.[column];
-        if (value === undefined || value === "-") continue;
-        counters.push({
-          label: `${row.milestone} / ${column}`,
-          count: Number(value ?? 0),
-          filter: `statusSummary:${encodeURIComponent(row.milestone)}:${encodeURIComponent(column)}`,
-          strict: false,
-        });
-      }
-    }
-  }
-  return counters;
+  // Status-3 is presented from the same statusFlow as Status-1. Audit those
+  // shared counts instead of rebuilding a separate Status-3 grouping here.
+  return collectStatus1Counters(summary).map((counter) => ({
+    ...counter,
+    label: `Status-3 / ${counter.label}`,
+  }));
 }
 
 function hasFilledString(value) {

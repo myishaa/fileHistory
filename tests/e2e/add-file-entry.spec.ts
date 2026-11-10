@@ -137,7 +137,7 @@ async function openStage(page: Page, orderIndex: number, stageIndex: number) {
   if (!isOpen) await card.locator("summary").click();
 }
 
-async function openPaymentCard(page: Page, label: "Advance Payment" | "Normal Payment") {
+async function openPaymentCard(page: Page, label: "Advance Payment" | "Regular Payment") {
   const summary = page.locator("summary").filter({ has: page.getByText(label, { exact: true }) }).first();
   const card = summary.locator("..");
   if (!(await card.evaluate((element) => (element as HTMLDetailsElement).open))) {
@@ -346,7 +346,7 @@ async function fillDpDeliveryPayment(page: Page, scenario: AddScenario) {
     await fillDate(page, "add-field-supplyOrder-0-stage-0-billPreparationDate", "2026-07-23");
     await fillDate(page, "add-field-supplyOrder-0-stage-0-billSentForPaymentDate", "2026-07-24");
   } else if (!scenario.stageDelivery && scenario.fileType === "Goods & Services") {
-    await openPaymentCard(page, "Normal Payment");
+    await openPaymentCard(page, "Regular Payment");
     await fillDate(page, "add-field-supplyOrder-0-billPreparationDate", "2026-07-23");
     if (scenario.paymentComplete) {
       await fillDate(page, "add-field-supplyOrder-0-billSentForPaymentDate", "2026-07-24");
@@ -405,6 +405,62 @@ test.describe("Add File field-by-field workflows", () => {
     await cleanupQaFiles();
     await pool.query("delete from master_firms where firm_unique_no = $1", [QA_FIRM_UNIQUE_NO]);
     await pool.end();
+  });
+
+  test("covers all Supply Order tabs, panel modes, and Regular Payment label", async ({ page }) => {
+    page.setDefaultTimeout(15_000);
+    await authenticate(page, browserSessionToken);
+    await page.goto("/add");
+    await expect(page.getByRole("heading", { name: "File details" })).toBeVisible();
+    await page.getByTestId("add-field-division").fill("ACC");
+    await page.getByTestId("add-field-division").press("Enter");
+    await expect(page.getByTestId("add-field-uniqueCode")).not.toHaveValue("");
+    await page.getByTestId("add-section-approval-block").click();
+    await fillDate(page, "add-field-cfaDate", "2026-07-01");
+    await page.getByTestId("add-section-supply-order-and-payment").click();
+
+    const tabs = [
+      ["supplyOrder", "Supply order"],
+      ["dp", "D.P."],
+      ["bg", "Security/Warranty"],
+      ["delivery", "Delivery & Inspection"],
+      ["payment", "Payment"],
+      ["supplementaryBills", "Supplementary Bills"],
+      ["firmRating", "Firm Rating"],
+      ["miscellaneous", "Shortclosure / Cancellation"],
+    ] as const;
+
+    for (const [key, label] of tabs) {
+      const tab = page.getByTestId(`add-so-tab-${key}`);
+      await expect(tab).toHaveText(
+        key === "delivery" ? /Delivery & Inspection|Job Completion/ : label,
+      );
+      await tab.click();
+    }
+
+    const viewMode = page.getByTestId("add-supply-order-view-mode");
+    await expect(viewMode).toHaveText(/Wrapped/);
+    await viewMode.click();
+    await expect(viewMode).toHaveText(/Expanded/);
+    await viewMode.click();
+    await expect(viewMode).toHaveText(/Wrapped/);
+
+    await page.getByTestId("add-so-tab-supplyOrder").click();
+    await page.getByTestId("add-field-noOfSo").fill("2");
+    const firstOrder = page.getByTestId("add-supply-order-0");
+    const secondOrder = page.getByTestId("add-supply-order-1");
+    await expect(secondOrder).toBeVisible();
+    await openSupplyOrder(page, 1);
+    await viewMode.click();
+    await expect(firstOrder).toHaveAttribute("open", "");
+    await expect(secondOrder).toHaveAttribute("open", "");
+    await viewMode.click();
+    await expect(firstOrder).not.toHaveAttribute("open", "");
+    await expect(secondOrder).toHaveAttribute("open", "");
+
+    await page.getByTestId("add-so-tab-payment").click();
+    await expect(page.getByText("Regular Payment", { exact: true })).toHaveCount(2);
+    await expect(page.getByText("Normal Payment", { exact: true })).toHaveCount(0);
   });
 
   test(`enters ${FILE_COUNT} files through Add File, including S.O. stages, BG variants, date warning, and exports`, async ({

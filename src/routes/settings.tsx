@@ -12,6 +12,7 @@ import {
   Lock,
   Pencil,
   Plus,
+  Search,
   Save,
   Upload,
   Trash2,
@@ -19,6 +20,7 @@ import {
   X,
 } from "lucide-react";
 import { CompactTableText } from "@/components/compact-table-text";
+import { showAppAlert, showAppConfirm, showAppPrompt } from "@/components/app-dialog";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
 import { QuickAccessSettings } from "@/components/quick-access";
 import { QuickEntryExcelSettings } from "@/components/quick-entry-excel";
@@ -69,7 +71,6 @@ import { getMmgSummaryFieldOptions, normalizeMmgSummaryFields } from "@/lib/mmg-
 import {
   getDemandProcessingField,
   getDemandProcessingFieldGroups,
-  normalizeDemandProcessingPresets,
   type DemandProcessingPreset,
 } from "@/lib/demand-processing-analysis";
 import { tableFieldPresetGroups, type TableFieldPreset } from "@/lib/table-field-presets";
@@ -99,7 +100,11 @@ import {
   isAllFilesYear,
   normalizeMilestoneName,
 } from "@/lib/year-filter";
-import { defaultFirmRatingFields, normalizeFirmRatingConfig } from "@/lib/firm-rating";
+import {
+  createFirmRatingFieldId,
+  defaultFirmRatingFields,
+  normalizeFirmRatingConfig,
+} from "@/lib/firm-rating";
 import {
   addEditRibbonFieldOptions,
   defaultAddEditRibbonFields,
@@ -197,8 +202,11 @@ function UserSettingsDraft({
     setDraftPatch((current) => ({ ...current, ...patch }));
     setSaveError("");
   };
-  const cancelChanges = () => {
-    if ((hasChanges || localDirty) && !window.confirm("Discard your unsaved settings changes?"))
+  const cancelChanges = async () => {
+    if (
+      (hasChanges || localDirty) &&
+      !(await showAppConfirm("Discard your unsaved settings changes?"))
+    )
       return;
     setDraftPatch({});
     externalDraftRef.current?.cancel();
@@ -295,48 +303,10 @@ function appendFileClosedMilestone(milestones: string[]) {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "");
   const normalizedMilestones = milestones.map(normalizeConfiguredMilestoneLabel);
-  const withFinancialSanction = insertFinancialSanctionMilestone(normalizedMilestones);
-  const withBillSent = insertBillSentMilestone(withFinancialSanction);
-  const withoutFileClosed = withBillSent.filter(
+  const withoutFileClosed = normalizedMilestones.filter(
     (milestone) => normalize(milestone) !== normalize(fileClosedMilestone),
   );
   return [...withoutFileClosed, fileClosedMilestone];
-}
-
-function insertBillSentMilestone(milestones: string[]) {
-  const normalize = (value: string) =>
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "");
-  const hasBillSent = milestones.some((milestone) => normalize(milestone) === "billsentforpayment");
-  const paymentIndex = milestones.findIndex((milestone) => normalize(milestone) === "payment");
-  if (hasBillSent || paymentIndex === -1) return milestones;
-  return [
-    ...milestones.slice(0, paymentIndex),
-    "Bill sent for payment",
-    ...milestones.slice(paymentIndex),
-  ];
-}
-
-function insertFinancialSanctionMilestone(milestones: string[]) {
-  const normalize = (value: string) =>
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "");
-  const hasFinancialSanction = milestones.some(
-    (milestone) => normalize(milestone) === "financialsanction",
-  );
-  const supplyOrderIndex = milestones.findIndex(
-    (milestone) => normalize(milestone) === "supplyorder",
-  );
-  if (hasFinancialSanction || supplyOrderIndex === -1) return milestones;
-  return [
-    ...milestones.slice(0, supplyOrderIndex),
-    "Financial Sanction",
-    ...milestones.slice(supplyOrderIndex),
-  ];
 }
 
 function normalizeConfiguredMilestoneLabel(milestone: string) {
@@ -391,6 +361,136 @@ type AdminSection = {
   label: string;
   helper: string[];
   content: ReactNode;
+  searchText?: string;
+};
+
+const adminSectionSearchText: Record<string, string> = {
+  theme: "appearance UI theme colour color font family font size top ribbon",
+  noticeBoard: "notice board message display rotation duration personal shared",
+  quickEntryExcel: "quick entry Excel export columns configure download",
+  user: "account role division display preferences profile",
+  workspace: "workspace current financial year FY archive restore lock selection",
+  offsetDays: "offset days S.O. payment BG return date delay status threshold estimated date",
+  yearSetup: "year setup financial year division budgets add merge split",
+  mmgSummary: "MMG summary fields labels PDF Excel export rows",
+  demandProcessing:
+    "demand processing analysis presets date pair ranges from date to date TCEC",
+  divisions: "division name code budget active archive delete",
+  indentors: "indentor contact details division assignment",
+  firms: "firm database firm name unique number firm type add edit archive delete",
+  firmRating: "firm rating criteria items maximum marks score",
+  fileTypes: "file types goods services contract group active inactive rename",
+  modes: "modes procurement mode active inactive rename",
+  gemBiddingModes: "GeM bidding modes custom catalogue comparison add inactive",
+  firmTypes: "firm types MSE Non-MSE add inactive rename",
+  fileMarkers: "file markers marker code tag active inactive",
+  tcec: "TCEC committee committee names",
+  thresholds: "value thresholds capital revenue both financial year bands",
+  bgReceiptDelay: "BG receipt delay guarantee received S.O. date threshold",
+  anomalyGovernance: "anomaly control suspected data issues accept reject reopen",
+  milestones:
+    "milestones workflow sequence add activate reorder inactivate remove file closed current completed",
+  presets: "preset table fields Search export columns manual shared personal",
+  users: "authorised users accounts roles permissions access",
+  ipAccess: "IP access trusted IP address notify restrict login attempts",
+  archive: "archive archived records files restore permanent delete",
+  protectedBackup:
+    "protected backup encrypted database restore upload password recovery PIN scheduled destination",
+};
+
+// Keep the Settings search index aligned with the visible controls in each
+// section. Search results intentionally open a section rather than a single
+// control, matching the existing left-panel navigation model.
+const adminSectionControlLabels: Record<string, string[]> = {
+  theme: [
+    "Appearance preset",
+    "Font family",
+    "Font size",
+    "Theme tint",
+    "Top ribbon color",
+    "Chart colors",
+  ],
+  noticeBoard: [
+    "Notice board messages",
+    "Notice board rotation",
+    "Slide duration",
+    "Fade in duration",
+    "Fade out duration",
+    "Vertical scroll duration",
+  ],
+  quickEntryExcel: ["Quick Entry Excel columns", "Excel export fields", "Column order"],
+  user: ["User name", "Username", "Role", "Division access", "Personal deletion password"],
+  workspace: [
+    "Financial years",
+    "FY",
+    "New financial year",
+    "Create FY now",
+    "Set as Current FY",
+    "Current FY",
+    "Year selection lock",
+    "Lock year selection",
+    "Locked",
+    "Unlocked",
+    "Archive FY now",
+    "Restore FY now",
+    "Delete FY now",
+    "Include active files from archived years",
+  ],
+  offsetDays: [
+    "Bill payment offset days",
+    "Hand submission offset days",
+    "Delivery Period offset days",
+    "D.P. offset days",
+    "Delay Status default threshold",
+    "BG return offset days",
+  ],
+  yearSetup: ["Financial year", "Division budgets", "Capital budget", "Revenue budget"],
+  mmgSummary: ["MMG Summary fields", "Display fields", "Field labels", "PDF export", "Excel export"],
+  demandProcessing: [
+    "Preset name",
+    "From date",
+    "To date",
+    "Date pair",
+    "Demand processing day ranges",
+    "Add range",
+    "Save ranges",
+  ],
+  divisions: ["Division name", "Division code", "Capital budget", "Revenue budget"],
+  indentors: ["Indentor name", "Name", "SF ID", "Designation", "Mobile number", "Email id"],
+  firms: [
+    "Firm name",
+    "Firm Unique No.",
+    "Firm Unique Number",
+    "Email id",
+    "Address",
+    "City",
+    "Contact No.",
+    "Firm type",
+  ],
+  firmRating: ["Rating criteria", "Criteria label", "Weight", "Minimum marks", "Maximum marks"],
+  fileTypes: ["File type", "Workflow group", "Goods and Services", "Contract", "Active", "Inactive"],
+  modes: ["Mode name", "Procurement mode", "Active", "Inactive"],
+  gemBiddingModes: ["GeM bidding mode", "Add GeM bidding mode", "Active", "Inactive"],
+  firmTypes: ["Firm type", "Add firm type", "Active", "Inactive"],
+  fileMarkers: ["Marker code", "Explanation", "When to use", "Active", "Inactive"],
+  tcec: ["Committee name", "TCEC committee", "Add committee"],
+  thresholds: ["Minimum value", "Maximum value", "Capital", "Revenue", "Both", "Value band"],
+  bgReceiptDelay: ["BG receipt delay days", "Threshold days", "Guarantee receipt threshold"],
+  anomalyGovernance: ["Anomaly status", "Accept anomaly", "Reject anomaly", "Reopen anomaly"],
+  milestones: ["Milestone name", "Add milestone", "Activate milestone", "Inactivate milestone", "Move milestone"],
+  presets: ["Preset name", "Table fields", "Manual fields", "Shared preset", "Personal preset"],
+  users: ["Authorised users", "Username", "User name", "Role", "Division access", "File type access"],
+  ipAccess: ["IP access mode", "Trusted IP address", "IP address", "Login attempts", "Remarks"],
+  archive: ["Archived files", "Archived records", "Restore file", "Permanently delete"],
+  protectedBackup: [
+    "Create database backup",
+    "Restore database backup",
+    "Upload password",
+    "Recovery PIN",
+    "Scheduled backup",
+    "Destination directory",
+    "Retention",
+  ],
 };
 
 type SettingsScopeKind = "personal" | "shared";
@@ -670,7 +770,7 @@ const settingsSectionHelpers = {
     "Example table: Change | Display result | Saved data",
     "Example row: Add Technical Review | Appears for every file; do not add it for Contract files only | No completion date is added automatically.",
     "Example row: Move Financial Sanction above Bidding | Sequence changes; Timeline still orders dated events by date | Dates and file progress stay unchanged.",
-    "The 'Used in N files' figure counts unique files, including archived files, where this milestone is current or completed on the file, an S.O., or its advance-payment record.",
+    "The 'Used in N files' figure counts unique files, including archived files, where this milestone is current or completed on the file, an S.O., an S.O. delivery stage, or its advance-payment record.",
     "Details: Status-1 and Status-3 use their own standard workflow logic, so this sequence does not change their counters.",
     "Included and Excluded: Inactive milestones are excluded from the active sequence, but their saved dates and completion data are not erased immediately.",
     "Included and Excluded: An inactive milestone may no longer appear on a file's checklist.",
@@ -725,8 +825,8 @@ const workspaceYearHelpers = {
   archive: [
     "Archives the selected FY for normal Search without deleting any files or records.",
     "Inactive files whose origin is this FY are excluded from normal Search; active carry-forward files remain searchable.",
-    "Use Include active files from archived years to keep active carry-forward files from an archived initiation year in normal views. Explicit historical or all-files scopes include archived records separately.",
-    "Archive or restore actions take effect immediately after confirmation; there is no separate Save changes step.",
+    "Include active files from archived years applies across Search, Dashboard, Reports, Quick Entry, and All Files. When enabled, active carry-forward files from archived FYs remain available; when disabled, all files from archived FYs are excluded. Files individually moved to Archive remain separate.",
+    "Archive and restore take effect immediately; there is no separate Save changes step.",
     "The current FY cannot be archived. Only Administrators can archive or restore a FY.",
   ],
 } satisfies Record<string, string[]>;
@@ -1036,6 +1136,21 @@ const backupScheduleDayOptions = [
   [6, "Saturday"],
 ] as const;
 
+function areBackupScheduleValuesEqual(
+  left: BackupScheduleSettings | null | undefined,
+  right: BackupScheduleSettings | null | undefined,
+) {
+  if (!left || !right) return left === right;
+  return (
+    left.enabled === right.enabled &&
+    left.frequency === right.frequency &&
+    left.dayOfWeek === right.dayOfWeek &&
+    left.timeOfDay === right.timeOfDay &&
+    left.destinationDir === right.destinationDir &&
+    left.retentionCount === right.retentionCount
+  );
+}
+
 function formatBackupScheduleDate(value: string | null, timeZone: string) {
   if (!value) return "Not scheduled";
   return new Intl.DateTimeFormat("en-IN", {
@@ -1139,6 +1254,8 @@ function ProtectedBackupSettings() {
   const [message, setMessage] = useState("");
   const [schedule, setSchedule] = useState<BackupScheduleSettings | null>(null);
   const [scheduleDraft, setScheduleDraft] = useState<BackupScheduleSettings | null>(null);
+  const scheduleRef = useRef<BackupScheduleSettings | null>(null);
+  const scheduleDraftRef = useRef<BackupScheduleSettings | null>(null);
   const [backupStatus, setBackupStatus] = useState<BackupStatusPayload | null>(null);
   const [scheduleMessage, setScheduleMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
@@ -1211,9 +1328,16 @@ function ProtectedBackupSettings() {
         throw new Error(await readError(response, "Backup status could not be loaded."));
       }
       const body = (await response.json()) as { status: BackupStatusPayload };
+      const nextSchedule = body.status.schedule;
+      const preserveDraft =
+        scheduleRef.current !== null &&
+        scheduleDraftRef.current !== null &&
+        !areBackupScheduleValuesEqual(scheduleDraftRef.current, scheduleRef.current);
+      scheduleRef.current = nextSchedule;
+      if (!preserveDraft) scheduleDraftRef.current = nextSchedule;
       setBackupStatus(body.status);
-      setSchedule(body.status.schedule);
-      setScheduleDraft(body.status.schedule);
+      setSchedule(nextSchedule);
+      if (!preserveDraft) setScheduleDraft(nextSchedule);
     } catch (error) {
       setScheduleMessage(
         error instanceof Error ? error.message : "Backup status could not be loaded.",
@@ -1224,6 +1348,44 @@ function ProtectedBackupSettings() {
   useEffect(() => {
     void loadBackupStatus();
   }, [loadBackupStatus]);
+
+  const scheduleDraftDirty = Boolean(
+    scheduleDraft && schedule && !areBackupScheduleValuesEqual(scheduleDraft, schedule),
+  );
+  const updateScheduleDraft = (
+    updater: (current: BackupScheduleSettings | null) => BackupScheduleSettings | null,
+  ) => {
+    setScheduleDraft((current) => {
+      const nextDraft = updater(current);
+      scheduleDraftRef.current = nextDraft;
+      return nextDraft;
+    });
+  };
+  const cancelScheduleDraftRef = useRef<() => void>(() => undefined);
+  cancelScheduleDraftRef.current = () => {
+    const currentSchedule = scheduleRef.current;
+    scheduleDraftRef.current = currentSchedule;
+    setScheduleDraft(currentSchedule);
+    setScheduleMessage("");
+  };
+
+  useEffect(() => {
+    draft?.registerExternalDraft?.({
+      save: async () => undefined,
+      cancel: () => cancelScheduleDraftRef.current(),
+    });
+    return () => draft?.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(scheduleDraftDirty);
+  }, [draft?.setLocalDirty, scheduleDraftDirty]);
+
+  const reloadAfterRestore = async (message: string) => {
+    setMessage(`${message} Reloading application and checking the account session...`);
+    await store.reload();
+    window.location.reload();
+  };
 
   const resetRestoreAuthorizationDraft = () => {
     setRestoreAuthorizationCurrentPassword("");
@@ -1279,7 +1441,11 @@ function ProtectedBackupSettings() {
       setMessage("Recovery PINs do not match.");
       return;
     }
-    if (!window.confirm("Reset the Upload password? The old Upload password will stop working.")) {
+    if (
+      !(await showAppConfirm("Reset the Upload password? The old Upload password will stop working.", {
+        destructive: true,
+      }))
+    ) {
       return;
     }
     setBusy("recoverRestoreAuthorization");
@@ -1445,6 +1611,8 @@ function ProtectedBackupSettings() {
         throw new Error(await readError(response, "Backup schedule could not be saved."));
       }
       const body = (await response.json()) as { schedule: BackupScheduleSettings };
+      scheduleRef.current = body.schedule;
+      scheduleDraftRef.current = body.schedule;
       setSchedule(body.schedule);
       setScheduleDraft(body.schedule);
       setScheduleMessage("Scheduled server backup settings saved.");
@@ -1470,8 +1638,8 @@ function ProtectedBackupSettings() {
         throw new Error(await readError(response, "Scheduled server backup could not be started."));
       }
       const body = (await response.json()) as { schedule: BackupScheduleSettings };
+      scheduleRef.current = body.schedule;
       setSchedule(body.schedule);
-      setScheduleDraft(body.schedule);
       setScheduleMessage("Scheduled server backup completed successfully.");
       await loadBackupStatus();
     } catch (error) {
@@ -1537,7 +1705,12 @@ function ProtectedBackupSettings() {
       setMessage("Enter the Upload password.");
       return;
     }
-    if (!window.confirm("Restore this backup? Current database records will be replaced.")) return;
+    if (
+      !(await showAppConfirm("Restore this backup? Current database records will be replaced.", {
+        destructive: true,
+      }))
+    )
+      return;
     setBusy("restore");
     setMessage("");
     try {
@@ -1554,8 +1727,10 @@ function ProtectedBackupSettings() {
       });
       if (!response.ok) throw new Error(await readError(response, "Backup could not be restored."));
       const result = (await response.json()) as { tables?: number; rows?: number };
-      setMessage(`Backup restored: ${result.tables ?? 0} tables and ${result.rows ?? 0} rows.`);
       setRestoreFile(null);
+      await reloadAfterRestore(
+        `Backup restored: ${result.tables ?? 0} tables and ${result.rows ?? 0} rows.`,
+      );
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Backup could not be restored.");
     } finally {
@@ -1583,9 +1758,10 @@ function ProtectedBackupSettings() {
       return;
     }
     if (
-      !window.confirm(
+      !(await showAppConfirm(
         "Restore this full recovery package? The server database will be replaced, and uploaded files may also be replaced.",
-      )
+        { destructive: true },
+      ))
     )
       return;
     setBusy("fullRestore");
@@ -1607,10 +1783,10 @@ function ProtectedBackupSettings() {
       }
       const result = (await response.json()) as { warnings?: string[] };
       const warnings = result.warnings?.length ? ` Warnings: ${result.warnings.join(" ")}` : "";
-      setMessage(`Full recovery package restored on the server.${warnings}`);
       setFullRestoreFile(null);
       setFullRestoreFilePassword("");
       if (fullRestoreFileInputRef.current) fullRestoreFileInputRef.current.value = "";
+      await reloadAfterRestore(`Full recovery package restored on the server.${warnings}`);
     } catch (error) {
       setMessage(
         error instanceof Error ? error.message : "Full recovery package could not be restored.",
@@ -1676,6 +1852,7 @@ function ProtectedBackupSettings() {
     setFullRestoreFile(null);
     setFullRestoreFilePassword("");
     setRestoreDeploymentFiles(false);
+    scheduleDraftRef.current = schedule;
     setScheduleDraft(schedule);
     setMessage("");
     setScheduleMessage("");
@@ -2475,7 +2652,7 @@ function ProtectedBackupSettings() {
                         role="switch"
                         aria-checked={scheduleDraft.enabled}
                         onClick={() =>
-                          setScheduleDraft((current) =>
+                          updateScheduleDraft((current) =>
                             current ? { ...current, enabled: !current.enabled } : current,
                           )
                         }
@@ -2503,7 +2680,7 @@ function ProtectedBackupSettings() {
                         <select
                           value={scheduleDraft.frequency}
                           onChange={(event) =>
-                            setScheduleDraft((current) =>
+                            updateScheduleDraft((current) =>
                               current
                                 ? {
                                     ...current,
@@ -2524,7 +2701,7 @@ function ProtectedBackupSettings() {
                           <select
                             value={scheduleDraft.dayOfWeek}
                             onChange={(event) =>
-                              setScheduleDraft((current) =>
+                              updateScheduleDraft((current) =>
                                 current
                                   ? { ...current, dayOfWeek: Number(event.target.value) }
                                   : current,
@@ -2546,7 +2723,7 @@ function ProtectedBackupSettings() {
                           type="time"
                           value={scheduleDraft.timeOfDay}
                           onChange={(event) =>
-                            setScheduleDraft((current) =>
+                            updateScheduleDraft((current) =>
                               current ? { ...current, timeOfDay: event.target.value } : current,
                             )
                           }
@@ -2578,7 +2755,7 @@ function ProtectedBackupSettings() {
                           max={90}
                           value={scheduleDraft.retentionCount}
                           onChange={(event) =>
-                            setScheduleDraft((current) =>
+                            updateScheduleDraft((current) =>
                               current
                                 ? { ...current, retentionCount: Number(event.target.value) }
                                 : current,
@@ -2593,7 +2770,7 @@ function ProtectedBackupSettings() {
                           type="text"
                           value={scheduleDraft.destinationDir}
                           onChange={(event) =>
-                            setScheduleDraft((current) =>
+                            updateScheduleDraft((current) =>
                               current
                                 ? { ...current, destinationDir: event.target.value }
                                 : current,
@@ -2876,6 +3053,7 @@ function SettingsPage() {
   useUnsavedChanges("settings-admin-sections", hasUnsavedAdminChanges);
   const [settingsSidePanelHooked, setSettingsSidePanelHooked] = useState(true);
   const [expandedAdminGroup, setExpandedAdminGroup] = useState("personal");
+  const [settingsSearch, setSettingsSearch] = useState("");
   const [viewerSettingsTab, setViewerSettingsTab] = useState("theme");
   const [teamSettingsTab, setTeamSettingsTab] = useState("user");
 
@@ -2892,10 +3070,10 @@ function SettingsPage() {
       <div className="settings-page max-w-6xl space-y-5">
         <Tabs
           value={viewerSettingsTab}
-          onValueChange={(value) => {
+          onValueChange={async (value) => {
             if (
               hasAnyUnsavedChanges() &&
-              !window.confirm("You have unsaved changes. Leave this section without saving?")
+              !(await showAppConfirm("You have unsaved changes. Leave this section without saving?"))
             ) {
               return;
             }
@@ -2914,11 +3092,14 @@ function SettingsPage() {
           </TabsList>
           <TabsContent value="theme">
             <UserSettingsDraft showScope={false} actionPlacement="inside">
-              <PreferenceSettings />
+              <PreferenceSettings readOnly={activeUser?.role === "viewer"} />
             </UserSettingsDraft>
           </TabsContent>
           <TabsContent value="noticeBoard">
-            <QuickAccessSettings section="noticeBoard" />
+            <QuickAccessSettings
+              section="noticeBoard"
+              readOnly={activeUser?.role === "viewer"}
+            />
           </TabsContent>
           <TabsContent value="indentors">
             <SettingsScope scope="shared" editors="Administrators and Sub-admins" />
@@ -2940,10 +3121,10 @@ function SettingsPage() {
       <div className="settings-page max-w-6xl space-y-5">
         <Tabs
           value={teamSettingsTab}
-          onValueChange={(value) => {
+          onValueChange={async (value) => {
             if (
               hasAnyUnsavedChanges() &&
-              !window.confirm("You have unsaved changes. Leave this section without saving?")
+              !(await showAppConfirm("You have unsaved changes. Leave this section without saving?"))
             ) {
               return;
             }
@@ -3278,6 +3459,30 @@ function SettingsPage() {
     }))
     .filter((group) => group.sections.length > 0);
 
+  const normalizedSettingsSearch = settingsSearch.trim().toLocaleLowerCase();
+  const sectionMatchesSettingsSearch = (section: AdminSection) => {
+    if (!normalizedSettingsSearch) return true;
+    const searchableText = [
+      section.key,
+      section.label,
+      section.helper.join(" "),
+      adminSectionSearchText[section.key] ?? "",
+      (adminSectionControlLabels[section.key] ?? []).join(" "),
+      section.searchText ?? "",
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return searchableText.includes(normalizedSettingsSearch);
+  };
+  const visibleAdminSectionGroups = normalizedSettingsSearch
+    ? adminSectionGroups
+        .map((group) => ({
+          ...group,
+          sections: group.sections.filter(sectionMatchesSettingsSearch),
+        }))
+        .filter((group) => group.sections.length > 0)
+    : adminSectionGroups;
+
   const setAdminSectionUnlocked = (key: string, unlocked: boolean) => {
     setUnlockedAdminSections((current) => ({ ...current, [key]: unlocked }));
   };
@@ -3293,7 +3498,49 @@ function SettingsPage() {
         }
       >
         {settingsSidePanelHooked ? (
-          <aside className="rounded-xl border border-border bg-secondary/35 p-3 shadow-[var(--shadow-card)]">
+          <div className="min-w-0 space-y-3">
+            <div className="section-accent-border rounded-xl border border-border bg-card p-3 shadow-[var(--shadow-card)]">
+              <div className="space-y-1.5">
+                <label
+                  htmlFor="settings-free-search"
+                  className="block text-xs font-semibold text-foreground"
+                >
+                  Find setting
+                </label>
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <input
+                    id="settings-free-search"
+                    type="text"
+                    value={settingsSearch}
+                    onChange={(event) => setSettingsSearch(event.target.value)}
+                    placeholder="Type a setting name"
+                    className="h-9 w-full rounded-md border border-input bg-background pl-9 pr-9 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                  {settingsSearch ? (
+                    <button
+                      type="button"
+                      onClick={() => setSettingsSearch("")}
+                      className="absolute right-1 top-1 inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                      aria-label="Clear Settings search"
+                      title="Clear Settings search"
+                    >
+                      <X className="size-4" aria-hidden="true" />
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+              {normalizedSettingsSearch ? (
+                <p className="mt-2 text-xs font-light text-muted-foreground">
+                  {visibleAdminSectionGroups.reduce((count, group) => count + group.sections.length, 0)}{" "}
+                  matching Settings section(s). Matching left-panel buttons are highlighted.
+                </p>
+              ) : null}
+            </div>
+            <aside className="rounded-xl border border-border bg-secondary/35 p-3 shadow-[var(--shadow-card)]">
             <div className="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
               <div className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
                 Settings
@@ -3308,7 +3555,7 @@ function SettingsPage() {
               </button>
             </div>
             <div className="max-h-[calc(100vh-12rem)] space-y-2 overflow-y-auto pr-1">
-              {adminSectionGroups.map((group) => (
+              {visibleAdminSectionGroups.map((group) => (
                 <section
                   key={group.key}
                   className={
@@ -3318,11 +3565,14 @@ function SettingsPage() {
                 >
                   <button
                     type="button"
-                    onClick={() =>
-                      setExpandedAdminGroup((current) => (current === group.key ? "" : group.key))
+                    onClick={() => {
+                      if (normalizedSettingsSearch) return;
+                      setExpandedAdminGroup((current) => (current === group.key ? "" : group.key));
+                    }}
+                    aria-expanded={
+                      normalizedSettingsSearch ? true : expandedAdminGroup === group.key
                     }
-                    aria-expanded={expandedAdminGroup === group.key}
-                    className={
+                      className={
                       "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-xs font-bold uppercase tracking-wide transition " +
                       (group.sections.some((section) => section.key === selectedAdminSection.key)
                         ? settingsGroupHeaderAccentClasses[
@@ -3340,21 +3590,22 @@ function SettingsPage() {
                       aria-hidden="true"
                     />
                   </button>
-                  {expandedAdminGroup === group.key ? (
+                  {normalizedSettingsSearch || expandedAdminGroup === group.key ? (
                     <div className="space-y-1 border-t border-border bg-secondary/20 p-1.5">
                       {group.sections.map((section) => {
                         const selected = selectedAdminSection.key === section.key;
+                        const matchesSearch = sectionMatchesSettingsSearch(section);
                         return (
                           <div key={section.key} className="flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => {
+                              onClick={async () => {
                                 if (
                                   section.key !== activeAdminSection &&
                                   (hasUnsavedAdminChanges || hasAnyUnsavedChanges()) &&
-                                  !window.confirm(
+                                  !(await showAppConfirm(
                                     "Discard unsaved settings changes and switch sections?",
-                                  )
+                                  ))
                                 )
                                   return;
                                 if (section.key === activeAdminSection) return;
@@ -3365,7 +3616,9 @@ function SettingsPage() {
                                 "min-w-0 flex-1 rounded-md px-3 py-2 text-left text-sm font-medium transition " +
                                 (selected
                                   ? "bg-primary text-primary-foreground shadow-sm"
-                                  : "text-muted-foreground hover:bg-accent hover:text-foreground")
+                                  : matchesSearch && normalizedSettingsSearch
+                                    ? "bg-amber-100 text-amber-950 ring-2 ring-amber-400/70 dark:bg-amber-950/40 dark:text-amber-100 dark:ring-amber-500/70"
+                                    : "text-muted-foreground hover:bg-accent hover:text-foreground")
                               }
                             >
                               {section.label}
@@ -3381,8 +3634,14 @@ function SettingsPage() {
                   ) : null}
                 </section>
               ))}
+              {normalizedSettingsSearch && visibleAdminSectionGroups.length === 0 ? (
+                <p className="rounded-md border border-dashed border-border bg-background px-3 py-4 text-sm font-light text-muted-foreground">
+                  No matching Settings section.
+                </p>
+              ) : null}
             </div>
-          </aside>
+            </aside>
+          </div>
         ) : (
           <aside className="rounded-xl border border-border bg-secondary/35 p-2 shadow-[var(--shadow-card)]">
             <button
@@ -3492,8 +3751,12 @@ function LockedAdminSection({
     }
   };
 
-  const cancelChanges = () => {
-    if (hasUnsavedChanges && !window.confirm("Discard your unsaved settings changes?")) return;
+  const cancelChanges = async () => {
+    if (
+      hasUnsavedChanges &&
+      !(await showAppConfirm("Discard your unsaved settings changes?"))
+    )
+      return;
     setDraftPatch({});
     externalDraftRef.current?.cancel();
     setExternalDirty(false);
@@ -3507,7 +3770,7 @@ function LockedAdminSection({
     const password = await promptPassword(`Enter admin password to edit ${section.label}:`);
     if (password === null) return;
     if (!password.trim()) {
-      window.alert("Password is required.");
+      await showAppAlert("Password is required.");
       return;
     }
     setVerifying(true);
@@ -3521,7 +3784,7 @@ function LockedAdminSection({
       setSaveError("");
       onUnlock();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Incorrect password.");
+      await showAppAlert(error instanceof Error ? error.message : "Incorrect password.");
     } finally {
       setVerifying(false);
     }
@@ -3858,18 +4121,6 @@ type SettingsCashOutGoPlan = {
     defaultDpOffsetDays: number;
     useCustomDpOffsetDays: boolean;
   };
-  billsSubmitted?: SettingsCashOutGoRow[];
-  billsAtHand?: SettingsCashOutGoRow[];
-  deliveredBillsPending?: SettingsCashOutGoRow[];
-  dpBasedForecast?: SettingsCashOutGoRow[];
-  dpExpired?: SettingsCashOutGoRow[];
-};
-
-type SettingsCashOutGoRow = {
-  rowKey: string;
-  expectedSentDateOverride?: string;
-  manualExpectedPaymentDate?: string;
-  billOffsetOverride?: string;
 };
 
 function CashOutGoOffsetSettings({ canEdit, scopeNote }: { canEdit: boolean; scopeNote: string }) {
@@ -3969,24 +4220,12 @@ function CashOutGoOffsetSettings({ canEdit, scopeNote }: { canEdit: boolean; sco
       /\/$/,
       "",
     );
-    const rows = [
-      ...(plan.billsSubmitted ?? []),
-      ...(plan.billsAtHand ?? []),
-      ...(plan.deliveredBillsPending ?? []),
-      ...(plan.dpBasedForecast ?? []),
-      ...(plan.dpExpired ?? []),
-    ].map((row) => ({
-      rowKey: row.rowKey,
-      expectedSentDate: row.expectedSentDateOverride,
-      expectedPaymentDate: row.manualExpectedPaymentDate,
-      billOffsetOverride: row.billOffsetOverride || "",
-    }));
     try {
       const response = await fetch(`${apiBase}/api/reports/cash-out-go-plan`, {
         method: "PUT",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...plan.settings, rows }),
+        body: JSON.stringify(plan.settings),
       });
       if (!response.ok) throw new Error("Cash Out Go offsets could not be saved.");
       initialPlanRef.current = plan;
@@ -4156,12 +4395,18 @@ function restoreHelperAbbreviations(text: string) {
     .replaceAll("No§", "No.");
 }
 
-function PreferenceSettings() {
+function PreferenceSettings({ readOnly = false }: { readOnly?: boolean }) {
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
   const activeUser = useActiveUser();
   return (
-    <div className="space-y-5">
+    <fieldset disabled={readOnly} className="space-y-5">
+      {readOnly ? (
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-foreground">
+          Display preferences are read-only for division-password viewers and are not saved for
+          this account type.
+        </p>
+      ) : null}
       <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
@@ -4242,8 +4487,8 @@ function PreferenceSettings() {
           />
         </section>
       </div>
-      <AddEditRibbonSettings />
-    </div>
+      <AddEditRibbonSettings readOnly={readOnly} />
+    </fieldset>
   );
 }
 
@@ -4317,9 +4562,10 @@ function GlobalChartColorSettings() {
 
   const reset = async () => {
     if (
-      !window.confirm(
+      !(await showAppConfirm(
         "Apply the default chart palette to everyone and prevent personal colour overrides?",
-      )
+        { destructive: true },
+      ))
     )
       return;
     setSaving(true);
@@ -4559,13 +4805,24 @@ function AccountSettings() {
   );
 }
 
-function AddEditRibbonSettings() {
+function AddEditRibbonSettings({ readOnly = false }: { readOnly?: boolean }) {
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
-  const selected = normalizeAddEditRibbonFields(
-    settings.addEditRibbonFields ?? defaultAddEditRibbonFields,
-  );
+  const rawFields = settings.addEditRibbonFields;
+  const selected = normalizeAddEditRibbonFields(rawFields ?? defaultAddEditRibbonFields);
+  const rawFieldSignature = JSON.stringify(rawFields);
+  const selectedFieldSignature = JSON.stringify(selected);
+  const hasInvalidDraft =
+    Array.isArray(rawFields) && rawFieldSignature !== selectedFieldSignature;
+
+  useEffect(() => {
+    if (!hasInvalidDraft || readOnly) return;
+    updateSettings({ addEditRibbonFields: selected });
+  }, [hasInvalidDraft, readOnly, selectedFieldSignature, rawFieldSignature, updateSettings]);
+
   const updateField = (index: number, value: AddEditRibbonFieldKey) => {
+    const otherValue = selected[index === 0 ? 1 : 0];
+    if (value === otherValue) return;
     const next: AddEditRibbonFieldKey[] = [...selected];
     next[index] = value;
     updateSettings({ addEditRibbonFields: next });
@@ -4578,16 +4835,23 @@ function AddEditRibbonSettings() {
         Demand description is always shown on the first line. Choose the second and third line for
         this account.
       </p>
+      {hasInvalidDraft && !readOnly ? (
+        <p className="mb-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-foreground">
+          Duplicate or invalid selections were reset to the default ribbon fields.
+        </p>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
         <RibbonFieldSelect
           label="Second line"
           value={selected[0]}
+          excludeValue={selected[1]}
           onChange={(value) => updateField(0, value)}
         />
         <RibbonFieldSelect
           label="Third line"
           value={selected[1]}
+          excludeValue={selected[0]}
           onChange={(value) => updateField(1, value)}
         />
       </div>
@@ -4710,8 +4974,21 @@ function WorkspaceSettings() {
   const [selectedYearFileCount, setSelectedYearFileCount] = useState(-1);
   const [yearUsageError, setYearUsageError] = useState("");
   const [yearUsageRetry, setYearUsageRetry] = useState(0);
+  const [yearArchiveSaving, setYearArchiveSaving] = useState(false);
+  const [yearArchiveFeedback, setYearArchiveFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [yearDeleteFeedback, setYearDeleteFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [newFinancialYearSaving, setNewFinancialYearSaving] = useState(false);
   const [newFinancialYear, setNewFinancialYear] = useState("");
-  const [newFinancialYearError, setNewFinancialYearError] = useState("");
+  const [newFinancialYearFeedback, setNewFinancialYearFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
   const [workspaceYear, setWorkspaceYear] = useState(settings.financialYear);
   const financialYears = useMemo(
     () =>
@@ -4767,20 +5044,38 @@ function WorkspaceSettings() {
     settings.financialYearStatuses?.some(
       (status) => status.label === workspaceYear && status.archived,
     ) ?? false;
-  const addFinancialYear = () => {
+  const addFinancialYear = async () => {
+    if (newFinancialYearSaving) return;
     const label = newFinancialYear.trim() || suggestedFinancialYear;
     if (!label) return;
     const error = validateNewFinancialYearLabel(label, financialYears);
     if (error) {
-      setNewFinancialYearError(error);
+      setNewFinancialYearFeedback({ kind: "error", message: error });
       return;
     }
-    setNewFinancialYearError("");
-    store.addFinancialYear(label, true);
-    setNewFinancialYear("");
+    setNewFinancialYearSaving(true);
+    setNewFinancialYearFeedback(null);
+    try {
+      await store.addFinancialYear(label, true);
+      setNewFinancialYear("");
+      setNewFinancialYearFeedback({
+        kind: "success",
+        message: `FY ${displayFinancialYearLabel(label)} was created and set as Setup FY.`,
+      });
+    } catch (caught) {
+      setNewFinancialYear(label);
+      setNewFinancialYearFeedback({
+        kind: "error",
+        message:
+          caught instanceof Error ? caught.message : "Financial year could not be created.",
+      });
+    } finally {
+      setNewFinancialYearSaving(false);
+    }
   };
 
   const setCurrentFinancialYear = () => {
+    if (workspaceYear === settings.financialYear || selectedYearArchived) return;
     updateSettings({
       financialYear: workspaceYear,
       selectedYear: ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR,
@@ -4792,11 +5087,48 @@ function WorkspaceSettings() {
     updateSettings({ yearSelectionLocked: !settings.yearSelectionLocked });
   };
 
+  const setSelectedYearArchived = async (archived: boolean) => {
+    if (!canManageYearArchive || workspaceYear === settings.financialYear) return;
+    const label = workspaceYear;
+    const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
+      status.label === label ? { ...status, archived } : status,
+    );
+    setYearArchiveSaving(true);
+    setYearArchiveFeedback(null);
+    try {
+      await store.saveSettings({ financialYearStatuses: nextStatuses });
+      setYearArchiveFeedback({
+        kind: "success",
+        message: `FY ${displayFinancialYearLabel(label)} ${archived ? "archived" : "restored"}.`,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Financial-year archive could not be updated.";
+      setYearArchiveFeedback({ kind: "error", message });
+      throw error;
+    } finally {
+      setYearArchiveSaving(false);
+    }
+  };
+
   const deleteSelectedFinancialYear = async () => {
     if (!canDeleteSelectedYear) return;
+    const label = workspaceYear;
     if (await requestDeletionPassword(`delete financial year "${workspaceYear}"`)) {
-      await store.deleteFinancialYear(workspaceYear);
-      setWorkspaceYear(settings.financialYear);
+      setYearDeleteFeedback(null);
+      try {
+        await store.deleteFinancialYear(label);
+        setWorkspaceYear(settings.financialYear);
+        setYearDeleteFeedback({
+          kind: "success",
+          message: `FY ${displayFinancialYearLabel(label)} deleted.`,
+        });
+      } catch (caught) {
+        const message =
+          caught instanceof Error ? caught.message : "Financial year could not be deleted.";
+        setYearDeleteFeedback({ kind: "error", message });
+        throw caught;
+      }
     }
   };
 
@@ -4804,7 +5136,7 @@ function WorkspaceSettings() {
   const cancelWorkspaceDraftsRef = useRef(() => undefined);
   cancelWorkspaceDraftsRef.current = () => {
     setNewFinancialYear("");
-    setNewFinancialYearError("");
+    setNewFinancialYearFeedback(null);
     setWorkspaceYear(settings.financialYear);
   };
 
@@ -4834,7 +5166,7 @@ function WorkspaceSettings() {
             <div>
               <h3 className="text-sm font-semibold">Financial years</h3>
               <p className="text-xs text-muted-foreground">
-                Manage the official current FY and Add File year lock.
+                Manage financial years and the Add File year lock. Create, archive, restore, and delete apply immediately; Current FY and year-lock changes wait for Save changes.
               </p>
             </div>
             <span className="rounded bg-background px-2 py-1 text-xs text-muted-foreground">
@@ -4847,7 +5179,11 @@ function WorkspaceSettings() {
               <div className="mb-1.5 text-xs font-medium">FY</div>
               <SearchableDropdown
                 value={workspaceYear}
-                onChange={(year) => setWorkspaceYear(year || settings.financialYear)}
+                onChange={(year) => {
+                  setWorkspaceYear(year || settings.financialYear);
+                  setYearArchiveFeedback(null);
+                  setYearDeleteFeedback(null);
+                }}
                 options={[]}
                 optionItems={financialYears.map((year) => ({
                   value: year,
@@ -4863,7 +5199,7 @@ function WorkspaceSettings() {
 
             <div className="block">
               <label htmlFor="workspace-add-year" className="mb-1.5 block text-xs font-medium">
-                Add year
+                New financial year
               </label>
               <div className="flex gap-2">
                 <input
@@ -4871,26 +5207,40 @@ function WorkspaceSettings() {
                   value={newFinancialYear || suggestedFinancialYear}
                   onChange={(event) => {
                     setNewFinancialYear(event.target.value);
-                    setNewFinancialYearError("");
+                    setNewFinancialYearFeedback(null);
                   }}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter") addFinancialYear();
+                    if (event.key === "Enter") void addFinancialYear();
                   }}
                   placeholder={suggestedFinancialYear}
-                  disabled={!canEditWorkspaceGlobals}
+                  disabled={!canEditWorkspaceGlobals || newFinancialYearSaving}
                   className="h-10 min-w-0 flex-1 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
                 />
                 <button
                   type="button"
-                  onClick={addFinancialYear}
-                  disabled={!canEditWorkspaceGlobals}
+                  onClick={() => void addFinancialYear()}
+                  disabled={!canEditWorkspaceGlobals || newFinancialYearSaving}
                   className="h-10 shrink-0 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
                 >
-                  <Plus className="size-4" /> Add Year
+                  <Plus className="size-4" />
+                  {newFinancialYearSaving ? "Creating..." : "Create FY now"}
                 </button>
               </div>
-              {newFinancialYearError ? (
-                <div className="mt-1.5 text-xs text-destructive">{newFinancialYearError}</div>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                Creates the year immediately and sets it as Setup FY; Current FY stays unchanged. A failed attempt keeps the entered year here.
+              </p>
+              {newFinancialYearFeedback ? (
+                <div
+                  role={newFinancialYearFeedback.kind === "error" ? "alert" : "status"}
+                  className={
+                    "mt-1.5 text-xs " +
+                    (newFinancialYearFeedback.kind === "error"
+                      ? "text-destructive"
+                      : "text-emerald-700 dark:text-emerald-300")
+                  }
+                >
+                  {newFinancialYearFeedback.message}
+                </div>
               ) : null}
             </div>
 
@@ -4898,7 +5248,11 @@ function WorkspaceSettings() {
               <button
                 type="button"
                 onClick={setCurrentFinancialYear}
-                disabled={!canEditWorkspaceGlobals || workspaceYear === settings.financialYear}
+                disabled={
+                  !canEditWorkspaceGlobals ||
+                  workspaceYear === settings.financialYear ||
+                  selectedYearArchived
+                }
                 className="h-10 min-w-40 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:opacity-50"
               >
                 <Check className="size-4" /> Set as Current FY
@@ -4938,39 +5292,33 @@ function WorkspaceSettings() {
                 {selectedYearArchived ? (
                   <button
                     type="button"
-                    onClick={() => {
-                      const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
-                        status.label === workspaceYear
-                          ? { ...status, archived: false }
-                          : status,
-                      );
-                      updateSettings({ financialYearStatuses: nextStatuses });
-                    }}
-                    disabled={!canManageYearArchive || workspaceYear === settings.financialYear}
+                    onClick={() => void setSelectedYearArchived(false).catch(() => undefined)}
+                    disabled={
+                      yearArchiveSaving ||
+                      !canManageYearArchive ||
+                      workspaceYear === settings.financialYear
+                    }
                     className="h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-primary/40 bg-primary/10 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
                   >
-                    Restore FY
+                    {yearArchiveSaving ? "Restoring..." : "Restore FY now"}
                   </button>
                 ) : (
                   <DeleteConfirmation
                     mode="archive"
-                    actionLabel="Mark archived"
-                    description="This financial year will be marked as archived. Its records will be retained. Save Settings to apply this change."
-                    onConfirm={() => {
-                      const nextStatuses = (settings.financialYearStatuses ?? []).map((status) =>
-                        status.label === workspaceYear
-                          ? { ...status, archived: true }
-                          : status,
-                      );
-                      updateSettings({ financialYearStatuses: nextStatuses });
-                    }}
+                    actionLabel="Archive FY now"
+                    description={`FY ${displayFinancialYearLabel(workspaceYear)} will be archived immediately. Its records will be retained.`}
+                    onConfirm={() => setSelectedYearArchived(true)}
                   >
                     <button
                       type="button"
-                      disabled={!canManageYearArchive || workspaceYear === settings.financialYear}
+                      disabled={
+                        yearArchiveSaving ||
+                        !canManageYearArchive ||
+                        workspaceYear === settings.financialYear
+                      }
                       className="h-10 min-w-36 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-border bg-background text-sm font-medium hover:bg-accent disabled:opacity-50"
                     >
-                      Archive FY
+                      {yearArchiveSaving ? "Archiving..." : "Archive FY now"}
                     </button>
                   </DeleteConfirmation>
                 )}
@@ -4980,13 +5328,17 @@ function WorkspaceSettings() {
                 helper={settingsControlHelpers.workspaceDelete}
                 label="Delete financial year help"
               >
-                <DeleteConfirmation onConfirm={deleteSelectedFinancialYear}>
+                <DeleteConfirmation
+                  actionLabel="Delete FY now"
+                  description={`FY ${displayFinancialYearLabel(workspaceYear)} will be deleted immediately. Deletion is available only when the year has no files.`}
+                  onConfirm={deleteSelectedFinancialYear}
+                >
                   <button
                     type="button"
                     disabled={!canEditWorkspaceGlobals || !canDeleteSelectedYear}
                     className="h-10 min-w-32 px-4 inline-flex items-center justify-center gap-1.5 rounded-md border border-destructive/30 bg-background text-sm font-medium text-destructive hover:bg-destructive/10 disabled:opacity-50"
                   >
-                    <Trash2 className="size-4" /> Delete
+                    <Trash2 className="size-4" /> Delete FY now
                   </button>
                 </DeleteConfirmation>
               </HelpedControl>
@@ -5005,7 +5357,36 @@ function WorkspaceSettings() {
                   </button>
                 </div>
               ) : null}
+              {yearArchiveFeedback ? (
+                <span
+                  role={yearArchiveFeedback.kind === "error" ? "alert" : "status"}
+                  className={
+                    "text-xs " +
+                    (yearArchiveFeedback.kind === "error"
+                      ? "text-destructive"
+                      : "text-emerald-700 dark:text-emerald-300")
+                  }
+                >
+                  {yearArchiveFeedback.message}
+                </span>
+              ) : null}
+              {yearDeleteFeedback ? (
+                <span
+                  role={yearDeleteFeedback.kind === "error" ? "alert" : "status"}
+                  className={
+                    "text-xs " +
+                    (yearDeleteFeedback.kind === "error"
+                      ? "text-destructive"
+                      : "text-emerald-700 dark:text-emerald-300")
+                  }
+                >
+                  {yearDeleteFeedback.message}
+                </span>
+              ) : null}
             </div>
+            <p className="xl:col-span-2 text-xs text-muted-foreground">
+              “Set as Current FY” and the year-selection lock are drafts. Use the Settings “Save changes” action to apply them.
+            </p>
           </div>
         </div>
       </div>
@@ -5255,7 +5636,10 @@ function ModeSettings() {
   };
 
   const remove = (index: number) => {
-    if (isDefaultMode(modes[index])) return;
+    const mode = modes[index];
+    if (isDefaultMode(mode) && !modeUsage.get(normalizeMasterKey(mode ?? ""))?.fileIds.size) {
+      return;
+    }
     updateModes(modes.filter((_, itemIndex) => itemIndex !== index));
   };
 
@@ -5272,7 +5656,7 @@ function ModeSettings() {
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
       <h2 className="text-sm font-semibold mb-1">Modes</h2>
       <p className="text-xs text-muted-foreground mb-5">
-        Add and edit the mode values shown in File Details, Search, and Dashboard Snapshot.
+        Add and edit the mode values shown in File details, Search, and Dashboard Snapshot.
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
@@ -5317,7 +5701,7 @@ function ModeSettings() {
                     />
                     <MasterValueMeta row={row} />
                   </div>
-                  {protectedMode ? (
+                  {protectedMode && !usedMode ? (
                     <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground">
                       Default
                     </span>
@@ -5458,7 +5842,8 @@ function FileTypeSettings() {
   const [newFileTypeGroup, setNewFileTypeGroup] = useState<FileTypeGroup | "">("");
   const fileTypes = normalizeFileTypes(settings.fileTypes);
   const fileTypeGroups = normalizeFileTypeGroups(settings.fileTypeGroups, fileTypes);
-  const rows = getMasterValueUsageRows(fileTypes, getFileTypeUsage(files));
+  const fileTypeUsage = getFileTypeUsage(files);
+  const rows = getMasterValueUsageRows(fileTypes, fileTypeUsage);
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -5505,8 +5890,13 @@ function FileTypeSettings() {
   };
 
   const remove = (index: number) => {
-    if (isDefaultFileType(fileTypes[index])) return;
     const removed = fileTypes[index];
+    if (
+      isDefaultFileType(removed) &&
+      !fileTypeUsage.get(normalizeMasterKey(removed ?? ""))?.fileIds.size
+    ) {
+      return;
+    }
     updateFileTypes(
       fileTypes.filter((_, itemIndex) => itemIndex !== index),
       fileTypeGroups.filter(
@@ -5575,7 +5965,8 @@ function FileTypeSettings() {
               );
               const fileType = row.value;
               const usedFileType = row.usageCount > 0;
-              const protectedFileType = isDefaultFileType(fileType) || usedFileType;
+              const protectedFileType = isDefaultFileType(fileType) && !usedFileType;
+              const lockedFileTypeName = isDefaultFileType(fileType) || usedFileType;
               return (
                 <li
                   key={`${fileType}-${index}`}
@@ -5585,10 +5976,10 @@ function FileTypeSettings() {
                     <input
                       value={fileType}
                       onChange={(event) => rename(index, event.target.value)}
-                      disabled={protectedFileType}
+                      disabled={lockedFileTypeName}
                       className={
                         "h-9 w-full min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
-                        (protectedFileType
+                        (lockedFileTypeName
                           ? "bg-secondary/50 text-muted-foreground"
                           : "bg-background")
                       }
@@ -5833,7 +6224,7 @@ function SpecialFileMarkerSettings() {
 
 function normalizeFirmTypes(values: string[] | undefined) {
   const seen = new Set<string>();
-  const normalized = (values?.length ? values : defaultFirmTypes)
+  const normalized = (values === undefined ? defaultFirmTypes : values)
     .map((value) => value.trim())
     .filter((value) => {
       if (!value) return false;
@@ -5842,12 +6233,12 @@ function normalizeFirmTypes(values: string[] | undefined) {
       seen.add(key);
       return true;
     });
-  return normalized.length ? normalized : defaultFirmTypes;
+  return normalized;
 }
 
 function normalizeFileTypes(values: string[] | undefined) {
   const seen = new Set<string>();
-  const normalized = [...defaultFileTypes, ...(values ?? [])]
+  const normalized = (values === undefined ? defaultFileTypes : values)
     .map((value) => value.trim())
     .filter((value) => {
       if (!value) return false;
@@ -5856,12 +6247,12 @@ function normalizeFileTypes(values: string[] | undefined) {
       seen.add(key);
       return true;
     });
-  return normalized.length ? normalized : defaultFileTypes;
+  return normalized;
 }
 
 function normalizeModes(values: string[] | undefined) {
   const seen = new Set<string>();
-  const normalized = [...defaultModes, ...(values ?? [])]
+  const normalized = (values === undefined ? defaultModes : values)
     .map((value) => value.trim().toUpperCase())
     .filter((value) => {
       if (!value) return false;
@@ -5869,7 +6260,7 @@ function normalizeModes(values: string[] | undefined) {
       seen.add(value);
       return true;
     });
-  return normalized.length ? normalized : defaultModes;
+  return normalized;
 }
 
 function isDefaultFileType(fileType: string | undefined) {
@@ -6030,6 +6421,10 @@ function getMilestoneUsage(files: FileRecord[]) {
     file.supplyOrders?.forEach((order) => {
       addUsage(usage, file.id, order.currentMilestone);
       order.completedMilestones?.forEach((milestone) => addUsage(usage, file.id, milestone));
+      order.stageDeliveries?.forEach((stage) => {
+        addUsage(usage, file.id, stage.currentMilestone);
+        stage.completedMilestones?.forEach((milestone) => addUsage(usage, file.id, milestone));
+      });
       order.advancePaymentDetail?.completedMilestones?.forEach((milestone) =>
         addUsage(usage, file.id, milestone),
       );
@@ -6054,8 +6449,20 @@ function getFirmUsage(files: FileRecord[]) {
 
 function getIndentorUsage(files: FileRecord[]) {
   const usage = new Map<string, { value: string; fileIds: Set<string> }>();
-  files.forEach((file) => addUsage(usage, file.id, file.indentor));
+  files.forEach((file) => {
+    const name = file.indentor?.trim();
+    const divisionId = file.divisionId?.trim();
+    if (!name || !divisionId) return;
+    const key = `${normalizeMasterKey(name)}\u0000${normalizeMasterKey(divisionId)}`;
+    const row = usage.get(key) ?? { value: name, fileIds: new Set<string>() };
+    row.fileIds.add(file.id);
+    usage.set(key, row);
+  });
   return usage;
+}
+
+function getIndentorUsageKey(name: string, divisionId: string) {
+  return `${normalizeMasterKey(name)}\u0000${normalizeMasterKey(divisionId)}`;
 }
 
 function getFirmUsageCount(
@@ -6188,12 +6595,11 @@ function MasterValueActions({
       <button
         type="button"
         onClick={onDeactivate}
-        disabled
-        className="inline-flex h-8 cursor-not-allowed items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium text-muted-foreground opacity-70"
-        aria-label={`Cannot remove ${label}; it is in use`}
-        title={`Used in ${row.usageCount} file${row.usageCount === 1 ? "" : "s"} including Archive. Remove or update those references first.`}
+        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-md border border-border px-2 text-xs font-medium hover:bg-accent"
+        aria-label={`Inactivate ${label}`}
+        title={`Used in ${row.usageCount} file${row.usageCount === 1 ? "" : "s"} including Archive. Inactivate it to hide it from new entries while keeping historical values.`}
       >
-        <Lock className="size-3.5" /> In use
+        <Lock className="size-3.5" /> Inactivate
       </button>
     );
   }
@@ -6680,7 +7086,10 @@ function AnomalyGovernanceSettings() {
   const [acceptances, setAcceptances] = useState<AnomalyAcceptanceRow[]>([]);
   const [activeAnomalies, setActiveAnomalies] = useState<SuspectedAnomalyRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadedYear, setLoadedYear] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState("");
   const [message, setMessage] = useState("");
+  const loadRequestRef = useRef(0);
   const [workflowTab, setWorkflowTab] = useState<
     "current" | "sent" | "fileAccepted" | "universalAccepted" | "rejected" | "revoked"
   >("current");
@@ -6688,26 +7097,44 @@ function AnomalyGovernanceSettings() {
   const settings = useSettings();
 
   const load = async () => {
+    const requestId = ++loadRequestRef.current;
+    const requestedYear = settings.selectedYear;
     setLoading(true);
+    setLoadedYear(null);
+    setAcceptances([]);
+    setActiveAnomalies([]);
+    setSelectedDecisionSignatures([]);
+    setLoadError("");
     setMessage("");
     try {
       const [acceptancePayload, anomalyPayload] = await Promise.all([
         store.listSuspectedAnomalyAcceptances(),
-        store.listSuspectedAnomalies(settings.selectedYear),
+        store.listSuspectedAnomalies(requestedYear),
       ]);
+      if (requestId !== loadRequestRef.current) return;
       setAcceptances(acceptancePayload.acceptances);
       setActiveAnomalies(anomalyPayload.rows);
+      setLoadedYear(requestedYear);
     } catch (error) {
+      if (requestId !== loadRequestRef.current) return;
       console.error(error);
-      setMessage(error instanceof Error ? error.message : "Failed to load anomaly control.");
+      const errorMessage =
+        error instanceof Error ? error.message : "Failed to load anomaly control.";
+      setAcceptances([]);
+      setActiveAnomalies([]);
+      setLoadedYear(null);
+      setLoadError(errorMessage);
+      setMessage(errorMessage);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     void load();
   }, [settings.selectedYear]);
+
+  const resultsReady = !loading && !loadError && loadedYear === settings.selectedYear;
 
   const anomalySummary = (row: AnomalyAcceptanceRow) => ({
     title: row.ruleLabel || humanizeSettingsAnomalyLabel(row.ruleKey) || "Anomaly exception",
@@ -6726,9 +7153,13 @@ function AnomalyGovernanceSettings() {
   const formatScope = (scope: string | undefined) => (scope === "universal" ? "Universal" : "File");
 
   const review = async (signature: string, action: string) => {
+    if (!resultsReady) return;
     const adminMessage =
       action === "reject"
-        ? window.prompt("Correction message to User explaining what should be fixed:")
+        ? await showAppPrompt("Correction message to User explaining what should be fixed:", {
+            title: "Correction message",
+            inputLabel: "Message",
+          })
         : undefined;
     if (action === "reject" && !adminMessage?.trim()) return;
     try {
@@ -6741,7 +7172,7 @@ function AnomalyGovernanceSettings() {
   };
 
   const clearSelected = async (signatures: string[]) => {
-    if (!signatures.length) return;
+    if (!resultsReady || !signatures.length) return;
     const password = await promptPassword(
       "Enter your account password to clear selected anomalies:",
     );
@@ -6756,14 +7187,20 @@ function AnomalyGovernanceSettings() {
     }
   };
 
-  const currentAnomalies = activeAnomalies.filter((row) => row.requestStatus !== "pending");
-  const sentAnomalies = activeAnomalies.filter((row) => row.requestStatus === "pending");
-  const fileAcceptedAnomalies = acceptances.filter((row) => row.status === "approved_file");
-  const universalAcceptedAnomalies = acceptances.filter(
+  const displayedActiveAnomalies = resultsReady ? activeAnomalies : [];
+  const displayedAcceptances = resultsReady ? acceptances : [];
+  const currentAnomalies = displayedActiveAnomalies.filter(
+    (row) => row.requestStatus !== "pending",
+  );
+  const sentAnomalies = displayedActiveAnomalies.filter((row) => row.requestStatus === "pending");
+  const fileAcceptedAnomalies = displayedAcceptances.filter(
+    (row) => row.status === "approved_file",
+  );
+  const universalAcceptedAnomalies = displayedAcceptances.filter(
     (row) => row.status === "approved_universal",
   );
-  const rejectedAnomalies = acceptances.filter((row) => row.status === "rejected");
-  const revokedAnomalies = acceptances.filter((row) => row.status === "revoked");
+  const rejectedAnomalies = displayedAcceptances.filter((row) => row.status === "rejected");
+  const revokedAnomalies = displayedAcceptances.filter((row) => row.status === "revoked");
   const decisionAnomalies =
     workflowTab === "fileAccepted"
       ? fileAcceptedAnomalies
@@ -6817,6 +7254,7 @@ function AnomalyGovernanceSettings() {
     decisionGroups.flatMap((group) => group.items).map((row, index) => [row.signature, index + 1]),
   );
   const toggleDecisionSignature = (signature: string) => {
+    if (!resultsReady) return;
     setSelectedDecisionSignatures((current) =>
       current.includes(signature)
         ? current.filter((item) => item !== signature)
@@ -6892,6 +7330,7 @@ function AnomalyGovernanceSettings() {
                       <button
                         type="button"
                         onClick={() => void review(row.signature, "approve_file")}
+                        disabled={!resultsReady}
                         className="rounded border border-border px-2 py-1 hover:bg-accent"
                       >
                         File
@@ -6904,6 +7343,7 @@ function AnomalyGovernanceSettings() {
                       <button
                         type="button"
                         onClick={() => void review(row.signature, "approve_universal")}
+                        disabled={!resultsReady}
                         className="rounded border border-border px-2 py-1 hover:bg-accent"
                       >
                         Universal
@@ -6916,6 +7356,7 @@ function AnomalyGovernanceSettings() {
                       <button
                         type="button"
                         onClick={() => void review(row.signature, "reject")}
+                        disabled={!resultsReady}
                         className="rounded border border-border px-2 py-1 hover:bg-accent"
                       >
                         Send correction to user
@@ -6998,6 +7439,7 @@ function AnomalyGovernanceSettings() {
                           <button
                             type="button"
                             onClick={() => void review(row.signature, "revoke")}
+                            disabled={!resultsReady}
                             className="rounded border border-border px-2 py-1 hover:bg-accent"
                           >
                             Revoke
@@ -7012,6 +7454,7 @@ function AnomalyGovernanceSettings() {
                           <button
                             type="button"
                             onClick={() => void clearSelected([row.signature])}
+                            disabled={!resultsReady}
                             className="rounded border border-border px-2 py-1 text-destructive hover:bg-destructive/10"
                           >
                             Clear
@@ -7038,7 +7481,10 @@ function AnomalyGovernanceSettings() {
         </p>
       </div>
       {message ? (
-        <p className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
+        <p
+          role={loadError ? "alert" : "status"}
+          className="rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs"
+        >
           {message}
         </p>
       ) : null}
@@ -7060,6 +7506,7 @@ function AnomalyGovernanceSettings() {
             <button
               type="button"
               onClick={() => void load()}
+              disabled={loading}
               className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold hover:bg-accent"
             >
               Refresh
@@ -7072,6 +7519,7 @@ function AnomalyGovernanceSettings() {
               key={tab.key}
               type="button"
               onClick={() => setWorkflowTab(tab.key)}
+              disabled={!resultsReady}
               className={
                 "rounded-md border px-3 py-1.5 text-xs font-semibold " +
                 (workflowTab === tab.key
@@ -7090,6 +7538,7 @@ function AnomalyGovernanceSettings() {
               <button
                 type="button"
                 onClick={() => void clearSelected(selectedDecisionSignatures)}
+                disabled={!resultsReady}
                 className="rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/10"
               >
                 Clear selected ({selectedDecisionSignatures.length})
@@ -7163,6 +7612,12 @@ function MilestoneSettings() {
   const move = (index: number, direction: -1 | 1) => {
     const nextIndex = index + direction;
     if (nextIndex < 0 || nextIndex >= milestones.length) return;
+    if (
+      normalizeMilestoneName(milestones[index]) === normalizeMilestoneName(fileClosedMilestone) ||
+      normalizeMilestoneName(milestones[nextIndex]) === normalizeMilestoneName(fileClosedMilestone)
+    ) {
+      return;
+    }
     const next = [...milestones];
     [next[index], next[nextIndex]] = [next[nextIndex], next[index]];
     updateMilestones(next);
@@ -7179,7 +7634,7 @@ function MilestoneSettings() {
         />
       </div>
       <p className="text-xs text-muted-foreground mb-5">
-        Controls the active milestone order on file boards and in Dashboard Status-2 and Status-4.
+        Controls the active milestone order on file boards and in Dashboard Status-2 and Status-4. Usage includes current and completed milestones on files, S.O.s, delivery stages, and advance payments.
       </p>
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_170px_auto] md:items-end">
@@ -7223,6 +7678,8 @@ function MilestoneSettings() {
                 (item) => item.toLowerCase() === milestone.toLowerCase(),
               );
               const active = row.status === "active";
+              const isFileClosed =
+                normalizeMilestoneName(milestone) === normalizeMilestoneName(fileClosedMilestone);
               return (
                 <li key={milestone} className="flex items-center justify-between gap-3 px-4 py-3">
                   <span className="flex min-w-0 items-center gap-3">
@@ -7240,18 +7697,28 @@ function MilestoneSettings() {
                         <button
                           type="button"
                           onClick={() => move(activeIndex, -1)}
-                          disabled={activeIndex === 0}
+                          disabled={activeIndex === 0 || isFileClosed}
                           className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                           aria-label={`Move ${milestone} up`}
+                          title={isFileClosed ? "File Closed is always kept last" : undefined}
                         >
                           <ArrowUp className="size-4" />
                         </button>
                         <button
                           type="button"
                           onClick={() => move(activeIndex, 1)}
-                          disabled={activeIndex === milestones.length - 1}
+                          disabled={
+                            activeIndex === milestones.length - 1 ||
+                            isFileClosed ||
+                            activeIndex === milestones.length - 2
+                          }
                           className="size-8 grid place-items-center rounded-md border border-border text-muted-foreground hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
                           aria-label={`Move ${milestone} down`}
+                          title={
+                            isFileClosed || activeIndex === milestones.length - 2
+                              ? "File Closed is always kept last"
+                              : undefined
+                          }
                         >
                           <ArrowDown className="size-4" />
                         </button>
@@ -7494,18 +7961,86 @@ function TableFieldPresetSettings() {
 function DemandProcessingPresetSettings() {
   const settings = useSettings();
   const updateSettings = useSettingsUpdater();
-  const presets = normalizeDemandProcessingPresets(settings.demandProcessingPresets);
+  const draft = useContext(SettingsDraftContext);
+  const savedSettings = useStoreSettings();
+  const savedPresetDraftSignature = JSON.stringify(savedSettings.demandProcessingPresets ?? []);
+  const [presetDraft, setPresetDraft] = useState(() =>
+    readDemandProcessingPresetDraft(savedSettings.demandProcessingPresets),
+  );
+  const [presetMessage, setPresetMessage] = useState("");
+  const presets = presetDraft;
   const dayRanges = normalizeDemandProcessingDayRanges(settings.demandProcessingDayRanges);
+  const dayRangesSignature = JSON.stringify(dayRanges);
   const [selectedPresetId, setSelectedPresetId] = useState(presets[0]?.id ?? "");
+  const [dayRangeDraft, setDayRangeDraft] = useState(dayRanges);
   const [dayRangeMessage, setDayRangeMessage] = useState("");
   const selectedPreset = presets.find((preset) => preset.id === selectedPresetId) ?? presets[0];
+  const savedPresets = readDemandProcessingPresetDraft(savedSettings.demandProcessingPresets);
+  const presetDraftDirty = !isSettingsDirtyValueEqual(presetDraft, savedPresets);
+  const dayRangeDraftDirty = !isSettingsDirtyValueEqual(dayRangeDraft, dayRanges);
+  const syncedPresetSignatureRef = useRef(savedPresetDraftSignature);
+  const syncedDayRangesSignatureRef = useRef(dayRangesSignature);
+  const cancelPresetDraftRef = useRef(() => undefined);
+  const savePresetDraftRef = useRef(async () => undefined);
+  const cancelDayRangeDraftRef = useRef(() => undefined);
+  cancelPresetDraftRef.current = () => {
+    const next = readDemandProcessingPresetDraft(savedSettings.demandProcessingPresets);
+    setPresetDraft(next);
+    setSelectedPresetId((current) =>
+      next.some((preset) => preset.id === current) ? current : (next[0]?.id ?? ""),
+    );
+    setPresetMessage("");
+  };
+  cancelDayRangeDraftRef.current = () => {
+    setDayRangeDraft(normalizeDemandProcessingDayRanges(savedSettings.demandProcessingDayRanges));
+    setDayRangeMessage("");
+  };
+
+  useEffect(() => {
+    if (syncedPresetSignatureRef.current === savedPresetDraftSignature) return;
+    syncedPresetSignatureRef.current = savedPresetDraftSignature;
+    const next = readDemandProcessingPresetDraft(savedSettings.demandProcessingPresets);
+    setPresetDraft(next);
+    setSelectedPresetId((current) =>
+      next.some((preset) => preset.id === current) ? current : (next[0]?.id ?? ""),
+    );
+    setPresetMessage("");
+  }, [savedPresetDraftSignature, savedSettings.demandProcessingPresets]);
 
   useEffect(() => {
     if (!selectedPreset && presets[0]) setSelectedPresetId(presets[0].id);
   }, [presets, selectedPreset]);
 
+  useEffect(() => {
+    if (syncedDayRangesSignatureRef.current === dayRangesSignature) return;
+    syncedDayRangesSignatureRef.current = dayRangesSignature;
+    setDayRangeDraft(JSON.parse(dayRangesSignature) as DemandProcessingDayRange[]);
+    setDayRangeMessage("");
+  }, [dayRangesSignature]);
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: () => savePresetDraftRef.current(),
+      cancel: () => {
+        cancelPresetDraftRef.current();
+        cancelDayRangeDraftRef.current();
+      },
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setExternalDirty?.(presetDraftDirty);
+  }, [draft?.setExternalDirty, presetDraftDirty]);
+
+  useEffect(() => {
+    draft?.setLocalDirty?.(dayRangeDraftDirty);
+  }, [draft?.setLocalDirty, dayRangeDraftDirty]);
+
   const updatePresets = (next: DemandProcessingPreset[]) => {
-    updateSettings({ demandProcessingPresets: next });
+    setPresetDraft(next);
+    setPresetMessage("");
   };
 
   const updateSelectedPreset = (patch: Partial<DemandProcessingPreset>) => {
@@ -7533,34 +8068,107 @@ function DemandProcessingPresetSettings() {
     updatePresets(next);
     setSelectedPresetId(next[0]?.id ?? "");
   };
-  const updateDayRanges = (next: DemandProcessingDayRange[]) => {
-    const normalized = normalizeDemandProcessingDayRanges(next);
-    const message = validateDemandProcessingDayRanges(normalized);
-    setDayRangeMessage(message);
-    if (message) return;
-    updateSettings({ demandProcessingDayRanges: normalized });
+
+  const savePresetDraft = async () => {
+    const validationMessage = validateDemandProcessingPresetDraft(presetDraft);
+    if (validationMessage) {
+      setPresetMessage(validationMessage);
+      throw new Error(validationMessage);
+    }
+    const normalized = normalizeDemandProcessingPresetDraft(presetDraft);
+    setPresetMessage("");
+    try {
+      await store.saveSettings({ demandProcessingPresets: normalized });
+      setPresetDraft(normalized);
+      setPresetMessage("Demand processing presets saved.");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Demand processing presets could not be saved.";
+      setPresetMessage(message);
+      throw error;
+    }
   };
+  savePresetDraftRef.current = savePresetDraft;
   const updateDayRange = (id: string, patch: Partial<DemandProcessingDayRange>) => {
-    updateDayRanges(dayRanges.map((range) => (range.id === id ? { ...range, ...patch } : range)));
+    setDayRangeDraft((current) =>
+      current.map((range) => (range.id === id ? { ...range, ...patch } : range)),
+    );
+    setDayRangeMessage("");
   };
   const addDayRange = () => {
-    const lastRange = dayRanges[dayRanges.length - 1];
-    const lastMax = Number(String(lastRange?.maxDays ?? "").trim());
-    const nextMin = Number.isInteger(lastMax) && lastMax >= 0 ? String(lastMax + 1) : "";
-    updateDayRanges([
-      ...dayRanges,
-      {
-        id: crypto.randomUUID(),
-        label: `Range ${dayRanges.length + 1}`,
-        minDays: nextMin,
-        maxDays: "",
-      },
-    ]);
+    const lastRange = dayRangeDraft[dayRangeDraft.length - 1];
+    if (!lastRange) {
+      setDayRangeMessage("Add at least one range before continuing.");
+      return;
+    }
+    const lastMaxText = String(lastRange.maxDays ?? "").trim();
+    if (!lastMaxText) {
+      const lastMinText = String(lastRange.minDays ?? "").trim();
+      const lastMin = Number(lastMinText);
+      if (!lastMinText || !Number.isInteger(lastMin) || lastMin < 0) {
+        setDayRangeMessage("Enter a valid minimum for the last range before adding another.");
+        return;
+      }
+      const nextMax = lastMin + 89;
+      const nextMin = nextMax + 1;
+      const hasGeneratedOpenLabel = /^\d+\s+and above$/i.test(lastRange.label.trim());
+      setDayRangeDraft([
+        ...dayRangeDraft.slice(0, -1),
+        {
+          ...lastRange,
+          label: hasGeneratedOpenLabel ? `${lastMin}-${nextMax}` : lastRange.label,
+          maxDays: String(nextMax),
+        },
+        {
+          id: crypto.randomUUID(),
+          label: `${nextMin} and above`,
+          minDays: String(nextMin),
+          maxDays: "",
+        },
+      ]);
+    } else {
+      const lastMax = Number(lastMaxText);
+      if (!Number.isInteger(lastMax) || lastMax < 0) {
+        setDayRangeMessage("Enter a valid maximum for the last range before adding another.");
+        return;
+      }
+      const nextMin = lastMax + 1;
+      setDayRangeDraft([
+        ...dayRangeDraft,
+        {
+          id: crypto.randomUUID(),
+          label: `${nextMin} and above`,
+          minDays: String(nextMin),
+          maxDays: "",
+        },
+      ]);
+    }
+    setDayRangeMessage("");
   };
   const removeDayRange = (id: string) => {
-    updateDayRanges(dayRanges.filter((range) => range.id !== id));
+    if (dayRangeDraft.length <= 1) {
+      setDayRangeMessage("At least one day range is required.");
+      return;
+    }
+    setDayRangeDraft((current) => current.filter((range) => range.id !== id));
+    setDayRangeMessage("");
   };
-  const resetDayRanges = () => updateDayRanges(defaultDemandProcessingDayRanges);
+  const resetDayRanges = () => {
+    setDayRangeDraft(defaultDemandProcessingDayRanges.map((range) => ({ ...range })));
+    setDayRangeMessage("");
+  };
+  const discardDayRangeChanges = () => {
+    setDayRangeDraft(dayRanges);
+    setDayRangeMessage("");
+  };
+  const applyDayRanges = () => {
+    const message = validateDemandProcessingDayRanges(dayRangeDraft);
+    setDayRangeMessage(message);
+    if (message) return;
+    const normalized = normalizeDemandProcessingDayRanges(dayRangeDraft);
+    updateSettings({ demandProcessingDayRanges: normalized });
+    setDayRangeDraft(normalized);
+  };
 
   return (
     <div className="space-y-4">
@@ -7661,15 +8269,23 @@ function DemandProcessingPresetSettings() {
                     onChange={(toFieldId) => updateSelectedPreset({ toFieldId })}
                   />
                 </div>
+                {presetMessage ? (
+                  <p role="status" className="text-xs text-muted-foreground">
+                    {presetMessage}
+                  </p>
+                ) : null}
               </div>
             ) : null}
           </div>
         )}
       </div>
       <DemandProcessingDayRangeSettings
-        ranges={dayRanges}
+        ranges={dayRangeDraft}
         message={dayRangeMessage}
+        dirty={dayRangeDraftDirty}
         onAdd={addDayRange}
+        onApply={applyDayRanges}
+        onDiscard={discardDayRangeChanges}
         onReset={resetDayRanges}
         onUpdate={updateDayRange}
         onRemove={removeDayRange}
@@ -7723,11 +8339,60 @@ function SettingsDemandDateSelector({
   );
 }
 
+function readDemandProcessingPresetDraft(value: unknown): DemandProcessingPreset[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const record = item as Record<string, unknown>;
+    const id = String(record.id ?? "").trim();
+    if (!id) return [];
+    return [
+      {
+        id,
+        name: String(record.name ?? ""),
+        fromFieldId: String(record.fromFieldId ?? "").trim(),
+        toFieldId: String(record.toFieldId ?? "").trim(),
+        active: record.active !== false,
+      },
+    ];
+  });
+}
+
+function normalizeDemandProcessingPresetDraft(presets: DemandProcessingPreset[]) {
+  return presets.map((preset) => ({
+    id: preset.id.trim(),
+    name: preset.name.trim(),
+    fromFieldId: preset.fromFieldId.trim(),
+    toFieldId: preset.toFieldId.trim(),
+    active: preset.active !== false,
+  }));
+}
+
+function validateDemandProcessingPresetDraft(presets: DemandProcessingPreset[]) {
+  const ids = new Set<string>();
+  for (const [index, preset] of presets.entries()) {
+    const label = `Preset ${index + 1}`;
+    const id = preset.id.trim();
+    const name = preset.name.trim();
+    if (!id) return `${label} needs an id.`;
+    if (ids.has(id)) return `${label} has a duplicate id.`;
+    ids.add(id);
+    if (!name) return `${label} needs a name.`;
+    if (!getDemandProcessingField(preset.fromFieldId.trim())) {
+      return `${name}: choose a valid From date.`;
+    }
+    if (!getDemandProcessingField(preset.toFieldId.trim())) {
+      return `${name}: choose a valid To date.`;
+    }
+  }
+  return "";
+}
+
 const defaultDemandProcessingDayRanges: DemandProcessingDayRange[] = [
   { id: "0-90", label: "0-90", minDays: "0", maxDays: "90" },
   { id: "91-180", label: "91-180", minDays: "91", maxDays: "180" },
   { id: "181-365", label: "181-365", minDays: "181", maxDays: "365" },
-  { id: "365-plus", label: "365 and above", minDays: "366", maxDays: "" },
+  { id: "365-plus", label: "366 and above", minDays: "366", maxDays: "" },
 ];
 
 function normalizeDemandProcessingDayRanges(value: unknown): DemandProcessingDayRange[] {
@@ -7750,6 +8415,7 @@ function normalizeDemandProcessingDayRanges(value: unknown): DemandProcessingDay
 }
 
 function validateDemandProcessingDayRanges(ranges: DemandProcessingDayRange[]) {
+  if (ranges.length === 0) return "At least one day range is required.";
   const parsed = ranges.map((range) => {
     const label = range.label.trim();
     const minText = String(range.minDays ?? "").trim();
@@ -7778,14 +8444,20 @@ function validateDemandProcessingDayRanges(ranges: DemandProcessingDayRange[]) {
 function DemandProcessingDayRangeSettings({
   ranges,
   message,
+  dirty,
   onAdd,
+  onApply,
+  onDiscard,
   onReset,
   onUpdate,
   onRemove,
 }: {
   ranges: DemandProcessingDayRange[];
   message?: string;
+  dirty: boolean;
   onAdd: () => void;
+  onApply: () => void;
+  onDiscard: () => void;
   onReset: () => void;
   onUpdate: (id: string, patch: Partial<DemandProcessingDayRange>) => void;
   onRemove: (id: string) => void;
@@ -7802,7 +8474,8 @@ function DemandProcessingDayRangeSettings({
             />
           </div>
           <p className="text-xs text-muted-foreground">
-            These ranges group results in Reports &gt; Demand processing analysis.
+            These ranges group results in Reports &gt; Demand processing analysis. Edits stay local
+            until applied; then use Save changes above to save them.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -7813,12 +8486,29 @@ function DemandProcessingDayRangeSettings({
           >
             Reset
           </button>
+          {dirty ? (
+            <button
+              type="button"
+              onClick={onDiscard}
+              className="h-9 rounded-md border border-border bg-background px-3 text-xs hover:bg-accent"
+            >
+              Discard edits
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onAdd}
             className="h-9 px-3 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90"
           >
             <Plus className="size-4" /> Add range
+          </button>
+          <button
+            type="button"
+            onClick={onApply}
+            disabled={!dirty}
+            className="h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Apply ranges
           </button>
         </div>
       </div>
@@ -8020,7 +8710,9 @@ function DivisionSettings() {
 
   const add = () => {
     if (!name.trim()) return;
-    store.addDivision(name.trim(), code.trim() || undefined);
+    void store.addDivision(name.trim(), code.trim() || undefined).catch((error) => {
+      console.error(error);
+    });
     setName("");
     setCode("");
   };
@@ -8311,29 +9003,100 @@ function isValidEmailFormat(value: string | undefined) {
   return !trimmed || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
 }
 
-function FirmRatingSettings() {
-  const settings = useSettings();
-  const updateSettings = useSettingsUpdater();
-  const config = normalizeFirmRatingConfig(settings.firmRatingConfig);
+function readFirmRatingDraft(config?: FirmRatingConfig): FirmRatingConfig["fields"] {
+  const source = config?.fields?.length ? config.fields : defaultFirmRatingFields;
+  return source.map((field, index) => ({
+    id: field.id?.trim() || `rating${index + 1}`,
+    label: field.label ?? "",
+    weight: field.weight ?? "",
+    minValue: field.minValue ?? "",
+    maxValue: field.maxValue ?? "",
+  }));
+}
 
-  const updateFields = (fields: FirmRatingConfig["fields"]) => {
-    updateSettings({ firmRatingConfig: normalizeFirmRatingConfig({ fields }) });
+function validateFirmRatingDraft(fields: FirmRatingConfig["fields"]) {
+  if (!fields.length) return "At least one firm rating field is required.";
+  const ids = new Set<string>();
+  for (const [index, field] of fields.entries()) {
+    const label = field.label.trim() || `Rating ${index + 1}`;
+    const id = field.id.trim();
+    if (!id || ids.has(id)) return `${label}: field IDs must be unique.`;
+    ids.add(id);
+    const weightText = field.weight?.trim() ?? "";
+    if (weightText) {
+      const weight = Number(weightText);
+      if (!Number.isFinite(weight) || weight <= 0) {
+        return `${label}: weight must be greater than zero.`;
+      }
+    }
+    const minText = field.minValue?.trim() ?? "";
+    const maxText = field.maxValue?.trim() ?? "";
+    const min = minText ? Number(minText) : 0;
+    const max = maxText ? Number(maxText) : 5;
+    if (!Number.isFinite(min) || !Number.isFinite(max)) {
+      return `${label}: minimum and maximum values must be numbers.`;
+    }
+    if (min > max) return `${label}: minimum cannot exceed maximum.`;
+  }
+  return "";
+}
+
+function FirmRatingSettings() {
+  const draft = useContext(SettingsDraftContext);
+  const savedSettings = useStoreSettings();
+  const savedConfigSignature = JSON.stringify(savedSettings.firmRatingConfig ?? null);
+  const [fields, setFields] = useState<FirmRatingConfig["fields"]>(() =>
+    readFirmRatingDraft(savedSettings.firmRatingConfig),
+  );
+  const [message, setMessage] = useState("");
+  const savedFields = readFirmRatingDraft(savedSettings.firmRatingConfig);
+  const fieldsDirty = !isSettingsDirtyValueEqual(fields, savedFields);
+  const syncedConfigSignatureRef = useRef(savedConfigSignature);
+  const saveRef = useRef(async () => undefined);
+  const cancelRef = useRef(() => undefined);
+
+  cancelRef.current = () => {
+    setFields(readFirmRatingDraft(savedSettings.firmRatingConfig));
+    setMessage("");
+  };
+
+  useEffect(() => {
+    if (syncedConfigSignatureRef.current === savedConfigSignature) return;
+    syncedConfigSignatureRef.current = savedConfigSignature;
+    setFields(readFirmRatingDraft(savedSettings.firmRatingConfig));
+    setMessage("");
+  }, [savedConfigSignature, savedSettings.firmRatingConfig]);
+
+  useEffect(() => {
+    if (!draft?.registerExternalDraft) return;
+    draft.registerExternalDraft({
+      save: () => saveRef.current(),
+      cancel: () => cancelRef.current(),
+    });
+    return () => draft.registerExternalDraft?.(null);
+  }, [draft?.registerExternalDraft]);
+
+  useEffect(() => {
+    draft?.setExternalDirty?.(fieldsDirty);
+  }, [draft?.setExternalDirty, fieldsDirty]);
+
+  const updateFields = (nextFields: FirmRatingConfig["fields"]) => {
+    setFields(nextFields);
+    setMessage("");
   };
 
   const updateField = (index: number, patch: Partial<FirmRatingConfig["fields"][number]>) => {
     updateFields(
-      config.fields.map((field, fieldIndex) =>
-        fieldIndex === index ? { ...field, ...patch } : field,
-      ),
+      fields.map((field, fieldIndex) => (fieldIndex === index ? { ...field, ...patch } : field)),
     );
   };
 
   const addField = () => {
     updateFields([
-      ...config.fields,
+      ...fields,
       {
-        id: `rating${config.fields.length + 1}`,
-        label: `Rating ${config.fields.length + 1}`,
+        id: createFirmRatingFieldId(fields),
+        label: `Rating ${fields.length + 1}`,
         weight: "1",
         minValue: "0",
         maxValue: "5",
@@ -8342,12 +9105,33 @@ function FirmRatingSettings() {
   };
 
   const removeField = (index: number) => {
-    updateFields(config.fields.filter((_field, fieldIndex) => fieldIndex !== index));
+    updateFields(fields.filter((_field, fieldIndex) => fieldIndex !== index));
   };
 
   const resetFields = () => {
     updateFields(defaultFirmRatingFields);
   };
+
+  const save = async () => {
+    const validationMessage = validateFirmRatingDraft(fields);
+    if (validationMessage) {
+      setMessage(validationMessage);
+      throw new Error(validationMessage);
+    }
+    const normalized = normalizeFirmRatingConfig({ fields });
+    setMessage("");
+    try {
+      await store.saveSettings({ firmRatingConfig: normalized });
+      setFields(normalized.fields);
+      setMessage("Firm rating settings saved.");
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Firm rating settings could not be saved.";
+      setMessage(errorMessage);
+      throw error;
+    }
+  };
+  saveRef.current = save;
 
   return (
     <div className="bg-secondary/35 border border-border rounded-md p-5 shadow-[var(--shadow-card)]">
@@ -8379,7 +9163,7 @@ function FirmRatingSettings() {
       </div>
 
       <div className="space-y-3">
-        {config.fields.map((field, index) => (
+        {fields.map((field, index) => (
           <div
             key={`${field.id}:${index}`}
             className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(0,1fr)_100px_120px_120px_auto]"
@@ -8395,10 +9179,9 @@ function FirmRatingSettings() {
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Weight</span>
               <input
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={field.weight ?? "1"}
+                type="text"
+                inputMode="decimal"
+                value={field.weight ?? ""}
                 onChange={(event) => updateField(index, { weight: event.target.value })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
@@ -8406,9 +9189,9 @@ function FirmRatingSettings() {
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Minimum value</span>
               <input
-                type="number"
-                step="any"
-                value={field.minValue ?? "0"}
+                type="text"
+                inputMode="decimal"
+                value={field.minValue ?? ""}
                 onChange={(event) => updateField(index, { minValue: event.target.value })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
@@ -8416,9 +9199,9 @@ function FirmRatingSettings() {
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Maximum value</span>
               <input
-                type="number"
-                step="any"
-                value={field.maxValue ?? "5"}
+                type="text"
+                inputMode="decimal"
+                value={field.maxValue ?? ""}
                 onChange={(event) => updateField(index, { maxValue: event.target.value })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
@@ -8426,7 +9209,7 @@ function FirmRatingSettings() {
             <DeleteConfirmation mode="draft" onConfirm={() => removeField(index)}>
               <button
                 type="button"
-                disabled={config.fields.length <= 1}
+                disabled={fields.length <= 1}
                 className="h-9 self-end rounded-md border border-border bg-background px-3 text-xs text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Remove
@@ -8435,6 +9218,11 @@ function FirmRatingSettings() {
           </div>
         ))}
       </div>
+      {message ? (
+        <p role="status" className="mt-3 text-xs text-muted-foreground">
+          {message}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -8443,7 +9231,6 @@ function FirmDatabaseSettings() {
   const draftContext = useContext(SettingsDraftContext);
   const activeUser = useActiveUser();
   const settings = useSettings();
-  const updateSettings = useSettingsUpdater();
   const files = useSettingsUsageFiles();
   const firmUsage = getFirmUsage(files);
   const canManage =
@@ -8463,9 +9250,15 @@ function FirmDatabaseSettings() {
   const [message, setMessage] = useState<string | undefined>();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<FirmDraft>(emptyFirmDraft);
+  const [savingFirmType, setSavingFirmType] = useState(false);
+  const firmRequestRef = useRef<{ id: number; controller: AbortController } | null>(null);
+  const firmQueryKey = `${search}\u0000${debouncedSearch}\u0000${page}\u0000${pageSize}`;
+  const latestFirmQueryKeyRef = useRef(firmQueryKey);
+  latestFirmQueryKeyRef.current = firmQueryKey;
   const [labelDraft, setLabelDraft] = useState(settings.firmUniqueNoLabel || "Firm Unique No.");
   const firmUniqueNoLabel = settings.firmUniqueNoLabel || "Firm Unique No.";
-  const firmTypeOptions = normalizeFirmTypes([...normalizeFirmTypes(settings.firmTypes), "Other"]);
+  const configuredFirmTypes = normalizeFirmTypes(settings.firmTypes);
+  const firmTypeOptions = normalizeFirmTypes([...configuredFirmTypes, "Other"]);
   const firmUniqueNoLabelChanged = (labelDraft.trim() || "Firm Unique No.") !== firmUniqueNoLabel;
 
   useEffect(() => {
@@ -8481,26 +9274,57 @@ function FirmDatabaseSettings() {
   }, [search]);
 
   const loadFirms = () => {
+    const requestId = (firmRequestRef.current?.id ?? 0) + 1;
+    const controller = new AbortController();
+    firmRequestRef.current?.controller.abort();
+    firmRequestRef.current = { id: requestId, controller };
+    const requestKey = firmQueryKey;
     setLoading(true);
     setMessage(undefined);
-    fetchMasterFirms({ q: debouncedSearch, page, pageSize })
+    fetchMasterFirms({ q: debouncedSearch, page, pageSize, signal: controller.signal })
       .then((result) => {
+        if (
+          controller.signal.aborted ||
+          firmRequestRef.current?.id !== requestId ||
+          latestFirmQueryKeyRef.current !== requestKey
+        ) {
+          return;
+        }
         setFirms(result.firms);
         setFirmTotal(result.total);
         if (result.page !== page) setPage(result.page);
         if (result.pageSize !== pageSize) setPageSize(result.pageSize);
       })
       .catch((error) => {
+        if (
+          controller.signal.aborted ||
+          firmRequestRef.current?.id !== requestId ||
+          latestFirmQueryKeyRef.current !== requestKey
+        ) {
+          return;
+        }
         console.error(error);
         setMessage(error instanceof Error ? error.message : "Failed to load firms.");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (
+          !controller.signal.aborted &&
+          firmRequestRef.current?.id === requestId &&
+          latestFirmQueryKeyRef.current === requestKey
+        ) {
+          setLoading(false);
+        }
+      });
   };
 
   useEffect(() => {
     loadFirms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSearch, page, pageSize]);
+
+  useEffect(() => {
+    return () => firmRequestRef.current?.controller.abort();
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(firmTotal / pageSize));
   const firstResultNumber = firmTotal === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -8516,21 +9340,33 @@ function FirmDatabaseSettings() {
   const updateEditDraft = (key: keyof FirmDraft, value: string) => {
     setEditDraft((current) => ({ ...current, [key]: value }));
   };
-  const addFirmType = (value: string, target: "new" | "edit") => {
+  const addFirmType = async (value: string, target: "new" | "edit") => {
     const trimmed = value.trim();
-    if (!canManageFirmTypes || !trimmed) return;
+    if (savingFirmType || !canManageFirmTypes || !trimmed) return;
     const existing = firmTypeOptions.find(
       (firmType) => firmType.toLowerCase() === trimmed.toLowerCase(),
     );
     const selected = existing ?? trimmed;
-    if (!existing) {
-      updateSettings({ firmTypes: normalizeFirmTypes([...firmTypeOptions, trimmed]) });
+    if (existing) {
+      if (target === "new") updateDraft("firmType", selected);
+      else updateEditDraft("firmType", selected);
+      return;
     }
-    if (target === "new") updateDraft("firmType", selected);
-    else updateEditDraft("firmType", selected);
+    setSavingFirmType(true);
+    setMessage(undefined);
+    try {
+      await store.saveSettings({ firmTypes: normalizeFirmTypes([...configuredFirmTypes, trimmed]) });
+      if (target === "new") updateDraft("firmType", selected);
+      else updateEditDraft("firmType", selected);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to add firm type.");
+    } finally {
+      setSavingFirmType(false);
+    }
   };
 
   const addFirm = async () => {
+    if (savingFirmType) return;
     const cleaned = cleanFirmDraft(draft);
     if (!canManage || !isComplete(cleaned)) return;
     if (!isValidEmailFormat(cleaned.emailId)) {
@@ -8724,7 +9560,7 @@ function FirmDatabaseSettings() {
         <button
           type="button"
           onClick={() => void addFirm()}
-          disabled={!canManage || !isComplete(draft)}
+          disabled={savingFirmType || !canManage || !isComplete(draft)}
           className="h-10 px-4 inline-flex items-center justify-center gap-1.5 rounded-md bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="size-4" /> Add firm
@@ -8881,6 +9717,7 @@ function FirmDatabaseSettings() {
                               type="button"
                               onClick={() => void saveEdit(firm.id)}
                               disabled={
+                                savingFirmType ||
                                 !editChanged ||
                                 !canManage ||
                                 !isComplete(editDraft) ||
@@ -9298,6 +10135,11 @@ function IndentorSettings() {
   const [indentorTotal, setIndentorTotal] = useState(0);
   const [indentorsLoading, setIndentorsLoading] = useState(false);
   const [indentorsError, setIndentorsError] = useState<string | undefined>();
+  const [indentorReloadKey, setIndentorReloadKey] = useState(0);
+  const indentorRequestRef = useRef<{ id: number; controller: AbortController } | null>(null);
+  const indentorQueryKey = `${divisionFilter}\u0000${search}\u0000${debouncedSearch}\u0000${page}\u0000${pageSize}\u0000${indentorReloadKey}`;
+  const latestIndentorQueryKeyRef = useRef(indentorQueryKey);
+  latestIndentorQueryKeyRef.current = indentorQueryKey;
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState<IndentorDraft>(emptyIndentorDraft);
 
@@ -9316,6 +10158,11 @@ function IndentorSettings() {
   }, [search]);
 
   const loadIndentors = () => {
+    const requestId = (indentorRequestRef.current?.id ?? 0) + 1;
+    const controller = new AbortController();
+    indentorRequestRef.current?.controller.abort();
+    indentorRequestRef.current = { id: requestId, controller };
+    const requestKey = indentorQueryKey;
     setIndentorsLoading(true);
     setIndentorsError(undefined);
     fetchIndentors({
@@ -9323,24 +10170,51 @@ function IndentorSettings() {
       q: debouncedSearch,
       page,
       pageSize,
+      signal: controller.signal,
     })
       .then((result) => {
+        if (
+          controller.signal.aborted ||
+          indentorRequestRef.current?.id !== requestId ||
+          latestIndentorQueryKeyRef.current !== requestKey
+        ) {
+          return;
+        }
         setIndentors(result.indentors);
         setIndentorTotal(result.total);
         if (result.page !== page) setPage(result.page);
         if (result.pageSize !== pageSize) setPageSize(result.pageSize);
       })
       .catch((error) => {
+        if (
+          controller.signal.aborted ||
+          indentorRequestRef.current?.id !== requestId ||
+          latestIndentorQueryKeyRef.current !== requestKey
+        ) {
+          return;
+        }
         console.error(error);
         setIndentorsError(error instanceof Error ? error.message : "Failed to load indentors.");
       })
-      .finally(() => setIndentorsLoading(false));
+      .finally(() => {
+        if (
+          !controller.signal.aborted &&
+          indentorRequestRef.current?.id === requestId &&
+          latestIndentorQueryKeyRef.current === requestKey
+        ) {
+          setIndentorsLoading(false);
+        }
+      });
   };
 
   useEffect(() => {
     loadIndentors();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [divisionFilter, debouncedSearch, page, pageSize]);
+  }, [divisionFilter, debouncedSearch, page, pageSize, indentorReloadKey]);
+
+  useEffect(() => {
+    return () => indentorRequestRef.current?.controller.abort();
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(indentorTotal / pageSize));
   const firstResultNumber = indentorTotal === 0 ? 0 : (page - 1) * pageSize + 1;
@@ -9363,9 +10237,9 @@ function IndentorSettings() {
     if (!isReadyToSave(draft)) return;
     if (
       activeUser?.role === "viewer" &&
-      !window.confirm(
+      !(await showAppConfirm(
         "Please confirm the division and name are correct. Other details can be completed later by an admin or sub-admin. Once added, a viewer cannot edit or delete this indentor.",
-      )
+      ))
     ) {
       return;
     }
@@ -9380,7 +10254,7 @@ function IndentorSettings() {
     });
     resetDraft();
     setPage(1);
-    loadIndentors();
+    setIndentorReloadKey((current) => current + 1);
   };
 
   const startEdit = (indentor: Indentor) => {
@@ -9408,7 +10282,7 @@ function IndentorSettings() {
       email: editDraft.email.trim(),
     });
     setEditingId(null);
-    loadIndentors();
+    setIndentorReloadKey((current) => current + 1);
   };
 
   const deleteIndentor = async (id: string) => {
@@ -9416,7 +10290,7 @@ function IndentorSettings() {
     if (indentors.length === 1 && page > 1) {
       setPage((current) => Math.max(1, current - 1));
     } else {
-      loadIndentors();
+      setIndentorReloadKey((current) => current + 1);
     }
   };
 
@@ -9609,7 +10483,8 @@ function IndentorSettings() {
               indentors.map((indentor) => {
                 const isEditing = editingId === indentor.id;
                 const usageCount =
-                  indentorUsage.get(normalizeMasterKey(indentor.name))?.fileIds.size ?? 0;
+                  indentorUsage.get(getIndentorUsageKey(indentor.name, indentor.divisionId))?.fileIds
+                    .size ?? 0;
                 const editChanged = !isSettingsDirtyValueEqual(editDraft, {
                   divisionId: indentor.divisionId,
                   name: indentor.name,
@@ -9800,19 +10675,89 @@ function IpAccessSettings() {
 
   const saveIpChanges = useCallback(async () => {
     if (!config || !hasIpChanges) return;
-    if (draftMode && draftMode !== config.mode) {
-      await store.updateIpAccessMode(draftMode);
+    setLoading(true);
+    try {
+      // Fetch the current server state before applying the draft. This keeps the
+      // verification below meaningful even when the settings page has been open
+      // while another Admin changed the allowlist.
+      const initialConfig = await store.getIpAccessConfig();
+      let nextConfig = initialConfig;
+
+      // Apply trusted-address changes first. In particular, never enable Restrict
+      // until the allowlist has been written and verified successfully.
+      for (const row of pendingAdds) {
+        nextConfig = await store.addTrustedIpAddress(row.ipAddress, row.remarks);
+      }
+      for (const [id, patch] of Object.entries(pendingUpdates)) {
+        nextConfig = await store.updateTrustedIpAddress(id, patch);
+      }
+
+      const normalizeTrustedIp = (value: string) =>
+        value.trim().replace(/^::ffff:/i, "").replace(/^::1$/, "127.0.0.1");
+      const expectedTrustedIps: TrustedIpAddress[] = initialConfig.trustedIps.map((row) => ({
+        ...row,
+      }));
+      for (const row of pendingAdds) {
+        const normalizedIp = normalizeTrustedIp(row.ipAddress);
+        const existingIndex = expectedTrustedIps.findIndex(
+          (existing) => normalizeTrustedIp(existing.ipAddress) === normalizedIp,
+        );
+        if (existingIndex === -1) {
+          expectedTrustedIps.push({ ...row, ipAddress: normalizedIp, active: true });
+        } else {
+          expectedTrustedIps[existingIndex] = {
+            ...expectedTrustedIps[existingIndex],
+            ipAddress: normalizedIp,
+            remarks: row.remarks,
+            active: true,
+          };
+        }
+      }
+      for (const [id, patch] of Object.entries(pendingUpdates)) {
+        const existingIndex = expectedTrustedIps.findIndex((row) => row.id === id);
+        if (existingIndex !== -1) {
+          expectedTrustedIps[existingIndex] = { ...expectedTrustedIps[existingIndex], ...patch };
+        }
+      }
+      const trustedIpState = (rows: TrustedIpAddress[]) => {
+        const normalizedRows = rows.map((row) => {
+          const ipAddress = normalizeTrustedIp(row.ipAddress);
+          return [
+            ipAddress,
+            { ipAddress, remarks: row.remarks.trim(), active: Boolean(row.active) },
+          ] as const;
+        });
+        return Array.from(new Map(normalizedRows).values()).sort((left, right) =>
+          left.ipAddress.localeCompare(right.ipAddress),
+        );
+      };
+      if (
+        JSON.stringify(trustedIpState(nextConfig.trustedIps)) !==
+        JSON.stringify(trustedIpState(expectedTrustedIps))
+      ) {
+        throw new Error("Trusted IP changes could not be verified; Restrict mode was not enabled.");
+      }
+
+      const resultingMode = draftMode ?? nextConfig.mode;
+      if (resultingMode === "restrict" && !nextConfig.trustedIps.some((row) => row.active)) {
+        throw new Error("Add at least one active trusted IP before enabling Restrict mode.");
+      }
+
+      if (draftMode && draftMode !== nextConfig.mode) {
+        nextConfig = await store.updateIpAccessMode(draftMode);
+      }
+
+      setConfig(nextConfig);
+      setDraftMode(undefined);
+      setPendingAdds([]);
+      setPendingUpdates({});
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Failed to save IP access settings.");
+      throw error;
+    } finally {
+      setLoading(false);
     }
-    for (const row of pendingAdds) {
-      await store.addTrustedIpAddress(row.ipAddress, row.remarks);
-    }
-    for (const [id, patch] of Object.entries(pendingUpdates)) {
-      await store.updateTrustedIpAddress(id, patch);
-    }
-    setDraftMode(undefined);
-    setPendingAdds([]);
-    setPendingUpdates({});
-    await load();
   }, [config, draftMode, hasIpChanges, pendingAdds, pendingUpdates]);
 
   saveIpChangesRef.current = saveIpChanges;
@@ -9830,12 +10775,13 @@ function IpAccessSettings() {
     draft?.setExternalDirty?.(hasIpChanges);
   }, [draft?.setExternalDirty, hasIpChanges]);
 
-  const updateMode = (mode: IpAccessMode) => {
+  const updateMode = async (mode: IpAccessMode) => {
     if (
       mode === "restrict" &&
-      !window.confirm(
+      !(await showAppConfirm(
         "Restrict mode blocks login from IPs that are not active in the trusted list. Continue?",
-      )
+        { destructive: true },
+      ))
     ) {
       return;
     }
@@ -10256,6 +11202,8 @@ function UserSettings() {
   const [editEmergencyIpBypass, setEditEmergencyIpBypass] = useState(false);
   const [editDivisionIds, setEditDivisionIds] = useState<string[]>([]);
   const [editAllowedFileCategories, setEditAllowedFileCategories] = useState<FileCategoryKey[]>([]);
+  const [userMutation, setUserMutation] = useState<"" | "add" | "edit">("");
+  const [userMessage, setUserMessage] = useState("");
   type UserRoleTab = "admin" | "sub_admin" | "editor" | "universal_viewer" | "division_users";
   const [userRoleTab, setUserRoleTab] = useState<UserRoleTab>("admin");
   const roleTabs: readonly {
@@ -10284,29 +11232,45 @@ function UserSettings() {
     [selectedRoleTab, users],
   );
 
-  const add = () => {
-    if (!name.trim() || !username.trim() || !password.trim()) return;
-    store.addUser({
-      name: name.trim(),
-      username: username.trim(),
-      password: password.trim(),
-      role,
-      cashOutgoEditScope: role === "universal_viewer" ? cashOutgoEditScope : "none",
-      emergencyIpBypass: role === "admin" && emergencyIpBypass,
-      divisionIds,
-      allowedFileCategories,
-    });
-    setName("");
-    setUsername("");
-    setPassword("");
-    setRole("editor");
-    setCashOutgoEditScope("none");
-    setEmergencyIpBypass(false);
-    setDivisionIds([]);
-    setAllowedFileCategories(allFileAccessKeys);
+  const add = async () => {
+    if (
+      userMutation ||
+      !name.trim() ||
+      !username.trim() ||
+      !password.trim() ||
+      (roleRequiresDivisionAssignment(role) && divisionIds.length === 0)
+    )
+      return;
+    setUserMutation("add");
+    setUserMessage("");
+    try {
+      await store.addUser({
+        name: name.trim(),
+        username: username.trim(),
+        password: password.trim(),
+        role,
+        cashOutgoEditScope: role === "universal_viewer" ? cashOutgoEditScope : "none",
+        emergencyIpBypass: role === "admin" && emergencyIpBypass,
+        divisionIds,
+        allowedFileCategories,
+      });
+      setName("");
+      setUsername("");
+      setPassword("");
+      setRole("editor");
+      setCashOutgoEditScope("none");
+      setEmergencyIpBypass(false);
+      setDivisionIds([]);
+      setAllowedFileCategories(allFileAccessKeys);
+    } catch (error) {
+      setUserMessage(getErrorMessage(error));
+    } finally {
+      setUserMutation("");
+    }
   };
 
   const startEdit = (user: (typeof users)[number]) => {
+    setUserMessage("");
     setEditingId(user.id);
     setEditName(user.name);
     setEditUsername(user.username);
@@ -10320,19 +11284,33 @@ function UserSettings() {
     );
   };
 
-  const saveEdit = (id: string) => {
-    if (!editName.trim() || !editUsername.trim()) return;
-    store.updateUser(id, {
-      name: editName.trim(),
-      username: editUsername.trim(),
-      ...(editPassword.trim() ? { password: editPassword.trim() } : {}),
-      role: editRole,
-      cashOutgoEditScope: editRole === "universal_viewer" ? editCashOutgoEditScope : "none",
-      emergencyIpBypass: editRole === "admin" && editEmergencyIpBypass,
-      divisionIds: editDivisionIds,
-      allowedFileCategories: editAllowedFileCategories,
-    });
-    setEditingId(null);
+  const saveEdit = async (id: string) => {
+    if (
+      userMutation ||
+      !editName.trim() ||
+      !editUsername.trim() ||
+      (roleRequiresDivisionAssignment(editRole) && editDivisionIds.length === 0)
+    )
+      return;
+    setUserMutation("edit");
+    setUserMessage("");
+    try {
+      await store.updateUser(id, {
+        name: editName.trim(),
+        username: editUsername.trim(),
+        ...(editPassword.trim() ? { password: editPassword.trim() } : {}),
+        role: editRole,
+        cashOutgoEditScope: editRole === "universal_viewer" ? editCashOutgoEditScope : "none",
+        emergencyIpBypass: editRole === "admin" && editEmergencyIpBypass,
+        divisionIds: editDivisionIds,
+        allowedFileCategories: editAllowedFileCategories,
+      });
+      setEditingId(null);
+    } catch (error) {
+      setUserMessage(getErrorMessage(error));
+    } finally {
+      setUserMutation("");
+    }
   };
 
   const userDraftDirty = Boolean(
@@ -10365,6 +11343,7 @@ function UserSettings() {
     setEditEmergencyIpBypass(false);
     setEditDivisionIds([]);
     setEditAllowedFileCategories([]);
+    setUserMessage("");
   };
 
   useEffect(() => {
@@ -10389,6 +11368,11 @@ function UserSettings() {
       <p className="text-xs text-muted-foreground mb-5">
         Add users and assign the divisions they should be allowed to work with.
       </p>
+      {userMessage ? (
+        <div className="mb-4 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {userMessage}
+        </div>
+      ) : null}
       <div className="mb-4 rounded-md border border-border bg-background/60 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
         <span className="font-semibold text-foreground">Role distinction:</span> Viewer is a
         division-password login for exactly one division. Division user is a named account with its
@@ -10410,8 +11394,9 @@ function UserSettings() {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={add}
+            onClick={() => void add()}
             disabled={
+              Boolean(userMutation) ||
               !name.trim() ||
               !username.trim() ||
               !password.trim() ||
@@ -10425,6 +11410,7 @@ function UserSettings() {
             <button
               type="button"
               onClick={() => cancelUserDraftsRef.current()}
+              disabled={Boolean(userMutation)}
               className="h-10 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent"
             >
               Cancel
@@ -10654,8 +11640,9 @@ function UserSettings() {
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => saveEdit(user.id)}
+                                  onClick={() => void saveEdit(user.id)}
                                   disabled={
+                                    Boolean(userMutation) ||
                                     !editChanged ||
                                     !editName.trim() ||
                                     !editUsername.trim() ||
@@ -10669,6 +11656,7 @@ function UserSettings() {
                                 <button
                                   type="button"
                                   onClick={() => setEditingId(null)}
+                                  disabled={Boolean(userMutation)}
                                   className="size-8 grid place-items-center rounded-md hover:bg-accent"
                                 >
                                   <X className="size-4" />
@@ -10804,6 +11792,14 @@ function ArchiveSettings() {
   const loadArchive = async () => {
     setLoading(true);
     setError(undefined);
+    // Do not leave a previous response actionable while this refresh is in
+    // flight. A failed request must leave the bin empty, not showing stale rows.
+    setArchivedFiles([]);
+    setCancelledDemandFiles([]);
+    setArchivedDivisions([]);
+    setArchivedUsers([]);
+    setArchivedFirms([]);
+    setArchivedIndentors([]);
     try {
       if (isSubAdmin) {
         const [archivedResult, cancelledResult] = await Promise.all([
@@ -10954,9 +11950,10 @@ function ArchiveSettings() {
         <button
           type="button"
           onClick={() => void loadArchive()}
+          disabled={loading}
           className="h-8 rounded-md border border-border bg-background px-3 text-xs font-medium hover:bg-accent"
         >
-          Refresh
+          {loading ? "Refreshing..." : "Refresh"}
         </button>
       </div>
 
@@ -11677,19 +12674,9 @@ function normalizeUserFileCategories(
   const optionKeys = options.map((option) => option.key);
   if (!values) return optionKeys;
   const allowedKeys = new Set(optionKeys);
-  const expandedValues = new Set(values);
-  if (
-    expandedValues.has("goodsServices") &&
-    expandedValues.has("amc") &&
-    expandedValues.has("mpc") &&
-    expandedValues.has("cars") &&
-    !expandedValues.has("om")
-  ) {
-    expandedValues.add("om");
-  }
   return options
     .map((option) => option.key)
-    .filter((key) => expandedValues.has(key) && allowedKeys.has(key));
+    .filter((key) => values.includes(key) && allowedKeys.has(key));
 }
 
 function fileCategoryAccessLabel(
@@ -12368,10 +13355,12 @@ function ChartColorOrderField({
 function RibbonFieldSelect({
   label,
   value,
+  excludeValue,
   onChange,
 }: {
   label: string;
   value: AddEditRibbonFieldKey;
+  excludeValue?: AddEditRibbonFieldKey;
   onChange: (value: AddEditRibbonFieldKey) => void;
 }) {
   return (
@@ -12382,11 +13371,13 @@ function RibbonFieldSelect({
         onChange={(event) => onChange(event.target.value as AddEditRibbonFieldKey)}
         className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
       >
-        {addEditRibbonFieldOptions.map((option) => (
-          <option key={option.key} value={option.key}>
-            {option.label}
-          </option>
-        ))}
+        {addEditRibbonFieldOptions
+          .filter((option) => option.key !== excludeValue)
+          .map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
       </select>
     </label>
   );

@@ -81,13 +81,28 @@ function requireTables(value: unknown) {
     return {
       title: optionalString(record.title),
       headers: record.headers.map((header) => String(header ?? "")),
+      numericColumns: optionalColumnIndexes(
+        record.numericColumns, record.headers.length, "numericColumns",
+      ),
+      dateColumns: optionalColumnIndexes(record.dateColumns, record.headers.length, "dateColumns"),
+      dateTimeColumns: optionalColumnIndexes(
+        record.dateTimeColumns, record.headers.length, "dateTimeColumns",
+      ),
       columnWidths: optionalColumnWidths(record.columnWidths, record.headers.length),
       emphasizedColumns: optionalColumnIndexes(record.emphasizedColumns, record.headers.length),
       rows: record.rows.map((row, rowIndex) => {
         if (!Array.isArray(row)) {
           throw new HttpError(400, `tables[${index}].rows[${rowIndex}] must be an array.`);
         }
-        return row.map((cell) => String(cell ?? ""));
+        return row.map((cell) => {
+          if (typeof cell === "number") {
+            if (!Number.isFinite(cell)) throw new HttpError(400, "Export numbers must be finite.");
+            return cell;
+          }
+          if (cell === null || cell === undefined || typeof cell === "string") return cell ?? "";
+          if (typeof cell === "boolean") return String(cell);
+          throw new HttpError(400, `tables[${index}].rows[${rowIndex}] contains an invalid cell.`);
+        });
       }),
     };
   });
@@ -138,6 +153,10 @@ function requirePlot(value: unknown) {
   });
   return {
     kind: record.kind,
+    orientation:
+      record.orientation === "horizontal" || record.orientation === "vertical"
+        ? record.orientation
+        : undefined,
     title: String(record.title ?? "Chart"),
     measure: String(record.measure ?? "Value"),
     unit: optionalString(record.unit),
@@ -171,14 +190,14 @@ function optionalColumnWidths(value: unknown, expectedCount: number) {
   return widths;
 }
 
-function optionalColumnIndexes(value: unknown, expectedCount: number) {
+function optionalColumnIndexes(value: unknown, expectedCount: number, name = "emphasizedColumns") {
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value)) {
-    throw new HttpError(400, "emphasizedColumns must be an array of column indexes.");
+    throw new HttpError(400, `${name} must be an array of column indexes.`);
   }
   const indexes = value.map((item) => Number(item));
   if (indexes.some((index) => !Number.isInteger(index) || index < 0 || index >= expectedCount)) {
-    throw new HttpError(400, "emphasizedColumns contains an invalid column index.");
+    throw new HttpError(400, `${name} contains an invalid column index.`);
   }
   return Array.from(new Set(indexes));
 }

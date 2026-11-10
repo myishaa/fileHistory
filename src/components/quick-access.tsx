@@ -1,12 +1,21 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { store, useActiveUser, useSettings, type FileRecord } from "@/lib/files-store";
 import { formatIndiaMonth } from "@/lib/india-date";
 import { delayMilestoneOptions } from "@/lib/delay-status-options";
 import { useSettingsDraftContext } from "@/lib/settings-draft";
-import { useUnsavedChanges } from "@/lib/unsaved-changes";
+import { hasUnsavedChangesForSource, useUnsavedChanges } from "@/lib/unsaved-changes";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { QuickEntryExcelExportList } from "@/components/quick-entry-excel";
 import { UrgentMessageTicker, UrgentMessagesPanel } from "@/components/urgent-messages";
+import { showAppConfirm } from "@/components/app-dialog";
 import {
   ArrowDown,
   ArrowDownUp,
@@ -513,7 +522,6 @@ const favoriteCatalog: AccessItem[] = [
     ["Delivery / D.P. Done, Bill Prepared", "itemsDeliveredBillsPrepared"],
     ["Bills Submitted, Payment Pending", "billsSubmitted"],
     ["Expected Cash Outgo by D.P.", "expectedCashOutgoFy"],
-    ["Recorded Cash Outgo as on Date", "spentTillDateFy"],
     ["Bills Paid in Selected Month", "billsPaidInMonth"],
     ["Pending returned bills", "pendingReturnedBills"],
     ["Returned bills resubmitted and unpaid", "returnedBillsResubmitted"],
@@ -524,8 +532,6 @@ const favoriteCatalog: AccessItem[] = [
     ["Returned supplementary bills resubmitted", "supplementaryReturnedBillsResubmitted"],
     ["Returned supplementary bills paid", "supplementaryReturnedBillsPaid"],
     ["Expected cash outgo exclusively for selected month", "cashOutgoForMonth"],
-    ["Expected Expenditure Up to Selected Month", "expectedExpenditureTillMonth"],
-    ["Cumulative Liability Up to Month", "currentMonthLiability"],
     ["Monthly file inflow", "monthlyFileInflow"],
     ["Month-wise Supply Order", "monthWiseSupplyOrder"],
     ["Month-wise Delivery / Contract Period Schedule", "monthWiseDeliverySchedule"],
@@ -763,6 +769,27 @@ const defaultNoticeBoardSelectionIds = [
   "urgent-reminders",
   "urgent-messages",
 ];
+
+function normalizeNoticeBoardSelectionIds(candidate: unknown, allowedItems: BoardItem[]) {
+  if (!Array.isArray(candidate)) return [];
+  const expanded = candidate.flatMap((id) => {
+    if (id === "analytics-preTcecSummary")
+      return ["analytics-preTcecMonthly", "analytics-preTcecCommittee"];
+    if (id === "analytics-postTcecSummary")
+      return ["analytics-postTcecMonthly", "analytics-postTcecCommittee"];
+    if (id === "analytics-tcecStatus")
+      return [
+        "analytics-preTcecMonthly",
+        "analytics-preTcecCommittee",
+        "analytics-postTcecMonthly",
+        "analytics-postTcecCommittee",
+      ];
+    if (id === "analytics-bidOpeningSchedule") return ["bidOpeningSchedule"];
+    return typeof id === "string" ? [id] : [];
+  });
+  const allowedIds = new Set(allowedItems.map((item) => item.id));
+  return [...new Set(expanded.filter((id) => allowedIds.has(id)))];
+}
 
 function getNoticeBoardEmbedHref(href: string) {
   const url = new URL(href, "http://notice-board.local");
@@ -1018,6 +1045,7 @@ type NoticeBoardPersonalPreferences = {
   fadeOutDurationMs: number;
   fadeInDurationMs: number;
   verticalScrollDurationMs: number;
+  noticeBoardItems?: string[];
 };
 
 const noticeBoardPersonalDefaults: NoticeBoardPersonalPreferences = {
@@ -1131,43 +1159,92 @@ async function requestNoticeBoardPersonalPreferences<T>(path: string, init?: Req
   return payload as T;
 }
 
-function usePersonalNoticeBoardPreferences(userId: string) {
+function usePersonalNoticeBoardPreferences(
+  userId: string,
+  persistToAccount = !userId.startsWith("viewer:"),
+) {
   const [preferences, setPreferences] = useState<NoticeBoardPersonalPreferences>(() =>
     readPersonalNoticeBoardPreferences(userId),
   );
+  const [selectionLoad, setSelectionLoad] = useState<{
+    userId: string;
+    loaded: boolean;
+    error: string;
+  }>({ userId: "", loaded: false, error: "" });
+  const [reloadVersion, setReloadVersion] = useState(0);
   useEffect(() => {
     let active = true;
     const localPreferences = readPersonalNoticeBoardPreferences(userId);
     setPreferences(localPreferences);
+    if (!persistToAccount) {
+      setSelectionLoad({ userId, loaded: true, error: "" });
+      return () => {
+        active = false;
+      };
+    }
     void requestNoticeBoardPersonalPreferences<{
       preferences: NoticeBoardPersonalPreferences;
       saved: boolean;
+      sectionSelectionSaved: boolean;
     }>("/api/settings/notice-board-preferences")
       .then((result) => {
         if (!active) return;
+        setSelectionLoad({ userId, loaded: true, error: "" });
+        const accountPreferences = {
+          ...result.preferences,
+          noticeBoardItems: result.sectionSelectionSaved
+            ? result.preferences.noticeBoardItems
+            : undefined,
+        };
         if (result.saved) {
-          writePersonalNoticeBoardPreferences(userId, result.preferences);
-          setPreferences(result.preferences);
+          writePersonalNoticeBoardPreferences(userId, accountPreferences);
+          setPreferences(accountPreferences);
           return;
         }
         if (hasStoredPersonalNoticeBoardPreferences(userId)) {
-          setPreferences(localPreferences);
+          setPreferences({
+            ...localPreferences,
+            noticeBoardItems: accountPreferences.noticeBoardItems,
+          });
           void requestNoticeBoardPersonalPreferences("/api/settings/notice-board-preferences", {
             method: "PATCH",
             body: JSON.stringify(localPreferences),
           });
         } else {
-          setPreferences(result.preferences);
+          setPreferences(accountPreferences);
         }
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
         // Keep the local preference fallback if the preference endpoint is unavailable.
+        if (active) {
+          setSelectionLoad({
+            userId,
+            loaded: false,
+            error:
+              reason instanceof Error
+                ? reason.message
+                : "Notice Board account preferences could not be loaded.",
+          });
+        }
       });
     return () => {
       active = false;
     };
-  }, [userId]);
-  return preferences;
+  }, [persistToAccount, reloadVersion, userId]);
+  const updateSectionSelection = useCallback(
+    (noticeBoardItems: string[]) =>
+      setPreferences((current) => ({ ...current, noticeBoardItems })),
+    [],
+  );
+  return {
+    ...preferences,
+    sectionSelectionLoaded: selectionLoad.userId === userId && selectionLoad.loaded,
+    sectionSelectionLoadError:
+      selectionLoad.userId === userId ? selectionLoad.error : "",
+    retrySectionSelectionLoad: () => setReloadVersion((version) => version + 1),
+    accountSelectionPersistenceSupported: persistToAccount,
+    updateSectionSelection,
+  };
 }
 
 let sharedQuickAccessSaveQueue: Promise<unknown> = Promise.resolve();
@@ -1282,8 +1359,8 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
       setSaveError(error instanceof Error ? error.message : "Your shortcuts could not be saved.");
     }
   };
-  const cancelPersonalFavorites = () => {
-    if (personalHasChanges && !window.confirm("Discard your unsaved shortcut changes?")) return;
+  const cancelPersonalFavorites = async () => {
+    if (personalHasChanges && !(await showAppConfirm("Discard your unsaved shortcut changes?"))) return;
     setPersonal(readArray<AccessItem>(personalKey));
     setSaveError("");
   };
@@ -1355,61 +1432,98 @@ function FavoriteEditor({ admin }: { admin: boolean }) {
   );
 }
 
-function NoticeBoardEditor() {
+function NoticeBoardEditor({ readOnly = false }: { readOnly?: boolean }) {
   const user = useActiveUser();
   const draft = useSettingsDraftContext();
   const userId = user?.id ?? "anonymous";
-  const personalPreferences = usePersonalNoticeBoardPreferences(userId);
+  const personalPreferences = usePersonalNoticeBoardPreferences(
+    userId,
+    user?.role !== "viewer",
+  );
+  const localPreferences = readPersonalNoticeBoardPreferences(userId);
+  const localTransitionDurations: Record<NoticeBoardTransitionKey, number> = {
+    noticeBoardSlideDurationMs: localPreferences.slideDurationMs,
+    noticeBoardFadeOutDurationMs: localPreferences.fadeOutDurationMs,
+    noticeBoardFadeInDurationMs: localPreferences.fadeInDurationMs,
+    noticeBoardVerticalScrollDurationMs: localPreferences.verticalScrollDurationMs,
+  };
+  const {
+    slideDurationMs,
+    fadeOutDurationMs,
+    fadeInDurationMs,
+    verticalScrollDurationMs,
+    intervalSeconds,
+    transitionEffect,
+  } = personalPreferences;
   const [saving, setSaving] = useState(false);
-  const [personalInterval, setPersonalInterval] = useState(() =>
-    readInterval(storageKeys.personalInterval(userId)),
+  const [personalInterval, setPersonalInterval] = useState(localPreferences.intervalSeconds);
+  const [savedPersonalInterval, setSavedPersonalInterval] = useState(
+    localPreferences.intervalSeconds,
   );
   const [personalTransitionDrafts, setPersonalTransitionDrafts] = useState(
     () =>
       Object.fromEntries(
-        noticeBoardTransitionFields.map(({ key, defaultMs }) => [
+        noticeBoardTransitionFields.map(({ key }) => [
           key,
-          String(
-            readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) /
-              1000,
-          ),
+          String(localTransitionDurations[key] / 1000),
         ]),
       ) as Record<NoticeBoardTransitionKey, string>,
   );
-  const [personalTransitionEffect, setPersonalTransitionEffect] = useState(() =>
-    readTransitionEffect(storageKeys.personalTransitionEffect(userId)),
+  const [savedPersonalTransitionDurations, setSavedPersonalTransitionDurations] = useState(
+    localTransitionDurations,
+  );
+  const [personalTransitionEffect, setPersonalTransitionEffect] = useState(
+    localPreferences.transitionEffect,
+  );
+  const [savedPersonalTransitionEffect, setSavedPersonalTransitionEffect] = useState(
+    localPreferences.transitionEffect,
   );
   const [saveError, setSaveError] = useState("");
+  const skipNextPreferenceSyncRef = useRef(false);
   const personalHasChanges =
-    personalInterval !== readInterval(storageKeys.personalInterval(userId)) ||
-    personalTransitionEffect !==
-      readTransitionEffect(storageKeys.personalTransitionEffect(userId)) ||
+    personalInterval !== savedPersonalInterval ||
+    personalTransitionEffect !== savedPersonalTransitionEffect ||
     noticeBoardTransitionFields.some(
       ({ key, defaultMs }) =>
         parseTransitionDuration(personalTransitionDrafts[key] ?? "", defaultMs) !==
-        readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs),
+        savedPersonalTransitionDurations[key],
     );
+  const retryPendingSave = Boolean(saveError);
   useEffect(() => {
+    if (skipNextPreferenceSyncRef.current) {
+      if (!saving) skipNextPreferenceSyncRef.current = false;
+      return;
+    }
+    if (personalHasChanges || saving) return;
+    const nextTransitionDurations: Record<NoticeBoardTransitionKey, number> = {
+      noticeBoardSlideDurationMs: slideDurationMs,
+      noticeBoardFadeOutDurationMs: fadeOutDurationMs,
+      noticeBoardFadeInDurationMs: fadeInDurationMs,
+      noticeBoardVerticalScrollDurationMs: verticalScrollDurationMs,
+    };
     setPersonalTransitionDrafts(
       Object.fromEntries(
         noticeBoardTransitionFields.map(({ key }) => [
           key,
-          String(
-            (
-              {
-                noticeBoardSlideDurationMs: personalPreferences.slideDurationMs,
-                noticeBoardFadeOutDurationMs: personalPreferences.fadeOutDurationMs,
-                noticeBoardFadeInDurationMs: personalPreferences.fadeInDurationMs,
-                noticeBoardVerticalScrollDurationMs: personalPreferences.verticalScrollDurationMs,
-              } as Record<NoticeBoardTransitionKey, number>
-            )[key] / 1000,
-          ),
+          String(nextTransitionDurations[key] / 1000),
         ]),
       ) as Record<NoticeBoardTransitionKey, string>,
     );
-    setPersonalInterval(personalPreferences.intervalSeconds);
-    setPersonalTransitionEffect(personalPreferences.transitionEffect);
-  }, [personalPreferences]);
+    setPersonalInterval(intervalSeconds);
+    setPersonalTransitionEffect(transitionEffect);
+    setSavedPersonalInterval(intervalSeconds);
+    setSavedPersonalTransitionEffect(transitionEffect);
+    setSavedPersonalTransitionDurations(nextTransitionDurations);
+  }, [
+    fadeInDurationMs,
+    fadeOutDurationMs,
+    intervalSeconds,
+    personalHasChanges,
+    saving,
+    slideDurationMs,
+    transitionEffect,
+    verticalScrollDurationMs,
+  ]);
   const setInterval = (value: number) => {
     const next = Math.min(120, Math.max(5, value || 15));
     setPersonalInterval(next);
@@ -1419,12 +1533,8 @@ function NoticeBoardEditor() {
   };
   const savePersonalSettings = async () => {
     setSaving(true);
+    setSaveError("");
     try {
-      window.localStorage.setItem(storageKeys.personalInterval(userId), String(personalInterval));
-      window.localStorage.setItem(
-        storageKeys.personalTransitionEffect(userId),
-        personalTransitionEffect,
-      );
       const nextPreferences = {
         intervalSeconds: personalInterval,
         transitionEffect: personalTransitionEffect,
@@ -1445,18 +1555,24 @@ function NoticeBoardEditor() {
           2800,
         ),
       } satisfies NoticeBoardPersonalPreferences;
-      for (const { key, defaultMs } of noticeBoardTransitionFields) {
-        const milliseconds = parseTransitionDuration(personalTransitionDrafts[key], defaultMs);
-        window.localStorage.setItem(
-          storageKeys.personalTransitionDuration(userId, key),
-          String(milliseconds),
-        );
-        setTransitionDraft(key, String(milliseconds / 1000));
-      }
+      const nextTransitionDurations: Record<NoticeBoardTransitionKey, number> = {
+        noticeBoardSlideDurationMs: nextPreferences.slideDurationMs,
+        noticeBoardFadeOutDurationMs: nextPreferences.fadeOutDurationMs,
+        noticeBoardFadeInDurationMs: nextPreferences.fadeInDurationMs,
+        noticeBoardVerticalScrollDurationMs: nextPreferences.verticalScrollDurationMs,
+      };
       await requestNoticeBoardPersonalPreferences("/api/settings/notice-board-preferences", {
         method: "PATCH",
         body: JSON.stringify(nextPreferences),
       });
+      writePersonalNoticeBoardPreferences(userId, nextPreferences);
+      skipNextPreferenceSyncRef.current = true;
+      setSavedPersonalInterval(personalInterval);
+      setSavedPersonalTransitionEffect(personalTransitionEffect);
+      setSavedPersonalTransitionDurations(nextTransitionDurations);
+      for (const { key } of noticeBoardTransitionFields) {
+        setTransitionDraft(key, String(nextTransitionDurations[key] / 1000));
+      }
       setSaveError("");
     } catch (error) {
       setSaveError(
@@ -1466,18 +1582,19 @@ function NoticeBoardEditor() {
       setSaving(false);
     }
   };
-  const cancelPersonalSettings = () => {
-    if (personalHasChanges && !window.confirm("Discard your unsaved Notice Board changes?")) return;
-    setPersonalInterval(readInterval(storageKeys.personalInterval(userId)));
-    setPersonalTransitionEffect(readTransitionEffect(storageKeys.personalTransitionEffect(userId)));
+  const cancelPersonalSettings = async () => {
+    if (
+      personalHasChanges &&
+      !(await showAppConfirm("Discard your unsaved Notice Board changes?"))
+    )
+      return;
+    setPersonalInterval(savedPersonalInterval);
+    setPersonalTransitionEffect(savedPersonalTransitionEffect);
     setPersonalTransitionDrafts(
       Object.fromEntries(
-        noticeBoardTransitionFields.map(({ key, defaultMs }) => [
+        noticeBoardTransitionFields.map(({ key }) => [
           key,
-          String(
-            readTransitionDuration(storageKeys.personalTransitionDuration(userId, key), defaultMs) /
-              1000,
-          ),
+          String(savedPersonalTransitionDurations[key] / 1000),
         ]),
       ) as Record<NoticeBoardTransitionKey, string>,
     );
@@ -1501,7 +1618,13 @@ function NoticeBoardEditor() {
     draft?.setLocalDirty?.(personalHasChanges);
   }, [draft?.setLocalDirty, personalHasChanges]);
   return (
-    <div className="space-y-6">
+    <fieldset disabled={readOnly} className="space-y-6">
+      {readOnly ? (
+        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-foreground">
+          Notice Board preferences are read-only for division-password viewers and are not saved
+          for this account type.
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-6 border-t border-border pt-4">
         <div className="w-full">
           <QuickAccessScope personal />
@@ -1571,10 +1694,10 @@ function NoticeBoardEditor() {
         <button
           type="button"
           onClick={() => void savePersonalSettings()}
-          disabled={!personalHasChanges || saving}
+          disabled={(!personalHasChanges && !retryPendingSave) || saving}
           className="h-9 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
-          {saving ? "Saving…" : "Save changes"}
+          {saving ? "Saving…" : retryPendingSave ? "Retry save" : "Save changes"}
         </button>
       </div>
       {saveError ? (
@@ -1582,14 +1705,24 @@ function NoticeBoardEditor() {
           {saveError}
         </p>
       ) : null}
-    </div>
+    </fieldset>
   );
 }
 
-export function QuickAccessSettings({ section }: { section: "favorites" | "noticeBoard" }) {
+export function QuickAccessSettings({
+  section,
+  readOnly = false,
+}: {
+  section: "favorites" | "noticeBoard";
+  readOnly?: boolean;
+}) {
   const admin = useActiveUser()?.role === "admin";
   useLegacySharedQuickAccessMigration(admin);
-  return section === "favorites" ? <FavoriteEditor admin={admin} /> : <NoticeBoardEditor />;
+  return section === "favorites" ? (
+    <FavoriteEditor admin={admin} />
+  ) : (
+    <NoticeBoardEditor readOnly={readOnly} />
+  );
 }
 
 export function QuickEntryAccess() {
@@ -1597,7 +1730,10 @@ export function QuickEntryAccess() {
   const messagingBlocked = user?.role === "viewer" || user?.role === "universal_viewer";
   useLegacySharedQuickAccessMigration(user?.role === "admin");
   const userId = user?.id ?? "anonymous";
-  const personalPreferences = usePersonalNoticeBoardPreferences(userId);
+  const personalPreferences = usePersonalNoticeBoardPreferences(
+    userId,
+    user?.role !== "viewer",
+  );
   const delay = personalPreferences.intervalSeconds;
   const transitionDurations = {
     noticeBoardSlideDurationMs: personalPreferences.slideDurationMs,
@@ -1608,11 +1744,62 @@ export function QuickEntryAccess() {
   const transitionEffect = personalPreferences.transitionEffect;
   type QuickEntryTab = "noticeBoard" | "urgentReminders" | "messages" | "excelExports";
   const [activeTab, setActiveTab] = useState<QuickEntryTab>("noticeBoard");
-  useEffect(() => {
-    if (messagingBlocked && (activeTab === "urgentReminders" || activeTab === "messages")) {
-      setActiveTab("noticeBoard");
+  const [focusedTab, setFocusedTab] = useState<QuickEntryTab>("noticeBoard");
+  const tabOrder: QuickEntryTab[] = messagingBlocked
+    ? ["noticeBoard", "excelExports"]
+    : ["noticeBoard", "excelExports", "urgentReminders", "messages"];
+  const tabRefs = useRef<Partial<Record<QuickEntryTab, HTMLButtonElement | null>>>({});
+  const tabId = (tab: QuickEntryTab) => `quick-entry-tab-${tab}`;
+  const panelId = (tab: QuickEntryTab) => `quick-entry-panel-${tab}`;
+  const changeTab = async (nextTab: QuickEntryTab) => {
+    if (nextTab === activeTab) return;
+
+    const composerKind =
+      activeTab === "urgentReminders"
+        ? "reminder"
+        : activeTab === "messages"
+          ? "admin"
+          : null;
+    if (
+      composerKind &&
+      hasUnsavedChangesForSource(`urgent-message-editor:${composerKind}`) &&
+      !(await showAppConfirm("You have unsaved changes. Leave without saving?"))
+    ) {
+      return;
     }
-  }, [activeTab, messagingBlocked]);
+
+    setActiveTab(nextTab);
+    setFocusedTab(nextTab);
+  };
+  const handleTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>, tab: QuickEntryTab) => {
+    const currentIndex = tabOrder.indexOf(tab);
+    let nextIndex = currentIndex;
+    if (event.key === "ArrowRight") nextIndex = (currentIndex + 1) % tabOrder.length;
+    else if (event.key === "ArrowLeft")
+      nextIndex = (currentIndex - 1 + tabOrder.length) % tabOrder.length;
+    else if (event.key === "Home") nextIndex = 0;
+    else if (event.key === "End") nextIndex = tabOrder.length - 1;
+    else return;
+
+    event.preventDefault();
+    const nextTab = tabOrder[nextIndex];
+    setFocusedTab(nextTab);
+    tabRefs.current[nextTab]?.focus();
+  };
+  useEffect(() => {
+    if (!messagingBlocked) return;
+    const activeTabUnavailable = activeTab === "urgentReminders" || activeTab === "messages";
+    const focusedTabUnavailable = focusedTab === "urgentReminders" || focusedTab === "messages";
+    if (!activeTabUnavailable && !focusedTabUnavailable) return;
+
+    const nextActiveTab = activeTabUnavailable ? "noticeBoard" : activeTab;
+    const nextFocusedTab = focusedTabUnavailable ? nextActiveTab : focusedTab;
+    if (activeTabUnavailable) setActiveTab(nextActiveTab);
+    if (focusedTabUnavailable) {
+      setFocusedTab(nextFocusedTab);
+      window.requestAnimationFrame(() => tabRefs.current[nextFocusedTab]?.focus());
+    }
+  }, [activeTab, focusedTab, messagingBlocked]);
   const tabClass = (tab: QuickEntryTab) => {
     const selected = activeTab === tab;
     return `inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition-colors ${selected ? "border-foreground/35 bg-background text-foreground shadow-sm" : "border-border/70 bg-transparent text-foreground hover:bg-muted/40"}`;
@@ -1627,29 +1814,62 @@ export function QuickEntryAccess() {
             aria-label="Quick Entry tools"
           >
             <button
+              ref={(element) => {
+                tabRefs.current.noticeBoard = element;
+              }}
               type="button"
               role="tab"
+              id={tabId("noticeBoard")}
+              aria-controls={panelId("noticeBoard")}
               aria-selected={activeTab === "noticeBoard"}
-              onClick={() => setActiveTab("noticeBoard")}
+              tabIndex={focusedTab === "noticeBoard" ? 0 : -1}
+              onClick={() => {
+                setFocusedTab("noticeBoard");
+                void changeTab("noticeBoard");
+              }}
+              onFocus={() => setFocusedTab("noticeBoard")}
+              onKeyDown={(event) => handleTabKeyDown(event, "noticeBoard")}
               className={tabClass("noticeBoard")}
             >
               <MonitorPlay className="size-4" /> Notice Board
             </button>
             <button
+              ref={(element) => {
+                tabRefs.current.excelExports = element;
+              }}
               type="button"
               role="tab"
+              id={tabId("excelExports")}
+              aria-controls={panelId("excelExports")}
               aria-selected={activeTab === "excelExports"}
-              onClick={() => setActiveTab("excelExports")}
+              tabIndex={focusedTab === "excelExports" ? 0 : -1}
+              onClick={() => {
+                setFocusedTab("excelExports");
+                void changeTab("excelExports");
+              }}
+              onFocus={() => setFocusedTab("excelExports")}
+              onKeyDown={(event) => handleTabKeyDown(event, "excelExports")}
               className={tabClass("excelExports")}
             >
               <FileSpreadsheet className="size-4" /> Excel Exports
             </button>
             {!messagingBlocked ? (
               <button
+                ref={(element) => {
+                  tabRefs.current.urgentReminders = element;
+                }}
                 type="button"
                 role="tab"
+                id={tabId("urgentReminders")}
+                aria-controls={panelId("urgentReminders")}
                 aria-selected={activeTab === "urgentReminders"}
-                onClick={() => setActiveTab("urgentReminders")}
+                tabIndex={focusedTab === "urgentReminders" ? 0 : -1}
+                onClick={() => {
+                  setFocusedTab("urgentReminders");
+                  void changeTab("urgentReminders");
+                }}
+                onFocus={() => setFocusedTab("urgentReminders")}
+                onKeyDown={(event) => handleTabKeyDown(event, "urgentReminders")}
                 className={tabClass("urgentReminders")}
               >
                 <BellRing className="size-4" /> Urgent Reminders
@@ -1657,10 +1877,21 @@ export function QuickEntryAccess() {
             ) : null}
             {!messagingBlocked ? (
               <button
+                ref={(element) => {
+                  tabRefs.current.messages = element;
+                }}
                 type="button"
                 role="tab"
+                id={tabId("messages")}
+                aria-controls={panelId("messages")}
                 aria-selected={activeTab === "messages"}
-                onClick={() => setActiveTab("messages")}
+                tabIndex={focusedTab === "messages" ? 0 : -1}
+                onClick={() => {
+                  setFocusedTab("messages");
+                  void changeTab("messages");
+                }}
+                onFocus={() => setFocusedTab("messages")}
+                onKeyDown={(event) => handleTabKeyDown(event, "messages")}
                 className={tabClass("messages")}
               >
                 <MessageSquare className="size-4" /> Urgent Messages
@@ -1668,35 +1899,65 @@ export function QuickEntryAccess() {
             ) : null}
           </div>
         </div>
-        {activeTab === "noticeBoard" ? (
-          <section
-            role="tabpanel"
-            className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
-          >
+        <section
+          role="tabpanel"
+          id={panelId("noticeBoard")}
+          aria-labelledby={tabId("noticeBoard")}
+          tabIndex={0}
+          hidden={activeTab !== "noticeBoard"}
+          className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
+        >
+          {activeTab === "noticeBoard" ? (
             <LiveSourceBoard
+              key={userId}
               userId={userId}
               delaySeconds={delay}
               transitionDurations={transitionDurations}
               transitionEffect={transitionEffect}
+              accountSelectedIds={personalPreferences.noticeBoardItems}
+              accountSelectionLoaded={personalPreferences.sectionSelectionLoaded}
+              accountSelectionLoadError={personalPreferences.sectionSelectionLoadError}
+              retryAccountSelectionLoad={personalPreferences.retrySectionSelectionLoad}
+              accountSelectionPersistenceSupported={
+                personalPreferences.accountSelectionPersistenceSupported
+              }
+              onAccountSelectionChange={personalPreferences.updateSectionSelection}
             />
-          </section>
-        ) : activeTab === "urgentReminders" ? (
+          ) : null}
+        </section>
+        <section
+          role="tabpanel"
+          id={panelId("excelExports")}
+          aria-labelledby={tabId("excelExports")}
+          tabIndex={0}
+          hidden={activeTab !== "excelExports"}
+        >
+          {activeTab === "excelExports" ? <QuickEntryExcelExportList /> : null}
+        </section>
+        {!messagingBlocked ? (
           <section
             role="tabpanel"
+            id={panelId("urgentReminders")}
+            aria-labelledby={tabId("urgentReminders")}
+            tabIndex={0}
+            hidden={activeTab !== "urgentReminders"}
             className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
           >
-            <UrgentMessagesPanel kind="reminder" />
+            {activeTab === "urgentReminders" ? <UrgentMessagesPanel kind="reminder" /> : null}
           </section>
-        ) : activeTab === "messages" ? (
+        ) : null}
+        {!messagingBlocked ? (
           <section
             role="tabpanel"
+            id={panelId("messages")}
+            aria-labelledby={tabId("messages")}
+            tabIndex={0}
+            hidden={activeTab !== "messages"}
             className="relative bg-gradient-to-br from-background via-background to-muted/20 p-3 sm:p-4"
           >
-            <UrgentMessagesPanel kind="admin" />
+            {activeTab === "messages" ? <UrgentMessagesPanel kind="admin" /> : null}
           </section>
-        ) : (
-          <QuickEntryExcelExportList />
-        )}
+        ) : null}
       </section>
     </>
   );
@@ -1707,11 +1968,23 @@ function LiveSourceBoard({
   delaySeconds,
   transitionDurations,
   transitionEffect,
+  accountSelectedIds,
+  accountSelectionLoaded,
+  accountSelectionLoadError,
+  retryAccountSelectionLoad,
+  accountSelectionPersistenceSupported,
+  onAccountSelectionChange,
 }: {
   userId: string;
   delaySeconds: number;
   transitionDurations: NoticeBoardTransitionSettings;
   transitionEffect: NoticeBoardTransitionEffect;
+  accountSelectedIds?: string[];
+  accountSelectionLoaded: boolean;
+  accountSelectionLoadError: string;
+  retryAccountSelectionLoad: () => void;
+  accountSelectionPersistenceSupported: boolean;
+  onAccountSelectionChange: (ids: string[]) => void;
 }) {
   const settings = useSettings();
   const activeUser = useActiveUser();
@@ -1739,25 +2012,7 @@ function LiveSourceBoard({
         if (saved !== null) {
           const parsed: unknown = JSON.parse(saved);
           if (Array.isArray(parsed)) {
-            const expanded = parsed.flatMap((id) => {
-              if (id === "analytics-preTcecSummary")
-                return ["analytics-preTcecMonthly", "analytics-preTcecCommittee"];
-              if (id === "analytics-postTcecSummary")
-                return ["analytics-postTcecMonthly", "analytics-postTcecCommittee"];
-              if (id === "analytics-tcecStatus")
-                return [
-                  "analytics-preTcecMonthly",
-                  "analytics-preTcecCommittee",
-                  "analytics-postTcecMonthly",
-                  "analytics-postTcecCommittee",
-                ];
-              if (id === "analytics-bidOpeningSchedule") return ["bidOpeningSchedule"];
-              return [id];
-            });
-            const normalized = expanded.filter(
-              (id): id is string =>
-                typeof id === "string" && sourceItems.some((item) => item.id === id),
-            );
+            const normalized = normalizeNoticeBoardSelectionIds(parsed, sourceItems);
             const addUrgent = !window.localStorage.getItem(urgentSelectionMigrationKey);
             const addBidOpening = !window.localStorage.getItem(bidOpeningSelectionMigrationKey);
             if (addUrgent) window.localStorage.setItem(urgentSelectionMigrationKey, "1");
@@ -1779,6 +2034,21 @@ function LiveSourceBoard({
       (id) => !messagingBlocked || (id !== "urgent-reminders" && id !== "urgent-messages"),
     );
   });
+  const [selectionHydrated, setSelectionHydrated] = useState(false);
+  const [selectionSaving, setSelectionSaving] = useState(false);
+  const [selectionSaveError, setSelectionSaveError] = useState("");
+  const [selectionSaveRevision, setSelectionSaveRevision] = useState(0);
+  const accountSelectionApplied = useRef(false);
+  const selectionSaveVersion = useRef(0);
+  const selectionSaveQueue = useRef<Promise<unknown>>(Promise.resolve());
+  useEffect(() => {
+    if (!accountSelectionLoaded || accountSelectionApplied.current) return;
+    accountSelectionApplied.current = true;
+    if (accountSelectedIds) {
+      setSelectedIds(normalizeNoticeBoardSelectionIds(accountSelectedIds, sourceItems));
+    }
+    setSelectionHydrated(true);
+  }, [accountSelectedIds, accountSelectionLoaded, sourceItems]);
   const selectedItems = useMemo(
     () =>
       selectedIds.flatMap((id) => {
@@ -1789,6 +2059,11 @@ function LiveSourceBoard({
   );
   const [activeId, setActiveId] = useState(selectedItems[0]?.id ?? "");
   const [rotationOpen, setRotationOpen] = useState(false);
+  const rotationTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeRotation = () => {
+    setRotationOpen(false);
+    window.requestAnimationFrame(() => rotationTriggerRef.current?.focus());
+  };
   useEffect(() => {
     if (!messagingBlocked) return;
     setSelectedIds((ids) => {
@@ -1849,7 +2124,45 @@ function LiveSourceBoard({
 
   useEffect(() => {
     window.localStorage.setItem(selectionKey, JSON.stringify(selectedIds));
-  }, [selectedIds, selectionKey]);
+    if (!selectionHydrated || !accountSelectionPersistenceSupported) return;
+
+    onAccountSelectionChange(selectedIds);
+    const saveVersion = ++selectionSaveVersion.current;
+    setSelectionSaving(true);
+    setSelectionSaveError("");
+    const save = selectionSaveQueue.current
+      .catch(() => undefined)
+      .then(() =>
+        requestNoticeBoardPersonalPreferences("/api/settings/notice-board-preferences", {
+          method: "PATCH",
+          body: JSON.stringify({ noticeBoardItems: selectedIds }),
+        }),
+      );
+    selectionSaveQueue.current = save;
+    void save
+      .then(() => {
+        if (selectionSaveVersion.current === saveVersion) setSelectionSaveError("");
+      })
+      .catch((reason: unknown) => {
+        if (selectionSaveVersion.current === saveVersion) {
+          setSelectionSaveError(
+            reason instanceof Error
+              ? reason.message
+              : "Notice Board section selection could not be saved to your account.",
+          );
+        }
+      })
+      .finally(() => {
+        if (selectionSaveVersion.current === saveVersion) setSelectionSaving(false);
+      });
+  }, [
+    onAccountSelectionChange,
+    selectionHydrated,
+    selectedIds,
+    selectionKey,
+    selectionSaveRevision,
+    accountSelectionPersistenceSupported,
+  ]);
 
   useEffect(() => {
     if (!selectedItems.some((item) => item.id === activeId))
@@ -1991,6 +2304,7 @@ function LiveSourceBoard({
             </div>
           </details>
           <button
+            ref={rotationTriggerRef}
             type="button"
             onClick={() => {
               // Mark rotation synchronously so the global urgent prompt is
@@ -2014,6 +2328,45 @@ function LiveSourceBoard({
             </span>
           </button>
         </div>
+      </div>
+      <div className="flex min-h-4 items-center justify-between gap-3 px-1 text-[0.6875rem]">
+        <span
+          aria-live="polite"
+          className={
+            selectionSaveError || accountSelectionLoadError
+              ? "text-destructive"
+              : "text-muted-foreground"
+          }
+        >
+          {accountSelectionLoadError
+            ? "Could not load your account section selection."
+            : !accountSelectionLoaded
+              ? "Loading account section selection…"
+              : !accountSelectionPersistenceSupported
+                ? "Section selection is stored on this device."
+                : selectionSaveError
+                  ? "Section selection could not be saved to your account."
+                  : selectionSaving
+                    ? "Saving section selection to your account…"
+                    : "Section selection is saved to your account."}
+        </span>
+        {accountSelectionLoadError ? (
+          <button
+            type="button"
+            onClick={retryAccountSelectionLoad}
+            className="shrink-0 font-medium text-primary hover:underline"
+          >
+            Retry
+          </button>
+        ) : selectionSaveError && accountSelectionLoaded ? (
+          <button
+            type="button"
+            onClick={() => setSelectionSaveRevision((revision) => revision + 1)}
+            className="shrink-0 font-medium text-primary hover:underline"
+          >
+            Retry
+          </button>
+        ) : null}
       </div>
 
       {selectedItems.length ? (
@@ -2110,7 +2463,7 @@ function LiveSourceBoard({
             0,
             selectedItems.findIndex((item) => item.id === activeItem?.id),
           )}
-          onClose={() => setRotationOpen(false)}
+          onClose={closeRotation}
         />
       ) : null}
     </div>
@@ -2394,6 +2747,7 @@ function NoticeBoard({
   const [error, setError] = useState("");
   const slideFrameRefs = useRef<[HTMLIFrameElement | null, HTMLIFrameElement | null]>([null, null]);
   const [visibleFrameSlot, setVisibleFrameSlot] = useState(0);
+  const dialogRef = useRef<HTMLDivElement>(null);
 
   useLayoutEffect(() => {
     // Publish rotation synchronously and keep a DOM-level marker so the
@@ -2429,6 +2783,54 @@ function NoticeBoard({
           detail: { active: remainingDepth > 0 },
         }),
       );
+    };
+  }, []);
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const focusableElements = () =>
+      Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), iframe, [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => {
+        const style = window.getComputedStyle(element);
+        return style.visibility !== "hidden" && style.display !== "none";
+      });
+    const first = dialog.querySelector<HTMLElement>('[aria-label="Close Notice Board"]');
+    (first ?? focusableElements()[0] ?? dialog).focus();
+
+    const containFocus = (event: FocusEvent) => {
+      const target = event.target as HTMLElement | null;
+      const ownerDialog = target?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+      if (dialog.contains(event.target as Node) || (ownerDialog && ownerDialog !== dialog)) return;
+      (first ?? focusableElements()[0] ?? dialog).focus();
+    };
+    const trapTab = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const active = document.activeElement as HTMLElement | null;
+      const ownerDialog = active?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+      if (ownerDialog && ownerDialog !== dialog) return;
+      const focusable = focusableElements();
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      if (event.shiftKey && (active === focusable[0] || active === dialog)) {
+        event.preventDefault();
+        focusable[focusable.length - 1].focus();
+      } else if (!event.shiftKey && (active === focusable[focusable.length - 1] || active === dialog)) {
+        event.preventDefault();
+        focusable[0].focus();
+      }
+    };
+
+    document.addEventListener("focusin", containFocus, true);
+    document.addEventListener("keydown", trapTab, true);
+    return () => {
+      document.removeEventListener("focusin", containFocus, true);
+      document.removeEventListener("keydown", trapTab, true);
     };
   }, []);
   const [frameSlots, setFrameSlots] = useState<[BoardFrameSlot, BoardFrameSlot]>(() => {
@@ -2777,11 +3179,15 @@ function NoticeBoard({
   }, [displayIndex, transitionDurations, transitionEffect]);
   const handleBoardKeyDown = useCallback(
     (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const ownerDialog = target?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+      if (ownerDialog && ownerDialog !== dialogRef.current) return;
       if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
         onClose();
         return;
       }
-      const target = event.target as HTMLElement | null;
       if (
         target?.isContentEditable ||
         target?.closest(
@@ -2814,6 +3220,8 @@ function NoticeBoard({
   const handleBoardKeyUp = useCallback((event: KeyboardEvent) => {
     if (event.code !== "Space" && event.key !== " ") return;
     const target = event.target as HTMLElement | null;
+    const ownerDialog = target?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
+    if (ownerDialog && ownerDialog !== dialogRef.current) return;
     if (
       target?.isContentEditable ||
       target?.closest(
@@ -2850,15 +3258,19 @@ function NoticeBoard({
   const nextMonthKey = getNextMonthKey(currentMonthKey);
   return (
     <div
+      ref={dialogRef}
       className="fixed inset-0 z-[100] flex flex-col bg-background p-4 sm:p-8"
       role="dialog"
       aria-modal="true"
-      aria-label="Notice Board"
+      aria-labelledby="notice-board-dialog-title"
+      tabIndex={-1}
     >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div>
           <p className="text-xs font-medium uppercase text-muted-foreground">Notice Board</p>
-          <h2 className="text-lg font-semibold">{getDisplayLabel(activeItem) ?? "Notice Board"}</h2>
+          <h2 id="notice-board-dialog-title" className="text-lg font-semibold">
+            {getDisplayLabel(activeItem) ?? "Notice Board"}
+          </h2>
         </div>
         <div className="flex items-center gap-1">
           <label className="mr-2 flex items-center gap-1.5 text-xs text-muted-foreground">

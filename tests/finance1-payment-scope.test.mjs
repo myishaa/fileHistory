@@ -69,6 +69,7 @@ test("FY payment summary includes only files initiated within the selected FY", 
   });
   const payments = summary.finance1Summary.paymentsRecordedInSelectedFy;
 
+  assert.equal(summary.finance1Summary.asOfDate, "2026-10-20");
   assert.equal(summary.finance1Summary.fileGroup.count, 1);
   assert.equal(payments.regular.count, 1);
   assert.equal(payments.regular.capital, 250000);

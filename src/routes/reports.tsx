@@ -50,6 +50,7 @@ import {
   useSettings,
 } from "@/lib/files-store";
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
+import { isDivisionScopedUser } from "@/lib/permissions";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -99,6 +100,7 @@ import {
   getParentStagePaymentDate,
   isParentStagePaymentOrder,
   isSupplyOrderAtPreviousStage,
+  isSupplyOrderEligibleForMetrics,
   getEffectiveSupplyOrderCurrentMilestone as getCanonicalSupplyOrderCurrentMilestone,
   getActualPaymentCapital,
   getActualPaymentRevenue,
@@ -109,6 +111,8 @@ import {
   isExpiredDeliveryPeriodEntry,
   isExtendedDeliveryPeriodEntry,
   isValidDeliveryPeriodEntry,
+  eligibleSupplyOrderEntries as normalizedEligibleSupplyOrderEntries,
+  eligibleSupplyOrders as normalizedEligibleSupplyOrders,
   rawSupplyOrders as normalizedRawSupplyOrders,
 } from "@/lib/effective-deliveries";
 import {
@@ -144,6 +148,7 @@ import {
   getDemandProcessingPresets,
   filterDemandProcessingRowsByFromDate,
   demandProcessingDateFields,
+  isUnifiedPaymentField,
   type DemandProcessingAnalysisRow,
 } from "@/lib/demand-processing-analysis";
 import {
@@ -216,6 +221,7 @@ export function EmbeddedReportsAnalysis({
     initiationDateTo: string;
     fileCategories: FileCategoryKey[];
     fileCategoryFilterActive: boolean;
+    includeArchivedYears: boolean;
   };
   externalCalculationNonce?: number;
   onCalculationStateChange?: (active: boolean, stop?: () => void) => void;
@@ -237,6 +243,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:300
   "",
 );
 const ExportPlotContext = createContext<ExportPlot | undefined>(undefined);
+const ExportPlotsContext = createContext<ExportPlot[] | undefined>(undefined);
 const DEFAULT_BILL_PAYMENT_OFFSET_DAYS = 5;
 const DEFAULT_BILL_SUBMISSION_OFFSET_DAYS = 5;
 const DEFAULT_DP_OFFSET_DAYS = 10;
@@ -719,7 +726,7 @@ const mmgSummarySourceDescriptions: Record<string, string> = {
   returnedBillPaid: "Source: Status-1 Returned bill paid.",
   supplementaryBillsSubmittedPaymentPending: "Source: Status-1 supplementary bills submitted.",
   supplementaryBillsPending: "Source: Status-1 Supplementary pending.",
-  supplementaryBillsPaid: "Source: Status-1 Normal supplementary paid.",
+  supplementaryBillsPaid: "Source: Status-1 Supplementary paid — no return.",
   supplementaryBillReturnedForCorrection: "Source: Status-1 Supplementary returned total.",
   pendingReturnedSupplementaryBills: "Source: Status-1 Supplementary return pending.",
   returnedSupplementaryBillsResubmitted: "Source: Status-1 Supplementary resubmitted total.",
@@ -1100,6 +1107,7 @@ async function fetchCashOutGoPlan(
   financialYear: string,
   includePreviousFySubmitted: boolean,
   divisionId: string,
+  includeArchivedYears: boolean,
   signal?: AbortSignal,
   fileCategories?: string,
   sections?: readonly ("forecast" | "expenditure" | "monthly")[],
@@ -1108,6 +1116,7 @@ async function fetchCashOutGoPlan(
     financialYear,
     includePreviousFySubmitted: String(includePreviousFySubmitted),
     divisionId,
+    includeArchivedYears: String(includeArchivedYears),
   });
   if (fileCategories) query.set("fileCategories", fileCategories);
   if (sections?.length) query.set("sections", sections.join(","));
@@ -1249,12 +1258,16 @@ function ReportsPage({
     initiationDateTo: string;
     fileCategories: FileCategoryKey[];
     fileCategoryFilterActive: boolean;
+    includeArchivedYears?: boolean;
   };
 } = {}) {
   const locationSearch = useRouterState({ select: (state) => state.location.search });
   const divisions = useAccessibleDivisions();
   const settings = useSettings();
   const activeUser = useActiveUser();
+  const divisionScopedUser = isDivisionScopedUser(activeUser);
+  const canViewMerReports = Boolean(activeUser && !divisionScopedUser);
+  const canViewSuspectedAnomalies = Boolean(activeUser && !divisionScopedUser);
   const [filterCombinationLock, setFilterCombinationLock] = useState<
     FilterCombinationLock | undefined
   >(() => readFilterCombinationLock(activeUser?.id));
@@ -1276,9 +1289,14 @@ function ReportsPage({
   const navigate = useNavigate();
   const [selectedDivision, setSelectedDivision] = useState("all");
   const [reportMode, setReportMode] = useState<ReportMode>(
-    () =>
-      embeddedMode ??
-      (isReportMode(locationSearch.mode) ? locationSearch.mode : "monthlyFileInflow"),
+    () => {
+      const initialMode =
+        embeddedMode ??
+        (isReportMode(locationSearch.mode) ? locationSearch.mode : "monthlyFileInflow");
+      return !canViewMerReports && isMerReportMode(initialMode)
+        ? "cashOutGoPlan"
+        : initialMode;
+    },
   );
   const [firmReportSortKey, setFirmReportSortKey] = useState<FirmDatabaseSortKey>("firmName");
   const [firmReportSortDirection, setFirmReportSortDirection] =
@@ -1367,6 +1385,9 @@ function ReportsPage({
   const [merError, setMerError] = useState<string | undefined>();
   const [cashOutGoPlan, setCashOutGoPlan] = useState<CashOutGoPlanPayload | undefined>();
   const [cashOutGoPlanSavedSnapshot, setCashOutGoPlanSavedSnapshot] = useState("");
+  const [cashOutGoPlanLoadedRequestKey, setCashOutGoPlanLoadedRequestKey] = useState<
+    string | undefined
+  >();
   const [cashOutGoPlanLoading, setCashOutGoPlanLoading] = useState(false);
   const [cashOutGoPlanSupplementLoading, setCashOutGoPlanSupplementLoading] = useState(false);
   const [cashOutGoPlanSaving, setCashOutGoPlanSaving] = useState(false);
@@ -1416,11 +1437,15 @@ function ReportsPage({
   const [fileCategoryPreferenceSaving, setFileCategoryPreferenceSaving] = useState(false);
   const [fileCategoryPreferenceError, setFileCategoryPreferenceError] = useState("");
   const [selectedFileYear, setSelectedFileYear] = useState(() => settings.financialYear || "all");
-  const [includeArchivedYears, setIncludeArchivedYears] = useState(true);
+  const [reportsIncludeArchivedYears, setReportsIncludeArchivedYears] = useState(true);
+  const includeArchivedYears =
+    embeddedFilters?.includeArchivedYears ?? reportsIncludeArchivedYears;
   const [fileYearLocked, setFileYearLocked] = useState(false);
   const [fileInitiationFromDate, setFileInitiationFromDate] = useState("");
   const [fileInitiationToDate, setFileInitiationToDate] = useState("");
   const [reportsSummary, setReportsSummary] = useState<ReportsSummaryPayload | undefined>();
+  const [loadedReportsRequestKey, setLoadedReportsRequestKey] = useState<string | undefined>();
+  const [reportsErrorRequestKey, setReportsErrorRequestKey] = useState<string | undefined>();
   const [mmgDashboardSummary, setMmgDashboardSummary] = useState<
     DashboardSummaryPayload | undefined
   >();
@@ -1442,6 +1467,7 @@ function ReportsPage({
   const reportControllersRef = useRef<Set<AbortController>>(new Set());
   const reportsRequestRef = useRef<{
     controller: AbortController;
+    requestKey?: string;
     delayTimeoutId?: number;
     timeoutId?: number;
     reason?: "stopped" | "timeout";
@@ -1509,6 +1535,7 @@ function ReportsPage({
     setMerLoading(false);
     setPreSoPlanLoading(false);
     setReportsError("Calculation stopped. Click Refresh to try again.");
+    setReportsErrorRequestKey(activeRequest?.requestKey);
     setMmgError("Calculation stopped. Click Refresh to try again.");
   };
   useEffect(() => {
@@ -1518,12 +1545,20 @@ function ReportsPage({
   }, [onCalculationStateChange, reportCalculationActive]);
   useEffect(() => {
     if (embeddedMode) {
-      setReportMode(embeddedMode);
+      setReportMode(
+        !canViewMerReports && isMerReportMode(embeddedMode) ? "cashOutGoPlan" : embeddedMode,
+      );
       return;
     }
     const requestedMode = typeof locationSearch.mode === "string" ? locationSearch.mode : undefined;
-    setReportMode(isReportMode(requestedMode) ? requestedMode : "cashOutGoPlan");
-  }, [embeddedMode, locationSearch.mode]);
+    setReportMode(
+      !canViewMerReports && isMerReportMode(requestedMode)
+        ? "cashOutGoPlan"
+        : isReportMode(requestedMode)
+          ? requestedMode
+          : "cashOutGoPlan",
+    );
+  }, [canViewMerReports, embeddedMode, locationSearch.mode]);
   useEffect(() => {
     setDelayStatusMilestoneKey(getDelayMilestoneKey(locationSearch.delayMilestone));
   }, [locationSearch.delayMilestone]);
@@ -2199,7 +2234,9 @@ function ReportsPage({
       activeUser?.role === "sub_admin" ||
       activeUser?.role === "universal_viewer");
   const cashOutGoPlanFileCategoriesParam =
-    reportMode === "cashOutGoPlan" ? activeFileCategoriesParam : undefined;
+    reportMode === "cashOutGoPlan" || reportMode === "mmgSummary"
+      ? activeFileCategoriesParam
+      : undefined;
   const expectedCashOutgoOffsetDays = getDelayThresholdDays(expectedCashOutgoDays);
   const delayStatusThresholdDays = getDelayThresholdDays(delayStatusDays);
   const normalizedBgReceiptDelayDays = useMemo(
@@ -2244,6 +2281,18 @@ function ReportsPage({
     isActivePlusCurrentFyClosedYear(settings.selectedYear)
       ? settings.financialYear
       : settings.selectedYear || settings.financialYear;
+  const cashOutGoPlanRequestKey = JSON.stringify({
+    calculationNonce: effectiveCalculationNonce,
+    mode: reportMode,
+    financialYear: effectiveFinancialYear,
+    selectedYear: settings.selectedYear,
+    currentFinancialYear: settings.financialYear,
+    includePreviousFySubmitted:
+      reportMode === "cashOutGoPlan" ? cashOutGoPlanIncludePreviousFy : false,
+    divisionId: activeDivisionId,
+    includeArchivedYears,
+    fileCategories: cashOutGoPlanFileCategoriesParam ?? null,
+  });
   const reportSummarySections = useMemo(() => getReportSummarySections(reportMode), [reportMode]);
   const reportsQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -2299,8 +2348,15 @@ function ReportsPage({
     includeArchivedYears,
     reportSummarySections,
   ]);
+  const currentReportsRequestKey = `${effectiveCalculationNonce}:${reportMode}:${reportsQuery}`;
+  const currentReportsError =
+    reportsErrorRequestKey === currentReportsRequestKey ? reportsError : undefined;
 
   useEffect(() => {
+    const requestKey = currentReportsRequestKey;
+    setLoadedReportsRequestKey(undefined);
+    setReportsError(undefined);
+    setReportsErrorRequestKey(undefined);
     const reportsSummaryNotRequired = reportSummarySections?.includes("none") === true;
     if (
       !expectedCashOutgoDaysReady ||
@@ -2317,7 +2373,10 @@ function ReportsPage({
     }
     const controller = new AbortController();
     const untrackController = trackReportController(controller);
-    const activeRequest: NonNullable<typeof reportsRequestRef.current> = { controller };
+    const activeRequest: NonNullable<typeof reportsRequestRef.current> = {
+      controller,
+      requestKey,
+    };
     reportsRequestRef.current = activeRequest;
     setReportsSummary(undefined);
     const wasLoaded = hasLoadedReportsRef.current;
@@ -2334,23 +2393,39 @@ function ReportsPage({
         controller.abort();
         setReportsLoading(false);
         setReportsError("Report calculation exceeded 45 seconds. Click Refresh to retry.");
+        setReportsErrorRequestKey(requestKey);
       }, REPORT_CALCULATION_TIMEOUT_MS);
       fetchReportsSummary(reportsQuery, controller.signal)
         .then((payload) => {
+          if (controller.signal.aborted || reportsRequestRef.current !== activeRequest) return;
+          if (
+            reportMode === "delayStatus" &&
+            (!Array.isArray(payload.summary?.delayRows) ||
+              !payload.summary.delaySummary ||
+              !Number.isFinite(payload.summary.delaySummary.averageDays) ||
+              !Number.isFinite(payload.summary.delaySummary.longestDays) ||
+              !Array.isArray(payload.summary.delaySummary.byMilestone))
+          ) {
+            throw new Error("Delay Status results were incomplete. Refresh to retry.");
+          }
           setReportsSummary(payload.summary);
+          setLoadedReportsRequestKey(requestKey);
           setHasLoadedReports(true);
           hasLoadedReportsRef.current = true;
         })
         .catch((error) => {
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted || reportsRequestRef.current !== activeRequest) return;
           console.error(error);
           setReportsError(error instanceof Error ? error.message : "Reports request failed.");
+          setReportsErrorRequestKey(requestKey);
         })
         .finally(() => {
           if (activeRequest.timeoutId !== undefined) {
             window.clearTimeout(activeRequest.timeoutId);
           }
-          if (!controller.signal.aborted) setReportsLoading(false);
+          if (!controller.signal.aborted && reportsRequestRef.current === activeRequest) {
+            setReportsLoading(false);
+          }
           untrackController();
           if (reportsRequestRef.current === activeRequest) reportsRequestRef.current = null;
         });
@@ -2366,14 +2441,21 @@ function ReportsPage({
       untrackController();
       if (reportsRequestRef.current === activeRequest) reportsRequestRef.current = null;
     };
-  }, [expectedCashOutgoDaysReady, effectiveCalculationNonce, reportSummarySections, reportsQuery]);
+  }, [
+    expectedCashOutgoDaysReady,
+    effectiveCalculationNonce,
+    currentReportsRequestKey,
+    reportMode,
+    reportSummarySections,
+    reportsQuery,
+  ]);
 
   useEffect(() => {
     if (!reportSummarySections?.length || reportsLoading) return;
     const reportsSummaryNotRequired = reportSummarySections.includes("none");
-    if (!reportsSummaryNotRequired && !hasLoadedReports && !reportsError) return;
+    if (!reportsSummaryNotRequired && !hasLoadedReports && !currentReportsError) return;
     window.dispatchEvent(new Event("recordkeeper:reports-main-panel-loaded"));
-  }, [hasLoadedReports, reportSummarySections, reportsError, reportsLoading]);
+  }, [hasLoadedReports, reportSummarySections, currentReportsError, reportsLoading]);
 
   useEffect(() => {
     if (!expectedCashOutgoDaysReady) return;
@@ -2517,7 +2599,7 @@ function ReportsPage({
   ]);
 
   useEffect(() => {
-    if (reportMode !== "mmgSummary") {
+    if (reportMode !== "mmgSummary" || !canViewSuspectedAnomalies) {
       setMmgUnresolvedAnomalyFileCount(undefined);
       setMmgUnresolvedAnomalyError(false);
       return;
@@ -2548,7 +2630,7 @@ function ReportsPage({
       controller.abort();
       untrackController();
     };
-  }, [mmgAnomalyQuery, reportMode, effectiveCalculationNonce]);
+  }, [canViewSuspectedAnomalies, mmgAnomalyQuery, reportMode, effectiveCalculationNonce]);
 
   useEffect(() => {
     if (!needsMasterFirms) {
@@ -2603,12 +2685,27 @@ function ReportsPage({
   const supplementaryReturnedBillResubmittedRows =
     reportsSummary?.supplementaryReturnedBillResubmittedRows ?? [];
   const supplementaryReturnedBillPaidRows = reportsSummary?.supplementaryReturnedBillPaidRows ?? [];
-  const delayStatusRows = reportsSummary?.delayRows ?? [];
-  const delayStatusSummary = reportsSummary?.delaySummary ?? {
-    averageDays: 0,
-    longestDays: 0,
-    byMilestone: [],
-  };
+  const delayStatusRows = reportsSummary?.delayRows;
+  const delayStatusSummary = reportsSummary?.delaySummary;
+  const delayStatusReady = Boolean(
+    reportsSummary &&
+      reportsSummary.delayRows !== undefined &&
+      reportsSummary.delaySummary !== undefined &&
+      loadedReportsRequestKey === currentReportsRequestKey &&
+      hasLoadedReports &&
+      !reportsLoading &&
+      !currentReportsError,
+  );
+  const delayStatusRequestPending =
+    reportsLoading ||
+    !hasLoadedReports ||
+    loadedReportsRequestKey !== currentReportsRequestKey;
+  const delayStatusLoading =
+    !delayStatusReady && !currentReportsError && delayStatusRequestPending;
+  const delayStatusUnavailableError =
+    !delayStatusReady && !delayStatusLoading && !currentReportsError
+      ? "Delay Status results are unavailable for the current filters."
+      : undefined;
   const today = formatLocalDate(new Date());
   const currentMonthKey = getCurrentMonthKey();
   useEffect(() => {
@@ -2618,11 +2715,16 @@ function ReportsPage({
     setReportScopeToDate(formatLocalDate(new Date()));
   }, [effectiveFinancialYear]);
   useEffect(() => {
-    if (reportMode !== "cashOutGoPlan" && reportMode !== "mmgSummary") return;
+    if (reportMode !== "cashOutGoPlan" && reportMode !== "mmgSummary") {
+      setCashOutGoPlanLoadedRequestKey(undefined);
+      return;
+    }
     const controller = new AbortController();
     const untrackController = trackReportController(controller);
     let active = true;
     let hasPrimaryPlan = false;
+    const requestKey = cashOutGoPlanRequestKey;
+    setCashOutGoPlanLoadedRequestKey(undefined);
     setCashOutGoPlanLoading(true);
     setCashOutGoPlanSupplementLoading(false);
     setCashOutGoPlanError(undefined);
@@ -2634,6 +2736,7 @@ function ReportsPage({
           effectiveFinancialYear,
           reportMode === "cashOutGoPlan" ? cashOutGoPlanIncludePreviousFy : false,
           activeDivisionId,
+          includeArchivedYears,
           controller.signal,
           cashOutGoPlanFileCategoriesParam,
           primarySections,
@@ -2642,6 +2745,7 @@ function ReportsPage({
         const exclusivePlan = enforceExclusiveCashOutGoPlanRows(plan);
         setCashOutGoPlan(exclusivePlan);
         setCashOutGoPlanSavedSnapshot(getCashOutGoPlanDirtySnapshot(exclusivePlan));
+        setCashOutGoPlanLoadedRequestKey(requestKey);
         hasPrimaryPlan = true;
         setCashOutGoPlanLoading(false);
 
@@ -2653,6 +2757,7 @@ function ReportsPage({
             effectiveFinancialYear,
             cashOutGoPlanIncludePreviousFy,
             activeDivisionId,
+            includeArchivedYears,
             controller.signal,
             cashOutGoPlanFileCategoriesParam,
             ["expenditure"],
@@ -2666,6 +2771,7 @@ function ReportsPage({
         }
       } catch (error: unknown) {
         if (!active || controller.signal.aborted) return;
+        setCashOutGoPlanLoadedRequestKey(undefined);
         if (hasPrimaryPlan) {
           setCashOutGoPlanError(
             error instanceof Error
@@ -2696,8 +2802,10 @@ function ReportsPage({
     reportMode,
     effectiveFinancialYear,
     cashOutGoPlanIncludePreviousFy,
+    includeArchivedYears,
     activeDivisionId,
     cashOutGoPlanFileCategoriesParam,
+    cashOutGoPlanRequestKey,
     effectiveCalculationNonce,
   ]);
   useEffect(() => {
@@ -2978,15 +3086,23 @@ function ReportsPage({
   };
   const mmgSourceOverrides = useMemo(() => {
     const overrides = buildMmgSourceOverridesFromDashboard(mmgDashboardSummary);
-    overrides.filesWithUnresolvedAnomalies = {
-      value: mmgUnresolvedAnomalyError
-        ? "—"
-        : mmgUnresolvedAnomalyFileCount === undefined
-          ? "…"
-          : String(mmgUnresolvedAnomalyFileCount),
-      dashboardFilter: "openUnresolvedAnomalies",
-    };
-    const remainingExpectedPayment = getCashOutGoPlanExpectedPaymentRemaining(cashOutGoPlan);
+    if (canViewSuspectedAnomalies) {
+      overrides.filesWithUnresolvedAnomalies = {
+        value: mmgUnresolvedAnomalyError
+          ? "—"
+          : mmgUnresolvedAnomalyFileCount === undefined
+            ? "…"
+            : String(mmgUnresolvedAnomalyFileCount),
+        dashboardFilter: "openUnresolvedAnomalies",
+      };
+    }
+    const cashOutGoPlanMatchesMmgScope =
+      reportMode === "mmgSummary" &&
+      cashOutGoPlanLoadedRequestKey === cashOutGoPlanRequestKey &&
+      !cashOutGoPlanLoading;
+    const remainingExpectedPayment = cashOutGoPlanMatchesMmgScope
+      ? getCashOutGoPlanExpectedPaymentRemaining(cashOutGoPlan)
+      : undefined;
     if (remainingExpectedPayment !== undefined) {
       overrides.totalExpectedPaymentRemainingThisYear = {
         value: formatThousandsAndLakhs(remainingExpectedPayment / 100_000, 2),
@@ -2995,9 +3111,14 @@ function ReportsPage({
     return overrides;
   }, [
     cashOutGoPlan,
+    cashOutGoPlanLoadedRequestKey,
+    cashOutGoPlanLoading,
+    cashOutGoPlanRequestKey,
+    canViewSuspectedAnomalies,
     mmgDashboardSummary,
     mmgUnresolvedAnomalyError,
     mmgUnresolvedAnomalyFileCount,
+    reportMode,
   ]);
   const mmgSummaryRows =
     reportMode === "mmgSummary"
@@ -3019,7 +3140,7 @@ function ReportsPage({
           fileTypes: settings.fileTypes,
           firmTypes: settings.firmTypes,
           sourceOverrides: mmgSourceOverrides,
-        })
+        }).filter((row) => canViewSuspectedAnomalies || row.key !== "filesWithUnresolvedAnomalies")
       : [];
   const demandProcessingPresets = getDemandProcessingPresets(settings.demandProcessingPresets);
   const selectedDemandPreset = demandProcessingPresets.find(
@@ -3034,6 +3155,15 @@ function ReportsPage({
     selectedDemandPreset?.id,
     selectedDemandPreset?.toFieldId,
   ]);
+  const demandAnalysisUsesPaymentMode =
+    isUnifiedPaymentField(demandAnalysisFromFieldId) ||
+    isUnifiedPaymentField(demandAnalysisToFieldId);
+  const effectiveDemandAnalysisPaymentMode = demandAnalysisUsesPaymentMode
+    ? demandAnalysisPaymentMode
+    : "";
+  useEffect(() => {
+    if (!demandAnalysisUsesPaymentMode) setDemandAnalysisPaymentMode("");
+  }, [demandAnalysisUsesPaymentMode]);
   const demandAnalysisSourceFiles = useMemo(
     () =>
       needsDemandProcessingData
@@ -3129,12 +3259,12 @@ function ReportsPage({
   );
   const demandAnalysisRows = useMemo(() => {
     if (reportMode !== "demandProcessingAnalysis") return [];
-    if (!demandAnalysisPaymentMode) return demandAnalysisFilteredRows;
-    const normalizedMode = demandAnalysisPaymentMode.toLowerCase();
+    if (!effectiveDemandAnalysisPaymentMode) return demandAnalysisFilteredRows;
+    const normalizedMode = effectiveDemandAnalysisPaymentMode.toLowerCase();
     return demandAnalysisFilteredRows.filter(
       (row) => (row.paymentMode ?? "").trim().toLowerCase() === normalizedMode,
     );
-  }, [demandAnalysisFilteredRows, demandAnalysisPaymentMode, reportMode]);
+  }, [demandAnalysisFilteredRows, effectiveDemandAnalysisPaymentMode, reportMode]);
   const demandAnalysisUnit = useMemo(
     () => getDemandProcessingAnalysisUnit(demandAnalysisFromFieldId, demandAnalysisToFieldId),
     [demandAnalysisFromFieldId, demandAnalysisToFieldId],
@@ -3197,10 +3327,9 @@ function ReportsPage({
     fyRange.startMonthKey,
     fyRange.endMonthKey,
   );
-  const spentTillDateFyRows = actualCashOutgoRows;
   const merSoftwareComparisonRows = useMemo(() => {
     const paymentsByMonth = new Map<string, { capital: number; revenue: number }>();
-    for (const row of spentTillDateFyRows) {
+    for (const row of actualCashOutgoRows) {
       const current = paymentsByMonth.get(row.monthKey) ?? { capital: 0, revenue: 0 };
       current.capital += row.capital;
       current.revenue += row.revenue;
@@ -3225,7 +3354,7 @@ function ReportsPage({
         differenceRevenue: merRevenue - softwareRevenue,
       };
     });
-  }, [merDraftRows, spentTillDateFyRows]);
+  }, [actualCashOutgoRows, merDraftRows]);
   const merSoftwareComparisonTotals = merSoftwareComparisonRows.reduce(
     (total, row) => ({
       merCapital: total.merCapital + row.merCapital,
@@ -3248,30 +3377,12 @@ function ReportsPage({
       differenceRevenue: 0,
     },
   );
-  const currentLiabilityRows = getCurrentMonthLiabilityRows(
-    combineCashOutgoRows([
-      ...expectedCashOutgoReceiptPendingBillRows,
-      ...expectedCashOutgoBillPreparationRows,
-      ...billSentForPaymentRows,
-    ]),
-    selectedCashOutgoMonth,
-  );
   const billsPaidInMonthRows = combineRowsForMonth(selectedCashOutgoMonth, [actualCashOutgoRows]);
   const cashOutgoForMonthRows = combineRowsForMonth(selectedCashOutgoMonth, [
     expectedCashOutgoBillPreparationRows,
     billSentForPaymentRows,
     expectedCashOutgoFyRows,
   ]);
-  const expectedExpenditureTillMonthRows = combineRowsThroughMonthAsSingleMonth(
-    selectedCashOutgoMonth,
-    fyRange.startMonthKey,
-    [
-      spentTillDateFyRows,
-      expectedCashOutgoBillPreparationRows,
-      billSentForPaymentRows,
-      expectedCashOutgoReceiptPendingBillRows,
-    ],
-  );
   const merExportRows = merDraftRows.map((row) => ({
     monthKey: row.monthKey,
     month: row.month,
@@ -3403,6 +3514,9 @@ function ReportsPage({
             effectiveFinancialYear,
             cashOutGoPlanIncludePreviousFy,
             activeDivisionId,
+            includeArchivedYears,
+            undefined,
+            cashOutGoPlanFileCategoriesParam,
           )
             .then(({ plan }) => {
               const exclusivePlan = enforceExclusiveCashOutGoPlanRows(plan);
@@ -3638,6 +3752,9 @@ function ReportsPage({
           effectiveFinancialYear,
           cashOutGoPlanIncludePreviousFy,
           activeDivisionId,
+          includeArchivedYears,
+          undefined,
+          cashOutGoPlanFileCategoriesParam,
         ).then(({ plan }) => {
           const exclusivePlan = enforceExclusiveCashOutGoPlanRows(plan);
           setCashOutGoPlan(exclusivePlan);
@@ -3663,11 +3780,9 @@ function ReportsPage({
     expectedCashOutgoBillPreparationRows,
     billSentForPaymentRows,
     expectedCashOutgoFyRows,
-    spentTillDateFyRows,
+    actualCashOutgoRows,
     billsPaidInMonthRows,
-    currentLiabilityRows,
     cashOutgoForMonthRows,
-    expectedExpenditureTillMonthRows,
     pendingReturnedBillRows,
     returnedBillResubmittedRows,
     returnedBillPaidRows,
@@ -3856,9 +3971,7 @@ function ReportsPage({
           : `Firm Performance - ${displayFinancialYearLabel(effectiveFinancialYear)} - ${activeDivision}`
         : reportTitleWithDivision;
   const reportLogic = getCashOutgoReportLogic(reportMode, {
-    today,
     monthKey: isMonthSelectionReport(reportMode) ? selectedCashOutgoMonth : currentMonthKey,
-    financialYear: effectiveFinancialYear,
   });
   const billingPaymentReportDescription = getBillingPaymentReportDescription(reportMode, {
     activeHistoricalDateRange,
@@ -3888,9 +4001,7 @@ function ReportsPage({
       ? `Analysis basis: D.P./revised D.P. date determines the report month, with a configured expected-payment offset of ${expectedCashOutgoOffsetDays} days.`
       : isMonthSelectionReport(reportMode)
         ? `Analysis basis: Selected month ${formatMonthTitle(selectedCashOutgoMonth)}.`
-        : reportMode === "spentTillDateFy"
-          ? `Analysis basis: Recorded payment dates through ${formatIsoDateForDisplay(historicalReportToDate)}.`
-          : undefined,
+        : undefined,
   );
   const cashOutgoEmptyMessage =
     reportMode === "merData"
@@ -3938,7 +4049,7 @@ function ReportsPage({
         today: isHistoricalDateRangeReport(mode) ? historicalReportToDate : today,
         monthKey: isMonthSelectionReport(mode) ? selectedCashOutgoMonth : currentMonthKey,
         financialYear: effectiveFinancialYear,
-      }),
+      }, format),
     );
     void downloadBackendExport({
       format,
@@ -3961,20 +4072,13 @@ function ReportsPage({
           cashOutgoEmptyMessage,
           plot,
         )
-      : reportMode === "currentMonthLiability"
-        ? printCurrentLiabilityToPdf(
-            selectedCashOutgoRows,
-            selectedReportTitle,
-            cashOutgoExportDescription,
-            plot,
-          )
-        : printExpectedCashOutgoToPdf(
-            selectedCashOutgoRows,
-            selectedReportTitle,
-            cashOutgoExportDescription,
-            cashOutgoEmptyMessage,
-            plot,
-          );
+      : printExpectedCashOutgoToPdf(
+          selectedCashOutgoRows,
+          selectedReportTitle,
+          cashOutgoExportDescription,
+          cashOutgoEmptyMessage,
+          plot,
+        );
   const exportCashOutgoExcel = (plot?: ExportPlot) =>
     reportMode === "merData"
       ? exportExpectedCashOutgoToExcel(
@@ -3984,21 +4088,14 @@ function ReportsPage({
           cashOutgoEmptyMessage,
           plot,
         )
-      : reportMode === "currentMonthLiability"
-        ? exportCurrentLiabilityToExcel(
-            selectedCashOutgoRows,
-            selectedReportTitle,
-            cashOutgoExportDescription,
-            plot,
-          )
-        : exportExpectedCashOutgoToExcel(
-            selectedCashOutgoRows,
-            selectedReportTitle,
-            cashOutgoExportDescription,
-            cashOutgoEmptyMessage,
-            plot,
-          );
-  const exportMerSoftwareComparison = (format: "pdf" | "excel", plot?: ExportPlot) => {
+      : exportExpectedCashOutgoToExcel(
+          selectedCashOutgoRows,
+          selectedReportTitle,
+          cashOutgoExportDescription,
+          cashOutgoEmptyMessage,
+          plot,
+        );
+  const exportMerSoftwareComparison = (format: "pdf" | "excel", plots?: ExportPlot[]) => {
     const exportRows = merSoftwareComparisonRows.map((row) => [
       row.month,
       formatThousandsAndLakhs(readMerAmount(row.merCapital), 2),
@@ -4024,7 +4121,7 @@ function ReportsPage({
           ? "Difference = MER minus Recorded Payments. All monetary values are shown in Lakhs."
           : "MER is shown as an all-division reference. Recorded Payments follow the selected scope, so no difference is calculated for this filtered view.",
       ].join("\n"),
-      plot,
+      plots,
       tables: [
         {
           title: `Monthly comparison - FY ${displayFinancialYearLabel(effectiveFinancialYear)}`,
@@ -4076,10 +4173,14 @@ function ReportsPage({
     `Analysis basis: ${delayStatusMilestoneKey === "all" ? "All milestones" : (delayMilestoneOptions.find((item) => item.key === delayStatusMilestoneKey)?.label ?? delayStatusMilestoneKey)}, delay threshold ${delayStatusThresholdDays} days.`,
     "Live/current workflow delays and payment cases before first submission. Payment-before-submission uses the applicable IR Receipt Date or Job Completion Received Date to today; it excludes advances and supplementary bills.",
   );
-  const exportDelayStatusPdf = () =>
+  const exportDelayStatusPdf = () => {
+    if (!delayStatusReady || !delayStatusRows) return;
     printDelayStatusToPdf(delayStatusRows, selectedReportTitle, delayStatusExportDescription);
-  const exportDelayStatusExcel = () =>
+  };
+  const exportDelayStatusExcel = () => {
+    if (!delayStatusReady || !delayStatusRows) return;
     exportDelayStatusToExcel(delayStatusRows, selectedReportTitle, delayStatusExportDescription);
+  };
   const firmDatabaseExportDescription = getReportExportDescription(
     reportExportContextDescription,
     `Analysis basis: Sorted by ${firmDatabaseColumns.find((column) => column.key === firmReportSortKey)?.label ?? firmReportSortKey}, ${firmReportSortDirection === "asc" ? "ascending" : "descending"} order.`,
@@ -4108,6 +4209,13 @@ function ReportsPage({
       plot,
     );
   const selectedReportMode = reportModes.find((mode) => mode.key === reportMode) ?? reportModes[0];
+  const visibleCashOutgoReportGroups = cashOutgoReportGroups;
+  const visibleCashOutgoReportModes = visibleCashOutgoReportGroups.flatMap(
+    (group) => group.modes,
+  );
+  const disabledCashOutgoReportModes = canViewMerReports
+    ? undefined
+    : new Set<ReportMode>(["merData", "merComparison"]);
   const historicalDateRangeChanged =
     historicalReportFromDate !== getFinancialYearStartDate(effectiveFinancialYear) ||
     historicalReportToDate !== today;
@@ -4502,6 +4610,7 @@ function ReportsPage({
   };
   const openMmgSummaryFiles = (row: MmgSummaryRow) => {
     if (row.dashboardFilter === "openUnresolvedAnomalies") {
+      if (!canViewSuspectedAnomalies) return;
       if (typeof window !== "undefined") {
         const userKey = activeUser?.id ?? "anonymous";
         const divisionKey = `recordkeeper:division-filter:${userKey}`;
@@ -4643,6 +4752,7 @@ function ReportsPage({
   };
   const selectReportMode = (mode: ReportMode) => {
     if (embeddedMode) return;
+    if (!canViewMerReports && isMerReportMode(mode)) return;
     if (mode === "preSoExpectedCashOutgo") {
       setFileInitiationFromDate("");
       setFileInitiationToDate("");
@@ -4708,9 +4818,10 @@ function ReportsPage({
               />
               <CollapsibleReportGroup
                 title="Cash Outgo"
-                modes={cashOutgoReportModes}
+                modes={visibleCashOutgoReportModes}
                 paymentOffsetDays={expectedCashOutgoOffsetDays}
-                sections={cashOutgoReportGroups}
+                sections={visibleCashOutgoReportGroups}
+                disabledModeKeys={disabledCashOutgoReportModes}
                 footer={
                   <div className="space-y-1.5 border-t border-border p-1.5">
                     <div className="text-[0.625rem] font-bold uppercase tracking-wide text-muted-foreground">
@@ -4800,11 +4911,11 @@ function ReportsPage({
                     type="checkbox"
                     data-testid="reports-include-active-archived-years"
                     checked={includeArchivedYears}
-                    onChange={(event) => setIncludeArchivedYears(event.target.checked)}
+                    onChange={(event) => setReportsIncludeArchivedYears(event.target.checked)}
                     className="size-4 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
                   />
                   <span className="whitespace-nowrap">
-                    Include active files from archived years
+                    Active files from archived years
                   </span>
                   <TooltipProvider delayDuration={150}>
                     <Tooltip>
@@ -4822,10 +4933,11 @@ function ReportsPage({
                         align="start"
                         className="max-w-[min(28rem,calc(100vw-2rem))] border border-border bg-background p-2 text-xs leading-relaxed text-foreground shadow-lg"
                       >
-                        When checked, active carry-forward files whose initiation year is archived
-                        remain included. When unchecked, those files are excluded from normal views.
-                        Closed or fully archived files remain excluded unless an explicit historical
-                        or all-files scope is selected.
+                        When checked, active carry-forward files from archived years remain
+                        included. When unchecked, files from archived years are excluded. All Files
+                        follows this rule too; closed, demand-cancelled, and fully S.O.-cancelled
+                        files from archived years stay out. Files moved to Settings → Archive are
+                        always excluded.
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>
@@ -4906,21 +5018,21 @@ function ReportsPage({
               {matrixFieldsPreferenceError}
             </p>
           ) : null}
-          {reportsError ||
+          {currentReportsError ||
           (reportsLoading && !hasLoadedReports) ||
           mmgError ||
           firmDatabaseError ? (
             <div
               className={
                 "rounded-md border px-3 py-2 text-xs " +
-                (reportsError || mmgError || firmDatabaseError
+                (currentReportsError || mmgError || firmDatabaseError
                   ? "border-destructive/30 bg-destructive/10 text-destructive"
                   : "border-border bg-secondary/30 text-muted-foreground")
               }
             >
-              {reportsError || mmgError || firmDatabaseError
-                ? reportsError
-                  ? `Reports calculation: ${reportsError}`
+              {currentReportsError || mmgError || firmDatabaseError
+                ? currentReportsError
+                  ? `Reports calculation: ${currentReportsError}`
                   : `Reports API unavailable: ${mmgError || firmDatabaseError}`
                 : "Updating reports..."}
             </div>
@@ -4984,33 +5096,56 @@ function ReportsPage({
               selectedPresetId={demandAnalysisPresetId}
               fromFieldId={demandAnalysisFromFieldId}
               toFieldId={demandAnalysisToFieldId}
-              paymentMode={demandAnalysisPaymentMode}
+              paymentMode={effectiveDemandAnalysisPaymentMode}
+              paymentModeEnabled={demandAnalysisUsesPaymentMode}
               rows={demandAnalysisRows}
               stats={demandAnalysisStats}
               rangeRows={demandProcessingRangeRows}
               analysisUnit={demandAnalysisUnit}
               exportDescription={getReportExportDescription(
                 reportExportContextDescription,
-                `Analysis basis: ${getDemandProcessingField(demandAnalysisFromFieldId)?.label ?? "From date"} to ${getDemandProcessingField(demandAnalysisToFieldId)?.label ?? "To date"}${demandAnalysisPaymentMode ? `, payment mode: ${demandAnalysisPaymentMode}` : ""}.`,
+                `Analysis basis: ${getDemandProcessingField(demandAnalysisFromFieldId)?.label ?? "From date"} to ${getDemandProcessingField(demandAnalysisToFieldId)?.label ?? "To date"}${effectiveDemandAnalysisPaymentMode ? `, payment mode: ${effectiveDemandAnalysisPaymentMode}` : ""}.`,
                 "Monetary values are in Lakh.",
               )}
               filters={demandAnalysisFilters}
               filterFields={demandProcessingFilterFields}
-              onPresetChange={setDemandAnalysisPresetId}
+              onPresetChange={(presetId) => {
+                setDemandAnalysisPresetId(presetId);
+                const preset = demandProcessingPresets.find((item) => item.id === presetId);
+                if (
+                  preset &&
+                  !(
+                    isUnifiedPaymentField(preset.fromFieldId) ||
+                    isUnifiedPaymentField(preset.toFieldId)
+                  )
+                ) {
+                  setDemandAnalysisPaymentMode("");
+                }
+              }}
               onFromFieldChange={(fieldId) => {
                 setDemandAnalysisPresetId("");
                 setDemandAnalysisFromFieldId(fieldId);
+                if (!isUnifiedPaymentField(fieldId) && !isUnifiedPaymentField(demandAnalysisToFieldId)) {
+                  setDemandAnalysisPaymentMode("");
+                }
               }}
               onToFieldChange={(fieldId) => {
                 setDemandAnalysisPresetId("");
                 setDemandAnalysisToFieldId(fieldId);
+                if (!isUnifiedPaymentField(demandAnalysisFromFieldId) && !isUnifiedPaymentField(fieldId)) {
+                  setDemandAnalysisPaymentMode("");
+                }
               }}
               onResetDateFields={() => {
                 setDemandAnalysisPresetId("");
                 setDemandAnalysisFromFieldId("");
                 setDemandAnalysisToFieldId("");
               }}
-              onPaymentModeChange={setDemandAnalysisPaymentMode}
+              onPaymentModeChange={(paymentMode) =>
+                demandAnalysisUsesPaymentMode
+                  ? setDemandAnalysisPaymentMode(paymentMode)
+                  : setDemandAnalysisPaymentMode("")
+              }
               onAddFilter={addDemandProcessingFilter}
               onUpdateFilter={updateDemandProcessingFilter}
               onRemoveFilter={removeDemandProcessingFilter}
@@ -5160,9 +5295,12 @@ function ReportsPage({
             />
           ) : reportMode === "delayStatus" ? (
             <DelayStatusReport
-              rows={delayStatusRows}
+              rows={delayStatusRows ?? []}
               title={selectedReportTitle}
               summary={delayStatusSummary}
+              ready={delayStatusReady}
+              loading={delayStatusLoading}
+              error={currentReportsError || delayStatusUnavailableError}
               thresholdDays={delayStatusThresholdDays}
               selectedDays={delayStatusDays}
               selectedMilestoneKey={delayStatusMilestoneKey}
@@ -5186,12 +5324,12 @@ function ReportsPage({
               title={reportTitleWithDivision}
               showDifference={merComparisonIsOrganizationWide}
               loading={reportsLoading || merLoading}
-              error={reportsError || merError}
+              error={currentReportsError || merError}
               actions={
-                !reportsLoading && !merLoading && !reportsError && !merError ? (
+                !reportsLoading && !merLoading && !currentReportsError && !merError ? (
                   <ReportHeaderActions
-                    onPdf={(plot) => exportMerSoftwareComparison("pdf", plot)}
-                    onExcel={(plot) => exportMerSoftwareComparison("excel", plot)}
+                    onPdfPlots={(plots) => exportMerSoftwareComparison("pdf", plots)}
+                    onExcelPlots={(plots) => exportMerSoftwareComparison("excel", plots)}
                   />
                 ) : null
               }
@@ -5416,55 +5554,6 @@ function ReportsPage({
                 )
               }
             />
-          ) : reportMode === "currentMonthLiability" ? (
-            <CurrentMonthLiabilityReport
-              rows={currentLiabilityRows}
-              title={reportTitle}
-              titleHelper={supplementaryBillInclusionNotes.currentMonthLiability}
-              description={reportLogic}
-              actions={
-                <ReportHeaderActions
-                  divisions={divisions}
-                  activeDivision={activeDivision}
-                  onDivisionChange={setSelectedDivision}
-                  onPdf={exportCashOutgoPdf}
-                  onExcel={exportCashOutgoExcel}
-                />
-              }
-              selectedDays={expectedCashOutgoDaysDraft}
-              selectedDaysUnlocked={expectedCashOutgoDaysUnlocked}
-              sharedDays={sharedExpectedCashOutgoDays}
-              savingDays={expectedCashOutgoDaysSaving}
-              daysError={expectedCashOutgoDaysError}
-              daysSaved={expectedCashOutgoDaysSaved}
-              hasPersonalOverride={hasExpectedCashOutgoDaysOverride}
-              onDaysChange={setExpectedCashOutgoDaysDraft}
-              onSelectedDaysUnlockedChange={toggleExpectedCashOutgoDaysLock}
-              onSelectedDaysSave={saveExpectedCashOutgoDays}
-              onSelectedDaysReset={resetExpectedCashOutgoDays}
-              monthSelection={monthSelectionControls}
-              onOpenMonth={(monthKey) =>
-                openCashOutgoAnySearch(
-                  [
-                    "expectedReceiptPendingBillThrough",
-                    "billPreparationThrough",
-                    "billSentThrough",
-                  ],
-                  monthKey,
-                )
-              }
-              onOpenAll={() =>
-                openCashOutgoAnySearchWithContext(
-                  [
-                    "expectedReceiptPendingBillThrough",
-                    "billPreparationThrough",
-                    "billSentThrough",
-                  ],
-                  getCashOutgoTotalMonthKey(currentLiabilityRows),
-                  getCashOutgoTotalDateContext(currentLiabilityRows),
-                )
-              }
-            />
           ) : reportMode === "itemsDeliveredBillsPrepared" ? (
             <ExpectedCashOutgoReport
               rows={expectedCashOutgoBillPreparationRows}
@@ -5546,31 +5635,6 @@ function ReportsPage({
                   "expectedDp",
                   getCashOutgoTotalMonthKey(expectedCashOutgoFyRows),
                   getCashOutgoTotalDateContext(expectedCashOutgoFyRows),
-                )
-              }
-            />
-          ) : reportMode === "spentTillDateFy" ? (
-            <ExpectedCashOutgoReport
-              rows={spentTillDateFyRows}
-              title={reportTitle}
-              titleHelper={supplementaryBillInclusionNotes.spentTillDateFy}
-              description={reportLogic}
-              actions={
-                <ReportHeaderActions
-                  divisions={divisions}
-                  activeDivision={activeDivision}
-                  onDivisionChange={setSelectedDivision}
-                  onPdf={exportCashOutgoPdf}
-                  onExcel={exportCashOutgoExcel}
-                />
-              }
-              dateRange={historicalDateRangeControls}
-              onOpenMonth={(monthKey) => openCashOutgoSearch("actual", monthKey)}
-              onOpenAll={() =>
-                openCashOutgoSearchWithContext(
-                  "actual",
-                  getCashOutgoTotalMonthKey(spentTillDateFyRows),
-                  getCashOutgoTotalDateContext(spentTillDateFyRows),
                 )
               }
             />
@@ -5705,58 +5769,7 @@ function ReportsPage({
                 )
               }
             />
-          ) : (
-            <ExpectedCashOutgoReport
-              rows={expectedExpenditureTillMonthRows}
-              title={reportTitle}
-              titleHelper={supplementaryBillInclusionNotes.expectedExpenditureTillMonth}
-              description={reportLogic}
-              actions={
-                <ReportHeaderActions
-                  divisions={divisions}
-                  activeDivision={activeDivision}
-                  onDivisionChange={setSelectedDivision}
-                  onPdf={exportCashOutgoPdf}
-                  onExcel={exportCashOutgoExcel}
-                />
-              }
-              selectedDays={expectedCashOutgoDaysDraft}
-              selectedDaysUnlocked={expectedCashOutgoDaysUnlocked}
-              sharedDays={sharedExpectedCashOutgoDays}
-              savingDays={expectedCashOutgoDaysSaving}
-              daysError={expectedCashOutgoDaysError}
-              daysSaved={expectedCashOutgoDaysSaved}
-              hasPersonalOverride={hasExpectedCashOutgoDaysOverride}
-              onDaysChange={setExpectedCashOutgoDaysDraft}
-              onSelectedDaysUnlockedChange={toggleExpectedCashOutgoDaysLock}
-              onSelectedDaysSave={saveExpectedCashOutgoDays}
-              onSelectedDaysReset={resetExpectedCashOutgoDays}
-              monthSelection={monthSelectionControls}
-              onOpenMonth={(monthKey) =>
-                openCashOutgoAnySearch(
-                  [
-                    "actualThrough",
-                    "billPreparationThrough",
-                    "billSentThrough",
-                    "expectedReceiptPendingBillThrough",
-                  ],
-                  monthKey,
-                )
-              }
-              onOpenAll={() =>
-                openCashOutgoAnySearchWithContext(
-                  [
-                    "actualThrough",
-                    "billPreparationThrough",
-                    "billSentThrough",
-                    "expectedReceiptPendingBillThrough",
-                  ],
-                  getCashOutgoTotalMonthKey(expectedExpenditureTillMonthRows),
-                  getCashOutgoTotalDateContext(expectedExpenditureTillMonthRows),
-                )
-              }
-            />
-          )}
+          ) : null}
         </div>
       </div>
     </div>
@@ -5777,11 +5790,8 @@ type ReportMode =
   | "itemsDeliveredBillsPrepared"
   | "billsSubmitted"
   | "expectedCashOutgoFy"
-  | "spentTillDateFy"
   | "billsPaidInMonth"
-  | "currentMonthLiability"
   | "cashOutgoForMonth"
-  | "expectedExpenditureTillMonth"
   | "pendingReturnedBills"
   | "returnedBillsResubmitted"
   | "returnedBillsPaid"
@@ -5798,6 +5808,12 @@ type ReportMode =
   | "bgReceiptDelay"
   | "warrantyBgMismatch"
   | "delayStatus";
+
+const merReportModeKeys = new Set(["merData", "merComparison"]);
+function isMerReportMode(mode: string | undefined) {
+  return Boolean(mode && merReportModeKeys.has(mode));
+}
+
 type ReportDateRange = { fromDate: string; toDate: string };
 type CashOutgoFilterMode =
   | "expectedDp"
@@ -5839,7 +5855,6 @@ const reportModes = [
   },
   { key: "billsSubmitted", label: "Bills Submitted, Payment Pending" },
   { key: "expectedCashOutgoFy", label: "Expected Cash Outgo by D.P." },
-  { key: "spentTillDateFy", label: "Recorded Cash Outgo as on Date" },
   { key: "billsPaidInMonth", label: "Bills Paid in Selected Month" },
   { key: "pendingReturnedBills", label: "Pending returned bills" },
   { key: "returnedBillsResubmitted", label: "Returned bills resubmitted and unpaid" },
@@ -5853,8 +5868,6 @@ const reportModes = [
   },
   { key: "supplementaryReturnedBillsPaid", label: "Returned supplementary bills paid" },
   { key: "cashOutgoForMonth", label: "Expected cash outgo exclusively for selected month" },
-  { key: "expectedExpenditureTillMonth", label: "Expected Expenditure Up to Selected Month" },
-  { key: "currentMonthLiability", label: "Cumulative Liability Up to Month" },
   { key: "monthlyFileInflow", label: "Monthly file inflow" },
   { key: "monthWiseSupplyOrder", label: "Month-wise Supply Order" },
   { key: "monthWiseDeliverySchedule", label: "Month-wise Delivery / Contract Period Schedule" },
@@ -5894,7 +5907,7 @@ function getReportSummarySections(mode: ReportMode): ReportSummarySection[] | un
   if (mode === "itemsDeliveredBillsPrepared") return ["cashOutgoBillPreparation"];
   if (mode === "billsSubmitted") return ["cashOutgoBillSent"];
   if (mode === "expectedCashOutgoFy") return ["cashOutgoExpectedDp"];
-  if (mode === "spentTillDateFy" || mode === "billsPaidInMonth" || mode === "merComparison") {
+  if (mode === "billsPaidInMonth" || mode === "merComparison") {
     return ["cashOutgoActual"];
   }
   if (mode === "pendingReturnedBills") return ["cashOutgoPendingReturned"];
@@ -5913,19 +5926,8 @@ function getReportSummarySections(mode: ReportMode): ReportSummarySection[] | un
   if (mode === "supplementaryReturnedBillsPaid") {
     return ["cashOutgoSupplementaryReturnedPaid"];
   }
-  if (mode === "currentMonthLiability") {
-    return ["cashOutgoReceiptPending", "cashOutgoBillPreparation", "cashOutgoBillSent"];
-  }
   if (mode === "cashOutgoForMonth") {
     return ["cashOutgoExpectedDp", "cashOutgoBillPreparation", "cashOutgoBillSent"];
-  }
-  if (mode === "expectedExpenditureTillMonth") {
-    return [
-      "cashOutgoActual",
-      "cashOutgoReceiptPending",
-      "cashOutgoBillPreparation",
-      "cashOutgoBillSent",
-    ];
   }
   if (mode === "delayStatus") return ["delay"];
   if (mode === "bgCustody" || mode === "bgReceiptDelay" || mode === "warrantyBgMismatch") {
@@ -5970,28 +5972,13 @@ const supplementaryBillInclusionNotes = {
     "Unpaid supplementary bills are included after they are sent or resubmitted.",
     "The date range checks the latest Bill Sent/Submitted date. Example: a bill resubmitted in October is dated to October for this view.",
   ],
-  spentTillDateFy: [
-    "Paid supplementary bills appear in the FY of their payment date.",
-    "The paid amount is used when recorded; otherwise, the supplementary bill amount is used.",
-    "MER is not used.",
-  ],
   billsPaidInMonth: [
     "Paid supplementary bills appear in the month of their payment date.",
     "The paid amount is used when recorded; otherwise, the supplementary bill amount is used.",
   ],
-  currentMonthLiability: [
-    "Adds unpaid work through the selected month: bills not yet prepared, prepared bills, and bills sent but not paid.",
-    "Cancelled demands and S.O.s are left out. Unpaid amounts for a shortclosed S.O. remain while No Further Action is No.",
-    "Closed files follow the selected filters. Other S.O.s in the same file continue as usual.",
-    "Unpaid supplementary bills are included after they are sent or resubmitted.",
-  ],
   cashOutgoForMonth: [
     "Expected supplementary-bill payments are included in the selected month.",
     "Unpaid work for a shortclosed S.O. stops counting when No Further Action is Yes.",
-  ],
-  expectedExpenditureTillMonth: [
-    "Submitted, resubmitted, and returned supplementary bills are included in the selected period.",
-    "Unpaid work for a shortclosed S.O. stops counting when No Further Action is Yes; payments already made remain in the history.",
   ],
 } satisfies Partial<Record<ReportMode, HelperText>>;
 const reportModeHelperText = {
@@ -6154,7 +6141,7 @@ const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
   {
     key: "demandDescription",
     label: "Demand description",
-    helper: "The Demand Description recorded in File Details.",
+    helper: "The Demand Description recorded in File details.",
   },
   {
     key: "soNo",
@@ -6194,9 +6181,9 @@ const soPaymentMatrixFieldOptions: SoPaymentMatrixColumnOption[] = [
   { key: "soValue", label: "S.O. value", helper: "The S.O.'s combined Capital and Revenue value." },
   {
     key: "paymentBasis",
-    label: "Payment basis",
+    label: "Payment Type",
     helper:
-      "Explains what makes this payment due, such as a stage date, bill, delivery, Job Completion Received Date, or D.P.",
+      "Payment category: Regular Payment, Stage Payment, Advance Payment, or Supplementary Bill Payment.",
   },
 ];
 const fileYearSubfilterHelper = [
@@ -6269,7 +6256,6 @@ const cashOutgoReportGroups: ReadonlyArray<ReportModeSection> = [
     ]),
   },
 ];
-const cashOutgoReportModes = cashOutgoReportGroups.flatMap((group) => group.modes);
 const combinedCashOutgoExportModes = cashOutgoReportGroups
   .filter((group) => group.title !== "MER")
   .flatMap((group) => group.modes.map((mode) => mode.key))
@@ -6740,6 +6726,7 @@ function ReportModeButton({
   onSelect,
   paymentOffsetDays,
   emphasized = false,
+  disabled = false,
 }: {
   mode: ReportModeOption;
   label?: string;
@@ -6747,6 +6734,7 @@ function ReportModeButton({
   onSelect: (mode: ReportMode) => void;
   paymentOffsetDays: number;
   emphasized?: boolean;
+  disabled?: boolean;
 }) {
   const inactiveClass = emphasized
     ? "border-border bg-background/80 text-foreground hover:border-primary/30 hover:bg-accent"
@@ -6756,10 +6744,19 @@ function ReportModeButton({
     <div className="flex items-center gap-0.5">
       <button
         type="button"
-        onClick={() => onSelect(mode.key)}
+        disabled={disabled}
+        aria-disabled={disabled}
+        title={disabled ? "This report is unavailable to Division users." : undefined}
+        onClick={() => {
+          if (!disabled) onSelect(mode.key);
+        }}
         className={
           "min-h-9 min-w-0 flex-1 rounded-md border px-2.5 py-1.5 text-left text-[13px] font-medium leading-snug transition " +
-          (selected ? "border-primary bg-primary text-primary-foreground shadow-sm" : inactiveClass)
+          (disabled
+            ? "cursor-not-allowed border-border/60 bg-muted/50 text-muted-foreground/60"
+            : selected
+              ? "border-primary bg-primary text-primary-foreground shadow-sm"
+              : inactiveClass)
         }
       >
         {label}
@@ -6873,13 +6870,6 @@ function getReportModeButtonHelperContent(
       "Unpaid follow-up for a shortclosed S.O. stops when No Further Action is Yes.",
     ];
   }
-  if (mode === "spentTillDateFy") {
-    return [
-      "Payments are grouped by their recorded payment date.",
-      "MER is not used here.",
-      "For a specific FY, only payment dates inside that FY are counted.",
-    ];
-  }
   if (mode === "billsPaidInMonth") {
     return [
       "Payments are grouped under the selected month when their payment date falls in it.",
@@ -6890,17 +6880,6 @@ function getReportModeButtonHelperContent(
     return [
       "Forecast cash outgo is grouped under the selected month when its expected date falls in it.",
       "Prepared bills, unpaid submitted bills, and eligible D.P.-based items contribute to this forecast.",
-    ];
-  }
-  if (mode === "expectedExpenditureTillMonth") {
-    return [
-      "Adds recorded payments and expected unpaid amounts from the start of the FY through the selected month.",
-    ];
-  }
-  if (mode === "currentMonthLiability") {
-    return [
-      "Unpaid liabilities are totalled through the selected month.",
-      "A bill is included only if it was still unpaid at the selected cutoff.",
     ];
   }
   if (isReturnedBillReportMode(mode)) {
@@ -6955,7 +6934,9 @@ function getReportModeButtonHelperContent(
       "Example table: Scenario | BG category or file condition | Delay start date | Included or excluded",
       "Example row: PSB required | PSB | S.O. date | Included while the BG is not received and the delay is above the selected threshold; received BG is excluded.",
       "Example row: Combined PSB+PWB required | PSB+PWB | S.O. date | Included while the combined BG is not received and the delay is above the selected threshold; received BG is excluded.",
-      "Example row: PWB, Goods & Services, IR = Yes | PWB | S.O.-level IR Receipt Date | Included while the BG is not received; stage dates are not used; missing IR Receipt Date is omitted.",
+      "Example row: PWB, Goods & Services, IR = Yes, non-staged | PWB | S.O.-level IR Receipt Date | Included while the BG is not received and the parent IR Receipt Date is recorded.",
+      "Example row: PWB, Goods & Services, IR = Yes, staged payment | PWB | Earliest recorded stage IR Receipt Date | Included using the earliest completed stage; no recorded stage date is omitted.",
+      "Example row: PWB, Goods & Services, IR = Yes, common staged payment | PWB | Latest stage IR Receipt Date after all stages are completed | Included only after every stage has an IR Receipt Date; incomplete stage dates are omitted.",
       "Example row: PWB, Goods & Services, IR = No, non-staged | PWB | Job Completion Date | Included while the BG is not received and the start date is recorded.",
       "Example row: PWB, Goods & Services, IR = No, staged payment | PWB | Earliest recorded stage Job Completion Date | Included using the earliest completed stage; no recorded stage date is omitted.",
       "Example row: PWB, Goods & Services, IR = No, common staged payment | PWB | Latest stage Job Completion Date after all stages are completed | Included only after every stage has a completion date; incomplete stage dates are omitted.",
@@ -6978,19 +6959,19 @@ function getReportModeButtonHelperContent(
   if (mode === "delayStatus") {
     return [
       "Purpose: Lists currently pending workflow milestones, S.O. tasks, BG tasks, bill tasks, and payment tasks whose pending age is greater than the selected number of days.",
-      "Purpose: Bidding delay ends as soon as Bid Date is entered. Bid Opening and Bidding Stage Over are not part of this delay group.",
+      "Purpose: Normal Bidding delay ends when Bid Date is recorded. Refloat Bidding delay ends when Refloat Bidding Date is recorded. Bid Opening, Bid Opened, and Stage Over do not extend either delay.",
       "Filters: Global Filter, File Initiation Year, initiation date, Division, and File Type choose the files in scope. Days and Milestone further narrow the result.",
       "Threshold: A row is included only when pending age is strictly greater than the selected Days value. A case at exactly the threshold is not included.",
-      "Calculation: A completed task runs from its applicable start date to its recorded completion date. A pending task runs from its applicable start date through today.",
-      "Current status: Delay Status shows only work that is still pending. A completed milestone is not shown as a live delay, even if it took longer than the selected threshold.",
+      "Pending age runs from the applicable start date through today.",
+      "Only currently pending work appears as a live delay; completed milestones are excluded.",
       "RFP Vetting: Normal and Refloat RFP Vetting use their own cycle's applicability, initiation date, and approval date. Once initiated, an unapproved RFP Vetting delay remains visible even if the current milestone advances or Bidding Stage Over becomes Yes.",
       "Count unit: File-level milestones count files; Financial Sanction, Supply Order, BG, delivery, bill, and payment rows count the applicable S.O., stage, BG, bill, or payment case. One file can therefore produce more than one row.",
       "Sequential workflow and BG obligations are tracked independently: each S.O. contributes only its current sequential stage, while applicable unreceived PSB, PWB, or PSB+PWB can appear alongside it. A pending BG does not hide IR, bill, or payment delays.",
-      "PWB delay starts from IR Receipt Date for Goods & Services with IR = Yes. Otherwise, it uses the applicable Material Receipt or Job Completion date; contract files use the S.O. date.",
+      "PWB delay starts from the parent IR Receipt Date for non-staged Goods & Services with IR = Yes. Staged Goods & Services with IR = Yes use the earliest stage IR Receipt Date for stage payments, or the latest stage IR Receipt Date after every stage is complete for common staged payment. Goods & Services with IR = No use the applicable Job Completion date, and contract files use the S.O. date.",
       "Example: With IR = Yes, a blank IR Receipt Date means no PWB delay age is calculated yet.",
       "Scope: Cancelled files are excluded. Cancelled S.O.s, demand-cancelled files, and no-further-action payment cases are excluded from applicable S.O. and payment delay rows.",
       "File workflow: Workflow Not Started uses Demand Received, or file creation date when Demand Received is blank. Most file-level milestones use the latest applicable earlier completed predecessor; TCEC Pre Post-TCEC and Post-TCEC use their explicit cycle dates below.",
-      "Bidding: Normal bidding starts from CFA Approval Date and ends when Bid Date is recorded. For a Non-TCEC Refloat, after Refloat recommendation and Bidding Stage Over = Yes, the common Bidding delay restarts from Refloat recommendation and ends when Refloat bidding date is recorded.",
+      "Bidding: Normal starts at CFA Approval Date and ends at Bid Date. TCEC Refloat starts at Post-TCEC Minutes Date; Non-TCEC Refloat starts at Refloat Recommendation Date after normal Bidding Stage Over = Yes. Each delay ends at its applicable Bidding Date. Bid Opening and Stage Over do not extend it.",
       "GeM Undertaking: Delay Status selects one active cycle. Normal uses CFA Approval Date → GeM Undertaking Date and normal GeM mode. Refloat uses Post-TCEC Date (TCEC) or Refloat recommendation (Non-TCEC) → Refloat GeM undertaking and Refloat GeM mode. Comparison excludes that cycle. Milestone Clearing may count separate normal and Refloat samples. A blank start date produces no delay sample.",
         "Non-TCEC Technical Evaluation: The recorded Bid Opening Date must be before today. Bidding Stage Over = Yes is required. If Refloat = No, it runs from Bid Opening Date to the first Financial Sanction. If Refloat = Yes before Refloat Bid Opening Date is recorded, it runs from Bid Opening Date to Refloat recommendation. After Refloat Bid Opening Date, Refloat Bidding Stage Over = Yes is required and the later cycle runs from Refloat Bid Opening Date to Financial Sanction.",
       "Pre Post-TCEC: Normal uses Bid Opening Date → Post-TCEC Date and requires Bidding Stage Over = Yes. Refloat uses Refloat Bid Opening Date → Refloat Post-TCEC Date and requires Refloat Bidding Stage Over = Yes. Each cycle uses its own GeM Bidding Mode for applicability. The delay remains visible if the current milestone advances.",
@@ -7000,7 +6981,7 @@ function getReportModeButtonHelperContent(
       "Payment cycle (ASL, bill trigger to bill submission): Counts included regular or stage payment cases without a first Bill Sent for Payment date. Group A with IR = Yes starts at IR Receipt Date; Group A with IR = No and Group B start at Job Completion Received Date. Common staged payment starts at the last applicable stage date. Returned payment cases, advances, and supplementary bills are excluded.",
       "Payment cycle (PCDA, bill submission to payment): Counts submitted but unpaid included regular, stagewise, advance, and supplementary payment cases with no return history. Advance and supplementary cases use their own submission dates.",
       "Payment cycle (ASL+PCDA, bill trigger to payment): Counts unpaid included payment cases from the applicable trigger to today. Returned payment cases are excluded entirely.",
-      "Returned bills: Open regular and supplementary bill-return cases are shown as separate pending tasks from the earliest currently open return date.",
+      "Returned bills: Open regular and supplementary bill-return cases are shown as separate pending tasks from the latest open return date.",
       "Example table: Scenario / filter | Recorded dates or state | Calculation and interpretation",
       "Example row: Threshold 30 days; Scrutiny pending | Demand Received: 1 Sep; completion blank; as of 23 Oct | 52 pending days; included because 52 > 30.",
       "Example row: Threshold 52 days; same Scrutiny case | Pending age: 52 days | Excluded because the rule is strictly greater than the threshold.",
@@ -7016,7 +6997,7 @@ function getReportModeButtonHelperContent(
       "Example row: Submitted but unpaid payment | Bill Sent for Payment: 1 May; Payment Date: blank; no return history; as of 23 May | Payment cycle (PCDA) runs 22 days.",
       "Example row: Returned payment | Trigger: 1 May; first submission: 4 May; return: 8 May; resubmission: 12 May; payment blank; as of 23 May | Excluded entirely from Payment cycle (ASL+PCDA); shown separately under Returned Bills.",
       "Example row: Common staged payment | Stage triggers: 1 May and 12 May; common Bill Sent for Payment: 17 May; Payment Date blank; as of 23 May | One S.O.-level payment case starts at 12 May, the latest applicable stage trigger.",
-      "Example row: Open returned bill | Earliest open return: 5 May; no completed correction cycle; as of 23 May | Separate Returned Bills delay of 18 days; the payment cycle is not treated as an ordinary no-return case.",
+      "Example row: Open returned bill | Latest open return: 5 May; no completed correction cycle; as of 23 May | Separate Returned Bills delay of 18 days; the payment cycle is not treated as an ordinary no-return case.",
     ];
   }
   return [];
@@ -7027,6 +7008,7 @@ function CollapsibleReportGroup({
   modes,
   paymentOffsetDays,
   sections,
+  disabledModeKeys,
   footer,
   activeMode,
   expanded,
@@ -7038,6 +7020,7 @@ function CollapsibleReportGroup({
   modes: ReadonlyArray<ReportModeOption>;
   paymentOffsetDays: number;
   sections?: ReadonlyArray<ReportModeSection>;
+  disabledModeKeys?: ReadonlySet<ReportMode>;
   footer?: ReactNode;
   activeMode: ReportMode;
   expanded: boolean;
@@ -7108,6 +7091,7 @@ function CollapsibleReportGroup({
                           paymentOffsetDays={paymentOffsetDays}
                           selected={activeMode === mode.key}
                           emphasized={summaryKeys.has(mode.key)}
+                          disabled={disabledModeKeys?.has(mode.key) ?? false}
                           onSelect={onSelect}
                         />
                       ))}
@@ -7124,6 +7108,7 @@ function CollapsibleReportGroup({
                 label={getReportModeLabel(mode, paymentOffsetDays)}
                 paymentOffsetDays={paymentOffsetDays}
                 selected={activeMode === mode.key}
+                disabled={disabledModeKeys?.has(mode.key) ?? false}
                 onSelect={onSelect}
               />
             ))
@@ -7141,17 +7126,22 @@ function buildCashOutgoExportTable(
   mode: ReportMode,
   rowSources: CashOutgoRowSources,
   titleContext: { today: string; monthKey: string; financialYear: string },
+  format: "excel" | "pdf",
 ): ExportTable {
   const rows = getRowsForReportMode(mode, rowSources);
+  const numericAmounts = format === "excel";
   return {
     title: getEightReportTitle(mode, titleContext),
     headers: cashOutgoColumns.map((column) => column.label),
+    numericColumns: numericAmounts ? [2, 3] : undefined,
     rows: rows.length
       ? [
           ...rows.map((row, index) =>
-            cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+            cashOutgoColumns.map((column) =>
+              getCashOutgoDisplayValue(row, column.key, index, false, numericAmounts),
+            ),
           ),
-          getCashOutgoTotalsExportRow(rows),
+          getCashOutgoTotalsExportRow(rows, numericAmounts),
         ]
       : [[getCashOutgoEmptyMessageForMode(mode)]],
   };
@@ -7169,11 +7159,8 @@ function getRowsForReportMode(
     expectedCashOutgoBillPreparationRows: ExpectedCashOutgoRow[];
     billSentForPaymentRows: ExpectedCashOutgoRow[];
     expectedCashOutgoFyRows: ExpectedCashOutgoRow[];
-    spentTillDateFyRows: ExpectedCashOutgoRow[];
     billsPaidInMonthRows: ExpectedCashOutgoRow[];
-    currentLiabilityRows: ExpectedCashOutgoRow[];
     cashOutgoForMonthRows: ExpectedCashOutgoRow[];
-    expectedExpenditureTillMonthRows: ExpectedCashOutgoRow[];
     pendingReturnedBillRows: ExpectedCashOutgoRow[];
     returnedBillResubmittedRows: ExpectedCashOutgoRow[];
     returnedBillPaidRows: ExpectedCashOutgoRow[];
@@ -7188,11 +7175,8 @@ function getRowsForReportMode(
   if (mode === "itemsDeliveredBillsPrepared") return rows.expectedCashOutgoBillPreparationRows;
   if (mode === "billsSubmitted") return rows.billSentForPaymentRows;
   if (mode === "expectedCashOutgoFy") return rows.expectedCashOutgoFyRows;
-  if (mode === "spentTillDateFy") return rows.spentTillDateFyRows;
   if (mode === "billsPaidInMonth") return rows.billsPaidInMonthRows;
-  if (mode === "currentMonthLiability") return rows.currentLiabilityRows;
   if (mode === "cashOutgoForMonth") return rows.cashOutgoForMonthRows;
-  if (mode === "expectedExpenditureTillMonth") return rows.expectedExpenditureTillMonthRows;
   if (mode === "pendingReturnedBills") return rows.pendingReturnedBillRows;
   if (mode === "returnedBillsResubmitted") return rows.returnedBillResubmittedRows;
   if (mode === "returnedBillsPaid") return rows.returnedBillPaidRows;
@@ -7235,7 +7219,6 @@ function isHistoricalDateRangeReport(mode: ReportMode) {
     mode === "itemsDeliveredBillsPending" ||
     mode === "itemsDeliveredBillsPrepared" ||
     mode === "billsSubmitted" ||
-    mode === "spentTillDateFy" ||
     mode === "pendingReturnedBills" ||
     mode === "returnedBillsResubmitted" ||
     mode === "returnedBillsPaid" ||
@@ -7343,7 +7326,7 @@ function getDateRangeHelperText(mode: ReportMode): HelperText {
       commonPrefix,
     ];
   }
-  if (mode === "spentTillDateFy" || mode === "supplementaryBillsPaid") {
+  if (mode === "supplementaryBillsPaid") {
     return ["The date range checks when payment was made.", commonPrefix];
   }
   if (
@@ -7378,10 +7361,8 @@ function getDateRangeHelperText(mode: ReportMode): HelperText {
 
 function isMonthSelectionReport(mode: ReportMode) {
   return (
-    mode === "currentMonthLiability" ||
     mode === "billsPaidInMonth" ||
-    mode === "cashOutgoForMonth" ||
-    mode === "expectedExpenditureTillMonth"
+    mode === "cashOutgoForMonth"
   );
 }
 
@@ -7414,9 +7395,6 @@ function getEightReportTitle(
   }
   if (mode === "billsSubmitted") return `Bills Submitted, Payment Pending as on ${asOnDate}`;
   if (mode === "expectedCashOutgoFy") return `Expected Cash Outgo by D.P. for FY ${fyLabel}`;
-  if (mode === "spentTillDateFy") {
-    return `Recorded Cash Outgo as on ${asOnDate}`;
-  }
   if (mode === "billsPaidInMonth") return `Bills Paid in ${monthLabel}`;
   if (mode === "pendingReturnedBills") return `Pending returned bills as on ${asOnDate}`;
   if (mode === "returnedBillsResubmitted")
@@ -7435,13 +7413,7 @@ function getEightReportTitle(
   if (mode === "supplementaryReturnedBillsPaid") {
     return `Returned supplementary bills paid as on ${asOnDate}`;
   }
-  if (mode === "currentMonthLiability") {
-    return `Cumulative Liability Up to ${monthLabel}`;
-  }
   if (mode === "cashOutgoForMonth") return `Expected Cash Outgo in ${monthLabel}`;
-  if (mode === "expectedExpenditureTillMonth") {
-    return `Expected Expenditure Up to ${monthLabel}`;
-  }
   if (mode === "monthlyFileInflow") return "Monthly file inflow";
   if (mode === "firmDatabase") return "Firm Performance";
   if (mode === "monthWiseSupplyOrder") return "Month-wise Supply Order";
@@ -7456,9 +7428,8 @@ function getEightReportTitle(
 
 function getCashOutgoReportLogic(
   mode: ReportMode,
-  context: { today: string; monthKey: string; financialYear: string },
+  context: { monthKey: string },
 ) {
-  const asOnDate = formatDateTitle(context.today);
   const monthLabel = formatMonthTitle(context.monthKey);
   if (mode === "itemsDeliveredBillsPending") {
     return "";
@@ -7471,9 +7442,6 @@ function getCashOutgoReportLogic(
   }
   if (mode === "expectedCashOutgoFy") {
     return "";
-  }
-  if (mode === "spentTillDateFy") {
-    return "Based on Cheque Slips";
   }
   if (mode === "billsPaidInMonth") {
     return "";
@@ -7488,21 +7456,10 @@ function getCashOutgoReportLogic(
   ) {
     return "";
   }
-  if (mode === "currentMonthLiability") {
-    return "";
-  }
   if (mode === "cashOutgoForMonth") {
     return [
       `- Bill prepared/Bills sent in ${monthLabel} and payment pending.`,
       `- Delivery/Job completion due in ${monthLabel}.`,
-    ].join("\n");
-  }
-  if (mode === "expectedExpenditureTillMonth") {
-    return [
-      `- Recorded Cash Outgo as on ${asOnDate} in FY ${displayFinancialYearLabel(context.financialYear)}.`,
-      `- Delivery / D.P. Done, Bill Prepared up to ${monthLabel}.`,
-      `- Bills Submitted, Payment Pending up to ${monthLabel}.`,
-      `- Delivery / D.P. due up to ${monthLabel}.`,
     ].join("\n");
   }
   return "";
@@ -8000,9 +7957,9 @@ function getMonthlyReportConfig(
           label: "PWB",
           align: "right",
           helper: [
-            "PWB uses IR Receipt Date for Goods & Services with IR = Yes, and the applicable Job Completion Date with IR = No. Other workflows use the applicable Material Receipt or Job Completion date; contract files use the S.O. date.",
+            "PWB uses IR Receipt Date for Goods & Services with IR = Yes, the applicable Job Completion Date for Goods & Services with IR = No, and the S.O. date for contract files.",
             "For staged Goods & Services with IR = No, stagewise payments use the earliest recorded stage Job Completion Date. Without stagewise payments, every stage must have that date and the latest date is used.",
-            "For Goods & Services with IR = Yes, stage dates are not used. Rows without the S.O.-level IR Receipt Date are omitted.",
+            "For non-staged Goods & Services with IR = Yes, rows without the S.O.-level IR Receipt Date are omitted. Staged orders use stage IR Receipt dates: earliest for stage payments, or latest after every stage has a date for common staged payment.",
           ],
           getFilter: (row) => getDelayFilter("pwb", row),
         },
@@ -8300,8 +8257,6 @@ const demandProcessingFieldOrderRank = new Map<string, number>([
   ["order.psbBgReturnDate", 470],
   ["order.pwbBgReturnDate", 470],
   ["order.combinedBgReturnDate", 470],
-  ["order.soCancelledDate", 480],
-  ["file.demandCancelledDate", 490],
 ]);
 type DemandProcessingRangeRow = {
   id: string;
@@ -8768,6 +8723,7 @@ function DemandProcessingAnalysisReport({
   onToFieldChange,
   onResetDateFields,
   onPaymentModeChange,
+  paymentModeEnabled,
   onAddFilter,
   onUpdateFilter,
   onRemoveFilter,
@@ -8795,6 +8751,7 @@ function DemandProcessingAnalysisReport({
   onToFieldChange: (fieldId: string) => void;
   onResetDateFields: () => void;
   onPaymentModeChange: (paymentMode: string) => void;
+  paymentModeEnabled: boolean;
   onAddFilter: () => void;
   onUpdateFilter: (id: string, patch: Partial<Omit<DemandProcessingFilterRow, "id">>) => void;
   onRemoveFilter: (id: string) => void;
@@ -9058,8 +9015,12 @@ function DemandProcessingAnalysisReport({
               Payment mode
               <FloatingHelper
                 text={[
-                  "Choose Online or Offline to limit unified payment events to that payment mode.",
-                  "Any includes both modes, including events with no mode recorded.",
+                  paymentModeEnabled
+                    ? "Choose Online or Offline to limit unified payment events to that payment mode."
+                    : "Payment mode is available only when From or To is a Unified Payment field.",
+                  ...(paymentModeEnabled
+                    ? ["Any includes both modes, including events with no mode recorded."]
+                    : []),
                 ]}
                 label="Demand processing payment mode help"
                 className="size-5 border-0 bg-transparent shadow-none"
@@ -9069,7 +9030,13 @@ function DemandProcessingAnalysisReport({
             <select
               value={paymentMode}
               onChange={(event) => onPaymentModeChange(event.target.value)}
-              className="h-10 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+              disabled={!paymentModeEnabled}
+              title={
+                paymentModeEnabled
+                  ? undefined
+                  : "Select a Unified Payment field to enable Payment Mode."
+              }
+              className="h-10 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <option value="">Any</option>
               <option value="Online">Online</option>
@@ -9201,7 +9168,7 @@ function DemandProcessingAnalysisReport({
                           </tr>
                           <tr className="bg-muted/45">
                             <td className="border-b border-border px-2 py-1.5">
-                              Bill submitted: 20 May
+                              Bill sent for payment: 20 May
                             </td>
                             <td className="border-b border-border px-2 py-1.5">Payment: 18 May</td>
                             <td className="border-b border-border px-2 py-1.5 font-semibold">
@@ -9531,6 +9498,7 @@ function DemandProcessingRangeSummary({
         ? undefined
         : {
             kind: "bar",
+            orientation: resultView === "bar" ? "horizontal" : "vertical",
             title: `${getAnalysisUnitBucketTitle(analysisUnit)} · ${metricLabel}`,
             measure: metricLabel,
             unit: metric === "count" ? "Records" : "Lakh",
@@ -9953,7 +9921,7 @@ const defaultDemandProcessingDayRanges: DemandProcessingDayRange[] = [
   { id: "0-90", label: "0-90", minDays: "0", maxDays: "90" },
   { id: "91-180", label: "91-180", minDays: "91", maxDays: "180" },
   { id: "181-365", label: "181-365", minDays: "181", maxDays: "365" },
-  { id: "365-plus", label: "365 and above", minDays: "366", maxDays: "" },
+  { id: "365-plus", label: "366 and above", minDays: "366", maxDays: "" },
 ];
 
 function normalizeDemandProcessingDayRanges(value: unknown): DemandProcessingDayRange[] {
@@ -10433,100 +10401,6 @@ function HistoricalDateRangeControls({
   );
 }
 
-function ActualCashOutgoReport({
-  rows,
-  onOpenMonth,
-  onOpenAll,
-}: {
-  rows: ExpectedCashOutgoRow[];
-  onOpenMonth: (monthKey: string) => void;
-  onOpenAll?: () => void;
-}) {
-  return (
-    <CashOutgoReport
-      rows={rows}
-      title="Recorded cash outgo monthly"
-      description="Recorded payment dates determine the month. Cancelled S.O. rows are excluded only when a cancellation date is filled."
-      emptyMessage="No recorded cash outgo rows found."
-      onOpenMonth={onOpenMonth}
-      onOpenAll={onOpenAll}
-    />
-  );
-}
-
-function CurrentMonthLiabilityReport({
-  rows,
-  title,
-  titleHelper,
-  description,
-  actions,
-  selectedDays,
-  selectedDaysUnlocked,
-  sharedDays,
-  savingDays = false,
-  daysError = "",
-  daysSaved = false,
-  hasPersonalOverride = false,
-  onDaysChange,
-  onSelectedDaysUnlockedChange,
-  onSelectedDaysSave,
-  onSelectedDaysReset,
-  monthSelection,
-  onOpenMonth,
-  onOpenAll,
-}: {
-  rows: ExpectedCashOutgoRow[];
-  title: string;
-  titleHelper?: HelperText;
-  description: string;
-  actions: ReactNode;
-  selectedDays: string;
-  selectedDaysUnlocked: boolean;
-  sharedDays?: string;
-  savingDays?: boolean;
-  daysError?: string;
-  daysSaved?: boolean;
-  hasPersonalOverride?: boolean;
-  onDaysChange: (value: string) => void;
-  onSelectedDaysUnlockedChange: (unlocked: boolean) => void;
-  onSelectedDaysSave: () => void;
-  onSelectedDaysReset: () => void;
-  monthSelection?: MonthSelectionControlsProps;
-  onOpenMonth?: (monthKey: string) => void;
-  onOpenAll?: () => void;
-}) {
-  return (
-    <CashOutgoReport
-      rows={rows}
-      title={title}
-      titleHelper={titleHelper}
-      description={description}
-      emptyMessage="No unpaid liability found for the current month."
-      actions={actions}
-      onOpenMonth={onOpenMonth}
-      onOpenAll={onOpenAll}
-      controls={
-        <>
-          {monthSelection ? <MonthSelectionControls {...monthSelection} /> : null}
-          <CashOutgoOffsetDaysControl
-            value={selectedDays}
-            sharedDefaultDays={sharedDays}
-            unlocked={selectedDaysUnlocked}
-            saving={savingDays}
-            error={daysError}
-            saved={daysSaved}
-            personalOverride={hasPersonalOverride}
-            onValueChange={onDaysChange}
-            onUnlockedChange={onSelectedDaysUnlockedChange}
-            onSave={onSelectedDaysSave}
-            onReset={onSelectedDaysReset}
-          />
-        </>
-      }
-    />
-  );
-}
-
 function CashOutgoOffsetDaysControl({
   value,
   sharedDefaultDays = String(DEFAULT_DP_OFFSET_DAYS),
@@ -10774,6 +10648,7 @@ function MonthlyOperationalReport({
     isBgExpiryReport && (resultView === "bar" || resultView === "column")
       ? chartGroups.map((group) => ({
           kind: "bar",
+          orientation: resultView === "bar" ? "horizontal" : "vertical",
           title: `${group.year ? `${formatFiscalYearChartTitle(group.year)} · ` : ""}${title} · BG type breakdown`,
           measure: "BG expiries",
           unit: "Count",
@@ -10799,6 +10674,8 @@ function MonthlyOperationalReport({
             const fyTitle = group.year ? `${formatFiscalYearChartTitle(group.year)} · ` : "";
             return {
               kind: resultView === "line" ? "line" : resultView === "pie" ? "pie" : "bar",
+              orientation:
+                resultView === "bar" ? "horizontal" : resultView === "column" ? "vertical" : undefined,
               title: `${fyTitle}${title} · ${selectedChartColumn.label}`,
               measure: selectedChartColumn.label,
               unit: chartUsesLakhs ? "Lakhs" : (unitNote ?? (chartIsCount ? "Count" : "")),
@@ -11290,6 +11167,8 @@ function DivisionFilter({
 function ReportHeaderActions({
   onPdf,
   onExcel,
+  onPdfPlots,
+  onExcelPlots,
   disabled = false,
 }: {
   divisions?: ReturnType<typeof useAccessibleDivisions>;
@@ -11298,17 +11177,20 @@ function ReportHeaderActions({
   showDivision?: boolean;
   onPdf?: (plot?: ExportPlot) => void;
   onExcel?: (plot?: ExportPlot) => void;
+  onPdfPlots?: (plots?: ExportPlot[]) => void;
+  onExcelPlots?: (plots?: ExportPlot[]) => void;
   disabled?: boolean;
 }) {
   const plot = useContext(ExportPlotContext);
+  const plots = useContext(ExportPlotsContext);
   return (
     <>
-      {onPdf || onExcel ? (
+      {onPdf || onExcel || onPdfPlots || onExcelPlots ? (
         <div className="inline-flex h-8 items-center overflow-hidden rounded-md border border-border bg-background p-0.5">
-          {onPdf ? (
+          {onPdf || onPdfPlots ? (
             <button
               type="button"
-              onClick={() => onPdf(plot)}
+              onClick={() => (onPdfPlots ? onPdfPlots(plots) : onPdf?.(plot))}
               disabled={disabled}
               aria-label="Export PDF"
               title="Export PDF"
@@ -11318,11 +11200,13 @@ function ReportHeaderActions({
               PDF
             </button>
           ) : null}
-          {onPdf && onExcel ? <div className="h-full w-px bg-border" aria-hidden="true" /> : null}
-          {onExcel ? (
+          {(onPdf || onPdfPlots) && (onExcel || onExcelPlots) ? (
+            <div className="h-full w-px bg-border" aria-hidden="true" />
+          ) : null}
+          {onExcel || onExcelPlots ? (
             <button
               type="button"
-              onClick={() => onExcel(plot)}
+              onClick={() => (onExcelPlots ? onExcelPlots(plots) : onExcel?.(plot))}
               disabled={disabled}
               aria-label="Export Excel"
               title="Export Excel"
@@ -11699,6 +11583,7 @@ function FirmDatabaseReport({
     resultView !== "table" && firmChartAvailable
       ? {
           kind: "bar",
+          orientation: resultView === "bar" ? "horizontal" : "vertical",
           title: `${title} · ${analysisColumn.label}`,
           measure: analysisColumn.label,
           unit: firmChartUsesCurrency ? "INR" : "Count",
@@ -12654,6 +12539,7 @@ function MerDataReport({
     !editing && resultView !== "table"
       ? {
           kind: resultView === "line" ? "line" : "bar",
+          orientation: resultView === "bar" ? "horizontal" : "vertical",
           title: `${title} · FY ${displayFinancialYearLabel(financialYear)}`,
           measure: "Monthly Capital and Revenue",
           unit: "Lakh",
@@ -12945,21 +12831,22 @@ function MerSoftwareComparisonReport({
     { key: "revenue", label: "Revenue", merKey: "merRevenue", recordedKey: "softwareRevenue" },
     { key: "total", label: "Total", merKey: "merTotal", recordedKey: "softwareTotal" },
   ] as const;
-  const exportPlot: ExportPlot | undefined =
+  const exportPlots: ExportPlot[] | undefined =
     resultView !== "table"
-      ? {
+      ? chartMeasures.map((measure) => ({
           kind: resultView === "line" ? "line" : "bar",
-          title: `${title} · Total`,
-          measure: "Total value",
+          orientation: resultView === "bar" ? "horizontal" : "vertical",
+          title: `${title} · ${measure.label}`,
+          measure: `${measure.label} value`,
           unit: "Lakh",
           xAxisTitle: "Payment month",
-          yAxisTitle: "Total amount Lakh",
+          yAxisTitle: `${measure.label} amount Lakh`,
           categories: rows.map((row) => row.month),
           series: [
-            { name: "MER", values: rows.map((row) => row.merTotal) },
-            { name: "Recorded Payments", values: rows.map((row) => row.softwareTotal) },
+            { name: "MER", values: rows.map((row) => row[measure.merKey]) },
+            { name: "Recorded Payments", values: rows.map((row) => row[measure.recordedKey]) },
           ],
-        }
+        }))
       : undefined;
   return (
     <section className="section-accent-border space-y-3 rounded-md border border-border bg-secondary/35 p-4">
@@ -12977,7 +12864,7 @@ function MerSoftwareComparisonReport({
             label={`${title} view`}
             views={["table", "bar", "line"]}
           />
-          <ExportPlotContext.Provider value={exportPlot}>{actions}</ExportPlotContext.Provider>
+          <ExportPlotsContext.Provider value={exportPlots}>{actions}</ExportPlotsContext.Provider>
         </div>
       </div>
       <div className="rounded-md border border-primary/25 bg-primary/5 px-3 py-2 text-sm font-semibold text-foreground">
@@ -13964,7 +13851,7 @@ function CashOutGoPlanReport({
               )
             }
             helperText={[
-              "These unsubmitted items have an Expected payment date after the selected FY.",
+              "Unsubmitted have an Expected payment date after the selected FY.",
               "They remain visible for follow-up but do not add to this FY's totals or monthly forecast.",
               "Example table: Selected FY | Expected payment date | Result",
               "Example row: 2026-27 | April 2027 | Listed here for follow-up, but excluded from the 2026-27 forecast.",
@@ -14991,8 +14878,29 @@ function SoPaymentMatrixReport({
   onOpenRows: (rows: SoPaymentMatrixRow[], monthKey?: string) => void;
 }) {
   const [fieldsDropdownOpen, setFieldsDropdownOpen] = useState(false);
+  const fieldsDropdownRef = useRef<HTMLDivElement>(null);
+  const fieldsDropdownTriggerRef = useRef<HTMLButtonElement>(null);
   const [resultView, setResultView] = useState<ResultView>("table");
   const [tableMeasure, setTableMeasure] = useState<PaymentMeasure>("total");
+  useEffect(() => {
+    if (!fieldsDropdownOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!fieldsDropdownRef.current?.contains(event.target as Node)) {
+        setFieldsDropdownOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setFieldsDropdownOpen(false);
+      fieldsDropdownTriggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [fieldsDropdownOpen]);
   const monthTotals = monthKeys.map((monthKey) => ({
     monthKey,
     amount: rows.reduce((sum, row) => sum + (row.monthAmounts[monthKey] ?? 0), 0),
@@ -15001,6 +14909,7 @@ function SoPaymentMatrixReport({
     resultView !== "table"
       ? {
           kind: resultView === "line" ? "line" : "bar",
+          orientation: resultView === "bar" ? "horizontal" : "vertical",
           title: `${title} · monthly totals`,
           measure: "Monthly payment amount",
           unit: "Lakh",
@@ -15055,9 +14964,10 @@ function SoPaymentMatrixReport({
             />
           </div>
           <div className="flex min-w-[280px] flex-1 flex-wrap items-center justify-end gap-2">
-            <div className="relative min-w-[260px] max-w-xl flex-1">
+            <div ref={fieldsDropdownRef} className="relative min-w-[260px] max-w-xl flex-1">
               <button
                 type="button"
+                ref={fieldsDropdownTriggerRef}
                 onClick={() => setFieldsDropdownOpen((open) => !open)}
                 className="flex h-10 w-full items-center justify-between gap-2 rounded-md border border-input bg-background px-3 text-left text-sm text-foreground shadow-sm hover:bg-accent/40"
                 aria-expanded={fieldsDropdownOpen}
@@ -15277,7 +15187,25 @@ function SoPaymentMatrixMeasureTable({
       <h3 className="text-sm font-semibold">{label}</h3>
       {pagination}
       <div className="overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[1180px] border-collapse text-sm">
+        <table className="w-full min-w-[1180px] table-fixed border-collapse text-sm">
+          <colgroup>
+            {columns.map((column) => (
+              <col
+                key={column.key}
+                className={
+                  column.key === "fileUniqueNo"
+                    ? "w-36"
+                    : column.key === "controlNo"
+                      ? "w-32"
+                      : undefined
+                }
+              />
+            ))}
+            {monthKeys.map((monthKey) => (
+              <col key={monthKey} />
+            ))}
+            <col />
+          </colgroup>
           <thead className="bg-secondary text-xs text-muted-foreground">
             <tr>
               {columns.map((column) => (
@@ -16269,6 +16197,8 @@ function exportCashOutGoPlan(
   const billPaymentOffsetDays = getEffectiveBillPaymentOffsetDays(plan.settings);
   const billSubmissionOffsetDays = getEffectiveBillSubmissionOffsetDays(plan.settings);
   const dpOffsetDays = getEffectiveDpOffsetDays(plan.settings);
+  const numericAmounts = format === "excel";
+  const summarySections = getCashOutGoSummarySections(plan);
   const expandedDetailTables = getCashOutGoPlanExpandedDetailExportTables(
     plan,
     expandedSections,
@@ -16292,24 +16222,34 @@ function exportCashOutGoPlan(
         title: "Cash Out Go Plan Summary",
         headers: [
           "Amount Type",
-          ...getCashOutGoSummarySections(plan).map((section) => section.label),
+          ...summarySections.map((section) => section.label),
         ],
+        numericColumns: numericAmounts
+          ? summarySections.map((_, index) => index + 1)
+          : undefined,
         rows: [
           [
             "Capital",
-            ...getCashOutGoSummarySections(plan).map((section) => formatLakhValue(section.capital)),
+            ...summarySections.map((section) =>
+              numericAmounts ? section.capital / 100_000 : formatLakhValue(section.capital),
+            ),
           ],
           [
             "Revenue",
-            ...getCashOutGoSummarySections(plan).map((section) => formatLakhValue(section.revenue)),
+            ...summarySections.map((section) =>
+              numericAmounts ? section.revenue / 100_000 : formatLakhValue(section.revenue),
+            ),
           ],
         ],
       },
       {
         title: "Expenditure Till Date",
         headers: cashOutgoColumns.map((column) => column.label),
+        numericColumns: numericAmounts ? [2, 3] : undefined,
         rows: plan.expenditureTillDate.map((row, index) =>
-          cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+          cashOutgoColumns.map((column) =>
+            getCashOutgoDisplayValue(row, column.key, index, false, numericAmounts),
+          ),
         ),
       },
       ...expandedDetailTables,
@@ -16318,13 +16258,16 @@ function exportCashOutGoPlan(
         headers: cashOutgoColumns
           .filter((column) => column.key !== "serial")
           .map((column) => column.label),
+        numericColumns: numericAmounts ? [1, 2] : undefined,
         rows: [
           ...plan.monthwisePlan.map((row, index) =>
             cashOutgoColumns
               .filter((column) => column.key !== "serial")
-              .map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+              .map((column) =>
+                getCashOutgoDisplayValue(row, column.key, index, false, numericAmounts),
+              ),
           ),
-          getCashOutgoTotalsExportRow(plan.monthwisePlan).slice(1),
+          getCashOutgoTotalsExportRow(plan.monthwisePlan, numericAmounts).slice(1),
         ],
       },
     ],
@@ -16449,9 +16392,11 @@ function getCashOutGoPlanExpandedDetailExportTables(
         section.key === "billsSubmitted"
           ? selectedColumns.filter((_, index) => index !== 6)
           : selectedColumns;
+      const numericColumns = format === "excel" ? [headers.length - 2, headers.length - 1] : undefined;
       return {
         title: section.title,
         headers,
+        numericColumns,
         columnWidths:
           format === "pdf"
             ? section.key === "billsSubmitted"
@@ -16459,7 +16404,10 @@ function getCashOutGoPlanExpandedDetailExportTables(
               : [28, 73, 145, 100, 80, 74, 74, 74, 60, 60]
             : undefined,
         rows: section.rows.map((row, index) => {
-          const values = [index + 1, ...getCashOutGoPlanDetailExportRow(row, identifier)];
+          const values = [
+            index + 1,
+            ...getCashOutGoPlanDetailExportRow(row, identifier, format === "excel"),
+          ];
           return section.key === "billsSubmitted"
             ? values.filter((_, valueIndex) => valueIndex !== 6)
             : values;
@@ -16471,6 +16419,7 @@ function getCashOutGoPlanExpandedDetailExportTables(
 function getCashOutGoPlanDetailExportRow(
   row: CashOutGoPlanDetailRow,
   identifier: CashOutGoPlanIdentifier,
+  numericAmounts = false,
 ) {
   const sentOrExpectedDate = row.actualSentDate ? "Submitted" : row.expectedSentDate || "";
 
@@ -16482,8 +16431,8 @@ function getCashOutGoPlanDetailExportRow(
     row.baseDate,
     sentOrExpectedDate,
     row.expectedPaymentDate,
-    formatLakhValue(row.capital),
-    formatLakhValue(row.revenue),
+    numericAmounts ? row.capital / 100_000 : formatLakhValue(row.capital),
+    numericAmounts ? row.revenue / 100_000 : formatLakhValue(row.revenue),
   ];
 }
 
@@ -17210,6 +17159,7 @@ function CashOutgoReport({
     resultView !== "table"
       ? {
           kind: resultView === "line" ? "line" : "bar",
+          orientation: resultView === "bar" ? "horizontal" : "vertical",
           title: `${title} · monthly values`,
           measure: "Monthly Capital and Revenue",
           unit: "Lakh",
@@ -17560,6 +17510,9 @@ function DelayStatusReport({
   rows,
   title,
   summary,
+  ready,
+  loading,
+  error,
   thresholdDays,
   selectedDays,
   defaultDays,
@@ -17575,11 +17528,14 @@ function DelayStatusReport({
 }: {
   rows: DelayStatusRow[];
   title: string;
-  summary: {
+  summary?: {
     averageDays: number;
     longestDays: number;
     byMilestone: Array<{ key: string; label: string; count: number; fileCount?: number }>;
   };
+  ready: boolean;
+  loading: boolean;
+  error?: string;
   thresholdDays: number;
   selectedDays: string;
   defaultDays: number;
@@ -17597,11 +17553,12 @@ function DelayStatusReport({
   const [pageSize, setPageSize] = useState<(typeof delayStatusPageSizeOptions)[number]>(25);
   const daysFilterActive = selectedDays !== String(defaultDays);
   const milestoneFilterActive = selectedMilestoneKey !== "all";
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const resultRows = ready ? rows : [];
+  const totalPages = Math.max(1, Math.ceil(resultRows.length / pageSize));
   const safePage = Math.min(page, totalPages);
-  const pageStart = rows.length ? (safePage - 1) * pageSize : 0;
-  const pageEnd = Math.min(pageStart + pageSize, rows.length);
-  const visibleRows = rows.slice(pageStart, pageEnd);
+  const pageStart = resultRows.length ? (safePage - 1) * pageSize : 0;
+  const pageEnd = Math.min(pageStart + pageSize, resultRows.length);
+  const visibleRows = resultRows.slice(pageStart, pageEnd);
   const pageNumbers = getPaginationPages(safePage, totalPages);
 
   useEffect(() => {
@@ -17642,9 +17599,19 @@ function DelayStatusReport({
             </TooltipProvider>
           </div>
           <p className="text-xs text-muted-foreground">
-            Live/current delays. Average {summary.averageDays} days; longest {summary.longestDays}{" "}
-            days.
+            {ready
+              ? `Live/current delays. Average ${summary?.averageDays ?? 0} days; longest ${summary?.longestDays ?? 0} days.`
+              : loading
+                ? "Loading live/current delay results."
+                : error
+                  ? "Live/current delay results are unavailable."
+                  : "Live/current delay results have not loaded."}
           </p>
+          {!ready && error ? (
+            <p className="mt-1 text-xs text-destructive" role="alert">
+              Delay Status request failed: {error}
+            </p>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-end gap-2">
           <label
@@ -17718,7 +17685,8 @@ function DelayStatusReport({
           <button
             type="button"
             onClick={onPdf}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
+            disabled={!ready}
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <FileText className="size-3.5" />
             PDF
@@ -17726,7 +17694,8 @@ function DelayStatusReport({
           <button
             type="button"
             onClick={onExcel}
-            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent"
+            disabled={!ready}
+            className="inline-flex h-8 items-center gap-1 rounded-md border border-border bg-card px-2 text-xs font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <FileSpreadsheet className="size-3.5" />
             Excel
@@ -17738,7 +17707,8 @@ function DelayStatusReport({
         <button
           type="button"
           onClick={onOpenSearch}
-          className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-left hover:bg-accent"
+          disabled={!ready}
+          className="rounded-md border border-border bg-secondary/30 px-3 py-2 text-left hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
         >
           <div className="text-muted-foreground">
             {selectedMilestoneKey === "financialSanction"
@@ -17751,13 +17721,13 @@ function DelayStatusReport({
                     ? "Payment cycle (ASL+PCDA, bill trigger to payment) cases"
                     : "Delayed stages"}
           </div>
-          <div className="font-semibold tabular-nums">{rows.length}</div>
+          <div className="font-semibold tabular-nums">{ready ? rows.length : "—"}</div>
           {[
             "financialSanction",
             "paymentPreSubmission",
             "paymentPostSubmission",
             "paymentCumulative",
-          ].includes(selectedMilestoneKey) ? (
+          ].includes(selectedMilestoneKey) && ready ? (
             <div className="text-[0.6875rem] text-muted-foreground">
               Across {new Set(rows.map((row) => row.fileId)).size} files
             </div>
@@ -17766,18 +17736,18 @@ function DelayStatusReport({
         <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
           <div className="text-muted-foreground">Average days</div>
           <div className="font-semibold tabular-nums">
-            {summary.averageDays ? `${summary.averageDays} days` : "-"}
+            {ready ? `${summary?.averageDays ?? 0} days` : "—"}
           </div>
         </div>
         <div className="rounded-md border border-border bg-secondary/30 px-3 py-2">
           <div className="text-muted-foreground">Longest delay</div>
           <div className="font-semibold tabular-nums">
-            {summary.longestDays ? `${summary.longestDays} days` : "-"}
+            {ready ? `${summary?.longestDays ?? 0} days` : "—"}
           </div>
         </div>
       </div>
 
-      {selectedMilestoneKey === "all" && summary.byMilestone.length ? (
+      {ready && summary && selectedMilestoneKey === "all" && summary.byMilestone.length ? (
         <div className="mb-5 flex flex-wrap gap-2">
           {summary.byMilestone.map((item) => (
             <button
@@ -17791,11 +17761,12 @@ function DelayStatusReport({
               <span className="font-semibold tabular-nums">
                 {[
                   "financialSanction",
+                  "supplyOrder",
                   "paymentPreSubmission",
                   "paymentPostSubmission",
                   "paymentCumulative",
                 ].includes(item.key) && item.fileCount !== undefined
-                  ? `${item.count} cases · ${item.fileCount} files`
+                  ? `${item.count} cases · ${item.fileCount} ${item.fileCount === 1 ? "file" : "files"}`
                   : item.count}
               </span>
             </button>
@@ -17805,9 +17776,15 @@ function DelayStatusReport({
 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
         <div>
-          {rows.length
-            ? `Showing ${pageStart + 1}-${pageEnd} of ${rows.length} delayed stages`
-            : "No delayed stages"}
+          {!ready
+            ? loading
+              ? "Loading delayed stages…"
+              : error
+                ? "Delay results unavailable."
+                : "Delay results not available."
+            : rows.length
+              ? `Showing ${pageStart + 1}-${pageEnd} of ${rows.length} delayed stages`
+              : "No delayed stages"}
         </div>
         <label className="flex items-center gap-2">
           <span>Rows per page</span>
@@ -17890,7 +17867,7 @@ function DelayStatusReport({
 
       <div className="overflow-hidden rounded-lg border border-border">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[820px] border-collapse text-sm">
+          <table className="w-full min-w-[960px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-xs uppercase text-muted-foreground">
                 {delayStatusColumns.map((column) => (
@@ -17960,7 +17937,13 @@ function DelayStatusReport({
                     colSpan={delayStatusColumns.length}
                     className="px-3 py-8 text-center text-sm text-muted-foreground"
                   >
-                    No delayed stages found.
+                    {!ready
+                      ? loading
+                        ? "Loading delay results…"
+                        : error
+                          ? "Delay results are unavailable."
+                          : "Delay results have not loaded."
+                      : "No delayed stages found."}
                   </td>
                 </tr>
               )}
@@ -18068,7 +18051,7 @@ function buildFirmDatabaseRows({
   const firmCohort = getFirmPerformanceCohort(firms, files);
   return firmCohort.map(({ firm, orderKeys }) => {
     const rawEntries = files.flatMap((file) =>
-      rawSupplyOrders(file).map((order, index) => ({
+      eligibleSupplyOrders(file).map((order, index) => ({
         file,
         order,
         orderKey: `${file.id}:${index}`,
@@ -18264,7 +18247,7 @@ function getFirmPerformanceCohort(firms: MasterFirm[], files: FileRecord[]) {
     firmUniqueNo: string;
   }> = [];
   files.forEach((file) => {
-    rawSupplyOrders(file).forEach((order, index) => {
+    eligibleSupplyOrders(file).forEach((order, index) => {
       if (!isSupplyOrderTabComplete(file, getFirmPerformanceCohortOrder(order))) return;
       if (firms.some((firm) => doesOrderBelongToFirm(order, firm))) return;
 
@@ -18818,7 +18801,7 @@ async function exportMonthlyOperationalReport(
     tables: [
       {
         headers: columns.map((column) => column.label),
-        rows: rows.map((row) => columns.map((column) => String(row[column.key] ?? ""))),
+        rows: rows.map((row) => columns.map((column) => row[column.key] ?? "")),
       },
       ...additionalTables,
     ],
@@ -18898,25 +18881,6 @@ function exportExpectedCashOutgoToExcel(
   exportCashOutgoToExcel(rows, title, emptyMessage, description, plot);
 }
 
-function exportActualCashOutgoToExcel(rows: ExpectedCashOutgoRow[], title: string) {
-  exportCashOutgoToExcel(rows, title, "No recorded cash outgo rows found.");
-}
-
-function exportCurrentLiabilityToExcel(
-  rows: ExpectedCashOutgoRow[],
-  title: string,
-  description?: string,
-  plot?: ExportPlot,
-) {
-  exportCashOutgoToExcel(
-    rows,
-    title,
-    "No unpaid liability found for the current month.",
-    description,
-    plot,
-  );
-}
-
 function exportCashOutgoToExcel(
   rows: ExpectedCashOutgoRow[],
   title: string,
@@ -18937,25 +18901,6 @@ function printExpectedCashOutgoToPdf(
   printCashOutgoToPdf(rows, title, emptyMessage, description, plot);
 }
 
-function printActualCashOutgoToPdf(rows: ExpectedCashOutgoRow[], title: string) {
-  printCashOutgoToPdf(rows, title, "No recorded cash outgo rows found.");
-}
-
-function printCurrentLiabilityToPdf(
-  rows: ExpectedCashOutgoRow[],
-  title: string,
-  description?: string,
-  plot?: ExportPlot,
-) {
-  printCashOutgoToPdf(
-    rows,
-    title,
-    "No unpaid liability found for the current month.",
-    description,
-    plot,
-  );
-}
-
 function printCashOutgoToPdf(
   rows: ExpectedCashOutgoRow[],
   title: string,
@@ -18974,6 +18919,7 @@ async function downloadCashOutgo(
   format: "excel" | "pdf",
   plot?: ExportPlot,
 ) {
+  const numericAmounts = format === "excel";
   await downloadBackendExport({
     format,
     title,
@@ -18982,12 +18928,15 @@ async function downloadCashOutgo(
     tables: [
       {
         headers: cashOutgoColumns.map((column) => column.label),
+        numericColumns: numericAmounts ? [2, 3] : undefined,
         rows: rows.length
           ? [
               ...rows.map((row, index) =>
-                cashOutgoColumns.map((column) => getCashOutgoDisplayValue(row, column.key, index)),
+                cashOutgoColumns.map((column) =>
+                  getCashOutgoDisplayValue(row, column.key, index, false, numericAmounts),
+                ),
               ),
-              getCashOutgoTotalsExportRow(rows),
+              getCashOutgoTotalsExportRow(rows, numericAmounts),
             ]
           : [[emptyMessage]],
       },
@@ -19071,6 +19020,8 @@ type DelayStatusRow = {
   lastFilledDate: string;
   focusSection?: string;
   focusTarget?: string;
+  supplyOrderLabel?: string;
+  stageLabel?: string;
   biddingBreakupKey?: string;
 };
 
@@ -19081,6 +19032,7 @@ type DelayStatusColumnKey =
   | "indentor"
   | "description"
   | "milestone"
+  | "orderStage"
   | "stageStartDate"
   | "daysInStage";
 type MonthlyReportColumn = {
@@ -19130,6 +19082,7 @@ const delayStatusColumns = [
   { key: "indentor", label: "Indentor", align: "left" },
   { key: "description", label: "Description", align: "left" },
   { key: "milestone", label: "Current milestone", align: "left" },
+  { key: "orderStage", label: "S.O. / Stage", align: "left" },
   { key: "stageStartDate", label: "Stage start date", align: "left" },
   { key: "daysInStage", label: "Days in stage", align: "right" },
 ] satisfies Array<{ key: DelayStatusColumnKey; label: string; align: "left" | "right" }>;
@@ -19205,58 +19158,6 @@ function getExpectedCashOutgoByReceiptRows(
 function getReceiptPendingBillReportDate(file: FileRecord, order: SupplyOrderDetail) {
   if (isDeliveryInspectionApplicable(file)) return order.materialReceiptDate;
   return getNonInspectionPaymentDueDate(file, order);
-}
-
-function getActualCashOutgoRows(files: FileRecord[]): ExpectedCashOutgoRow[] {
-  const totals = new Map<string, ExpectedCashOutgoRow>();
-
-  files.forEach((file) => {
-    if (isYes(file.demandCancelled)) return;
-    filePaymentOrders(file).forEach((order) => {
-      if (!hasFilledString(order.paymentDate) || !isPaymentOrderActive(file, order)) return;
-      const paymentDate = order.paymentDate;
-      if (!paymentDate) return;
-
-      addCashOutgoTotal(totals, paymentDate, file, order, "actual");
-    });
-
-    filePaymentOrders(file).forEach((order) => {
-      if (!isPaymentOrderActive(file, order)) return;
-      getSupplementaryBills(order).forEach((bill) => {
-        if (!hasFilledString(bill.paymentDate)) return;
-        const paymentDate = bill.paymentDate;
-        if (!paymentDate) return;
-
-        addSupplementaryBillCashOutgoTotal(totals, paymentDate, file, bill, "actual");
-      });
-    });
-  });
-
-  return finalizeCashOutgoRows(totals);
-}
-
-function getCurrentMonthLiabilityRows(rows: ExpectedCashOutgoRow[], monthKey: string) {
-  const totals = rows
-    .filter((row) => row.monthKey <= monthKey)
-    .reduce(
-      (sum, row) => ({
-        capital: sum.capital + row.capital,
-        revenue: sum.revenue + row.revenue,
-      }),
-      { capital: 0, revenue: 0 },
-    );
-
-  if (totals.capital === 0 && totals.revenue === 0) return [];
-
-  return [
-    {
-      monthKey,
-      month: formatMonthLabel(`${monthKey}-01`),
-      capital: Math.round(totals.capital),
-      revenue: Math.round(totals.revenue),
-      total: Math.round(totals.capital + totals.revenue),
-    },
-  ];
 }
 
 function getCurrentMonthKey() {
@@ -19503,7 +19404,7 @@ function buildSoPaymentMatrixRows({
   const rows: SoPaymentMatrixRow[] = [];
   files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
-    filePaymentOrders(file).forEach((order, orderIndex) => {
+    normalizedFilePaymentEntries(file).forEach(({ order, orderIndex }) => {
       if (isSupplyOrderCancelled(file, order)) return;
       if (hasOpenBillReturn(order)) return;
       const row = createEmptySoPaymentMatrixRow(file, order, orderIndex);
@@ -19521,7 +19422,7 @@ function buildSoPaymentMatrixRows({
             entry.capital,
             entry.revenue,
             `advancepayment:pending:${orderIndex}`,
-            "Expected Advance Payment Date",
+            "Advance Payment",
           );
         }
         if (row.total > 0) rows.push(row);
@@ -19535,6 +19436,7 @@ function buildSoPaymentMatrixRows({
             file,
             order,
             stage,
+            orderIndex,
             stageIndex,
             paymentOffsetDays,
           );
@@ -19564,7 +19466,7 @@ function buildSoPaymentMatrixRows({
       }
       if (row.total > 0) rows.push(row);
     });
-    rawSupplyOrders(file).forEach((order, orderIndex) => {
+    normalizedEligibleSupplyOrderEntries(file).forEach(({ order, orderIndex }) => {
       if (isSupplyOrderCancelled(file, order)) return;
       getSupplementaryBills(order).forEach((bill, billIndex) => {
         if (
@@ -19595,7 +19497,7 @@ function buildSoPaymentMatrixRows({
           capital,
           revenue,
           `supplementarybill:submitted:${orderIndex}:${billIndex}`,
-          "Supplementary bill submitted",
+          "Supplementary Bill Payment",
         );
         rows.push(row);
       });
@@ -19615,7 +19517,7 @@ function buildPaymentCompletedMatrixRows({
   const rows: SoPaymentMatrixRow[] = [];
   files.forEach((file) => {
     if (isYes(file.demandCancelled)) return;
-    filePaymentOrders(file).forEach((order, orderIndex) => {
+    normalizedFilePaymentEntries(file).forEach(({ order, orderIndex }) => {
       if (!isPaymentOrderActive(file, order)) return;
       const row = createEmptySoPaymentMatrixRow(
         file,
@@ -19632,12 +19534,12 @@ function buildPaymentCompletedMatrixRows({
             entry.capital,
             entry.revenue,
             `advancepayment:paid:${orderIndex}`,
-            "Advance payment paid",
+            entry.basis,
           );
         }
       } else if (isYes(order.stagePayment) && order.stageDeliveries?.length) {
         order.stageDeliveries.forEach((stage, stageIndex) => {
-          const entry = getCompletedStagePaymentMatrixEntry(file, stage, stageIndex);
+          const entry = getCompletedStagePaymentMatrixEntry(file, stage, orderIndex, stageIndex);
           if (!entry || !allowedMonths.has(entry.monthKey) || entry.amount <= 0) return;
           addSoPaymentMatrixAmount(
             row,
@@ -19663,7 +19565,7 @@ function buildPaymentCompletedMatrixRows({
       }
       if (row.total > 0) rows.push(row);
     });
-    rawSupplyOrders(file).forEach((order, orderIndex) => {
+    normalizedEligibleSupplyOrderEntries(file).forEach(({ order, orderIndex }) => {
       if (isSupplyOrderCancelled(file, order)) return;
       getSupplementaryBills(order).forEach((bill, billIndex) => {
         if (!hasFilledString(bill.paymentDate)) return;
@@ -19687,7 +19589,7 @@ function buildPaymentCompletedMatrixRows({
           capital,
           revenue,
           `supplementarybill:paid:${orderIndex}:${billIndex}`,
-          "Supplementary bill paid",
+          "Supplementary Bill Payment",
         );
         rows.push(row);
       });
@@ -19769,6 +19671,7 @@ function getStagePaymentMatrixEntry(
   file: FileRecord,
   order: SupplyOrderDetail,
   stage: StageDeliveryDetail,
+  orderIndex: number,
   stageIndex: number,
   paymentOffsetDays: number,
 ) {
@@ -19781,8 +19684,8 @@ function getStagePaymentMatrixEntry(
     capital,
     revenue,
     amount: Math.round(capital + revenue),
-    basis: `Stage payment - ${dateInfo.basis}`,
-    focusTarget: `stagepayment:pending:${stageIndex}`,
+    basis: "Stage Payment",
+    focusTarget: `stagepayment:pending:${orderIndex}:${stageIndex}`,
   };
 }
 
@@ -19801,7 +19704,7 @@ function getOrderPaymentMatrixEntry(
       capital,
       revenue,
       amount: Math.round(capital + revenue),
-      basis: "Expected Advance Payment Date",
+      basis: "Advance Payment",
       focusTarget: `advancepayment:pending:${orderIndex}`,
     };
   }
@@ -19813,7 +19716,7 @@ function getOrderPaymentMatrixEntry(
     capital,
     revenue,
     amount: Math.round(capital + revenue),
-    basis: dateInfo.basis,
+    basis: "Regular Payment",
     focusTarget: `payment:pending:${orderIndex}`,
   };
 }
@@ -19821,6 +19724,7 @@ function getOrderPaymentMatrixEntry(
 function getCompletedStagePaymentMatrixEntry(
   file: FileRecord,
   stage: StageDeliveryDetail,
+  orderIndex: number,
   stageIndex: number,
 ) {
   if (!hasFilledString(stage.paymentDate)) return undefined;
@@ -19831,8 +19735,8 @@ function getCompletedStagePaymentMatrixEntry(
     capital,
     revenue,
     amount: Math.round(capital + revenue),
-    basis: "Completed stage payment",
-    focusTarget: `stagepayment:completed:${stageIndex}`,
+    basis: "Stage Payment",
+    focusTarget: `stagepayment:completed:${orderIndex}:${stageIndex}`,
   };
 }
 
@@ -19851,7 +19755,7 @@ function getCompletedOrderPaymentMatrixEntry(
     capital,
     revenue,
     amount: Math.round(capital + revenue),
-    basis: "Completed payment",
+    basis: order.stageDeliveryLabel === "Advance Payment" ? "Advance Payment" : "Regular Payment",
     focusTarget: `payment:completed:${orderIndex}`,
   };
 }
@@ -19947,16 +19851,18 @@ function getSoPaymentMatrixExportFieldValue(
   const file = row.file;
   const order = row.order;
   if (fieldKey === "demandValue") {
-    return (
-      (getInrAmount(file.valueCapital, file) ?? 0) + (getInrAmount(file.valueRevenue, file) ?? 0)
+    return formatSoPaymentMatrixAmount(
+      (getInrAmount(file.valueCapital, file) ?? 0) + (getInrAmount(file.valueRevenue, file) ?? 0),
     );
   }
-  if (fieldKey === "capitalValue") return getInrAmount(file.valueCapital, file) ?? 0;
-  if (fieldKey === "revenueValue") return getInrAmount(file.valueRevenue, file) ?? 0;
+  if (fieldKey === "capitalValue")
+    return formatSoPaymentMatrixAmount(getInrAmount(file.valueCapital, file) ?? 0);
+  if (fieldKey === "revenueValue")
+    return formatSoPaymentMatrixAmount(getInrAmount(file.valueRevenue, file) ?? 0);
   if (fieldKey === "soValue") {
-    return (
+    return formatSoPaymentMatrixAmount(
       (getInrAmount(order.soValueCapital, file) ?? 0) +
-      (getInrAmount(order.soValueRevenue, file) ?? 0)
+        (getInrAmount(order.soValueRevenue, file) ?? 0),
     );
   }
   return getSoPaymentMatrixFieldValue(row, fieldKey);
@@ -19993,7 +19899,7 @@ function exportSoPaymentMatrixReport(
   void downloadBackendExport({
     format,
     title,
-    description: getReportExportDescription(description, "All the values are in Lakh."),
+    description: getReportExportDescription(description, "All monetary values are shown in Lakhs."),
     plot,
     tables: (["revenue", "capital", "total"] as const).map((measure) => {
       const measureRows = rows.filter((row) => getSoPaymentMatrixRowTotal(row, measure) > 0);
@@ -20010,6 +19916,15 @@ function exportSoPaymentMatrixReport(
           ...monthKeys.map(formatSoPaymentMatrixMonthLabel),
           "Total",
         ],
+        numericColumns: [
+          ...columns.flatMap((column, index) =>
+            ["demandValue", "capitalValue", "revenueValue", "soValue"].includes(column.key)
+              ? [index]
+              : [],
+          ),
+          ...Array.from({ length: monthKeys.length + 1 }, (_, index) => columns.length + index),
+        ],
+        dateColumns: columns.flatMap((column, index) => (column.key === "soDate" ? [index] : [])),
         rows: measureRows.length
           ? [
               ...measureRows.map((row) => [
@@ -20073,36 +19988,6 @@ function combineCashOutgoRows(rows: ExpectedCashOutgoRow[]) {
 function combineRowsForMonth(monthKey: string, rowGroups: ExpectedCashOutgoRow[][]) {
   const totals = rowGroups
     .flatMap((rows) => rows.filter((row) => row.monthKey === monthKey))
-    .reduce(
-      (sum, row) => ({
-        capital: sum.capital + row.capital,
-        revenue: sum.revenue + row.revenue,
-      }),
-      { capital: 0, revenue: 0 },
-    );
-  return createSingleMonthRow(monthKey, totals);
-}
-
-function combineRowsAsSingleMonth(monthKey: string, rowGroups: ExpectedCashOutgoRow[][]) {
-  const totals = rowGroups.flat().reduce(
-    (sum, row) => ({
-      capital: sum.capital + row.capital,
-      revenue: sum.revenue + row.revenue,
-    }),
-    { capital: 0, revenue: 0 },
-  );
-  return createSingleMonthRow(monthKey, totals);
-}
-
-function combineRowsThroughMonthAsSingleMonth(
-  monthKey: string,
-  startMonthKey: string,
-  rowGroups: ExpectedCashOutgoRow[][],
-) {
-  const totals = rowGroups
-    .flatMap((rows) =>
-      rows.filter((row) => row.monthKey >= startMonthKey && row.monthKey <= monthKey),
-    )
     .reduce(
       (sum, row) => ({
         capital: sum.capital + row.capital,
@@ -20257,7 +20142,7 @@ function getPendingLiabilityAgeingRows(files: FileRecord[], asOnDate: string) {
       });
     });
 
-    rawSupplyOrders(file).forEach((order) => {
+    eligibleSupplyOrders(file).forEach((order) => {
       if (!isPaymentOrderActive(file, order)) return;
       if (isShortclosureNoFurtherAction(order)) return;
       getSupplementaryBills(order).forEach((bill) => {
@@ -20621,6 +20506,9 @@ function getDelayStatusDisplayValue(row: DelayStatusRow, key: DelayStatusColumnK
   if (key === "serial") return String(index + 1);
   if (key === "daysInStage") return String(row.daysInStage);
   if (key === "milestone") return getWorkflowDisplayLabel(row.milestone);
+  if (key === "orderStage") {
+    return [row.supplyOrderLabel, row.stageLabel].filter(Boolean).join(" / ");
+  }
   return row[key];
 }
 
@@ -20639,9 +20527,14 @@ function getExpectedCashOutgoTotals(rows: ExpectedCashOutgoRow[]) {
   );
 }
 
-function getCashOutgoTotalsExportRow(rows: ExpectedCashOutgoRow[]) {
+function getCashOutgoTotalsExportRow(rows: ExpectedCashOutgoRow[], numericAmounts = false) {
   const totals = getExpectedCashOutgoTotals(rows);
-  return ["", "Total", formatLakhValue(totals.capital), formatLakhValue(totals.revenue)];
+  return [
+    "",
+    "Total",
+    numericAmounts ? totals.capital / 100_000 : formatLakhValue(totals.capital),
+    numericAmounts ? totals.revenue / 100_000 : formatLakhValue(totals.revenue),
+  ];
 }
 
 function getCashOutgoDisplayValue(
@@ -20649,9 +20542,11 @@ function getCashOutgoDisplayValue(
   key: CashOutgoColumnKey,
   index: number,
   includeUnit = false,
+  numericAmount = false,
 ) {
   if (key === "serial") return String(index + 1);
   if (key === "month") return row.month;
+  if (numericAmount) return row[key] / 100_000;
   return includeUnit ? formatCurrency(row[key]) : formatLakhValue(row[key]);
 }
 
@@ -21601,12 +21496,12 @@ function fileSupplyOrders(file: FileRecord) {
   return normalizedFileSupplyOrders(file);
 }
 
-function rawSupplyOrders(file: FileRecord) {
-  return normalizedRawSupplyOrders(file);
+function eligibleSupplyOrders(file: FileRecord) {
+  return normalizedEligibleSupplyOrders(file);
 }
 
-function rawSupplyOrderEntries(files: FileRecord[]) {
-  return files.flatMap((file) => rawSupplyOrders(file).map((order) => ({ file, order })));
+function eligibleSupplyOrderEntries(files: FileRecord[]) {
+  return files.flatMap((file) => eligibleSupplyOrders(file).map((order) => ({ file, order })));
 }
 
 function expectedSupplyOrders(file: FileRecord) {
@@ -21615,6 +21510,7 @@ function expectedSupplyOrders(file: FileRecord) {
 
 function hasFilledObjectValue(value: Record<string, unknown>): boolean {
   return Object.entries(value).some(([key, item]) => {
+    if (key === "id") return false;
     if (Array.isArray(item)) {
       return item.some((row) => hasFilledObjectValue(row as Record<string, unknown>));
     }
@@ -21772,7 +21668,7 @@ function countPlacedSupplyOrders(files: FileRecord[]) {
   return files.reduce(
     (sum, file) =>
       sum +
-      rawSupplyOrders(file).filter(
+      eligibleSupplyOrders(file).filter(
         (order) =>
           hasDate(order.soDate) &&
           !isDateAfterToday(order.soDate) &&
@@ -21786,7 +21682,7 @@ function countLiveSupplyOrders(files: FileRecord[]) {
   return files.reduce(
     (sum, file) =>
       sum +
-      rawSupplyOrders(file).filter(
+      eligibleSupplyOrders(file).filter(
         (order) =>
           isSupplyOrderTabComplete(file, order) &&
           !hasFilledString(order.paymentDate) &&
@@ -21798,6 +21694,10 @@ function countLiveSupplyOrders(files: FileRecord[]) {
 
 function shouldUseOrderMilestoneRows(file: FileRecord) {
   return countExpectedSupplyOrderRows(file) > 1 || rawSupplyOrders(file).length > 0;
+}
+
+function rawSupplyOrders(file: FileRecord) {
+  return normalizedRawSupplyOrders(file);
 }
 
 function isFinancialSanctionReached(file: FileRecord) {
@@ -21878,7 +21778,7 @@ function matchesCompletedSupplyOrderDrivenMilestone(file: FileRecord, milestone:
   if (isYes(file.demandCancelled)) return false;
   if (!isPaymentMilestone(normalized) && isCancelledFile(file)) return false;
   if (normalized === "supplyorder") {
-    return rawSupplyOrders(file).some(
+    return eligibleSupplyOrders(file).some(
       (order) => isSupplyOrderTabComplete(file, order) && !isSupplyOrderCancelled(file, order),
     );
   }
@@ -22092,12 +21992,10 @@ function isOrderActiveForCurrentMilestone(
   order: SupplyOrderDetail,
   normalizedMilestone: string,
 ) {
-  if (["psb", "pwb", "psbpwb"].includes(normalizeMilestoneName(normalizedMilestone))) {
-    return !isSupplyOrderCancelled(file, order);
-  }
-  return isPaymentMilestone(normalizedMilestone)
-    ? isPaymentOrderActive(file, order) && !isShortclosureNoFurtherAction(order)
-    : !isSupplyOrderCancelled(file, order) && !isShortclosureNoFurtherAction(order);
+  const active = isPaymentMilestone(normalizedMilestone)
+    ? isPaymentOrderActive(file, order)
+    : !isSupplyOrderCancelled(file, order);
+  return active && !isShortclosureNoFurtherAction(order);
 }
 
 function isPaymentMilestone(normalizedMilestone: string) {
@@ -22160,7 +22058,7 @@ function getBgReturnDate(order: SupplyOrderDetail, category: string) {
 }
 
 function countBgReceivedOrders(files: FileRecord[], category: string) {
-  return rawSupplyOrderEntries(files).filter(
+  return eligibleSupplyOrderEntries(files).filter(
     ({ file, order }) =>
       isBgCategoryApplicable(file, order, category) &&
       isBgReceivedOrder(order, category) &&
@@ -22169,25 +22067,25 @@ function countBgReceivedOrders(files: FileRecord[], category: string) {
 }
 
 function countBgPendingOrders(files: FileRecord[], category: string) {
-  return rawSupplyOrderEntries(files).filter(({ file, order }) =>
+  return eligibleSupplyOrderEntries(files).filter(({ file, order }) =>
     isBgPendingOrder(file, order, category),
   ).length;
 }
 
 function countBgToBeReturnedOrders(files: FileRecord[], category: string) {
-  return rawSupplyOrderEntries(files).filter(({ file, order }) =>
+  return eligibleSupplyOrderEntries(files).filter(({ file, order }) =>
     isBgReturnDueOrder(file, order, category),
   ).length;
 }
 
 function countBgReturnedOrders(files: FileRecord[], category: string) {
-  return rawSupplyOrderEntries(files).filter(({ file, order }) =>
+  return eligibleSupplyOrderEntries(files).filter(({ file, order }) =>
     isBgReturnedOrder(file, order, category),
   ).length;
 }
 
 function countBgExpiredOrders(files: FileRecord[], category: string) {
-  return rawSupplyOrderEntries(files).filter(({ file, order }) =>
+  return eligibleSupplyOrderEntries(files).filter(({ file, order }) =>
     isBgExpiredOrder(file, order, category),
   ).length;
 }
@@ -22537,34 +22435,8 @@ function isFinancialSanctionCompletedOrder(order: SupplyOrderDetail) {
   return hasFilledString(order.financialSanctionDate);
 }
 
-function hasSupplyOrderValue(file: FileRecord, order: SupplyOrderDetail) {
-  const capitalSelected = (getInrAmount(file.valueCapital, file) ?? 0) !== 0;
-  const revenueSelected = (getInrAmount(file.valueRevenue, file) ?? 0) !== 0;
-  if (capitalSelected) return hasFilledString(order.soValueCapital);
-  if (revenueSelected) return hasFilledString(order.soValueRevenue);
-  return hasFilledString(order.soValueCapital) || hasFilledString(order.soValueRevenue);
-}
-
 function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
-  if (!hasFilledString(order.soNo)) return false;
-  if (!isNo(file.gem) && !hasFilledString(order.gemSoNo)) return false;
-  if (!hasFilledString(order.soDate)) return false;
-  if (!hasSupplyOrderValue(file, order)) return false;
-  if (!hasFilledString(order.firm)) return false;
-  if (!hasFilledString(order.firmType)) return false;
-  if (
-    (order.firmType ?? "").trim().toUpperCase() === "OTHER" &&
-    !hasFilledString(order.firmTypeOther)
-  ) {
-    return false;
-  }
-  if (!isYes(order.stageDelivery) && !isNo(order.stageDelivery)) return false;
-  if (isYes(order.stageDelivery)) {
-    if (!hasFilledString(order.stageDeliveryCount)) return false;
-    if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-  }
-  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
-  return true;
+  return isSupplyOrderEligibleForMetrics(file, order);
 }
 
 function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {

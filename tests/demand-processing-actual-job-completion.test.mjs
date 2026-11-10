@@ -18,7 +18,7 @@ test("actual and received completion dates are separate selectable S.O. fields",
     (group) => group.title === "Delivery / IR",
   );
 
-  assert.equal(actual?.label, "Work Completion Date");
+  assert.equal(actual?.label, "Job Completion Date");
   assert.equal(received?.label, "Job Completion Received Date");
   assert.ok(deliveryGroup?.fields.some((field) => field.id === actual?.id));
 });
@@ -59,6 +59,25 @@ test("Non-TCEC Refloat recommendation date is selectable in Demand Processing An
   assert.equal(rows.length, 1);
   assert.equal(rows[0].fromDate, "2026-08-12");
   assert.equal(rows[0].toDate, "2026-08-20");
+});
+
+test("Cancellation dates are not selectable in operational Demand Processing Analysis", () => {
+  assert.equal(
+    demandProcessingDateFields.find((field) => field.id === "file.demandCancelledDate"),
+    undefined,
+  );
+  assert.equal(
+    demandProcessingDateFields.find((field) => field.id === "order.soCancelledDate"),
+    undefined,
+  );
+  assert.equal(
+    getDemandProcessingFieldGroups().some((group) =>
+      group.fields.some(
+        (field) => field.id === "file.demandCancelledDate" || field.id === "order.soCancelledDate",
+      ),
+    ),
+    false,
+  );
 });
 
 test("S.O. analysis reads its actual completion date and does not fall back to received date", () => {

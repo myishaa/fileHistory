@@ -4,7 +4,15 @@ import {
   buildDemandProcessingRows,
   filterDemandProcessingRowsByFromDate,
   getDemandProcessingDateFieldValueForRow,
+  isUnifiedPaymentField,
 } from "../src/lib/demand-processing-analysis.ts";
+
+test("Payment Mode applies only when a Unified Payment field is selected", () => {
+  assert.equal(isUnifiedPaymentField("payment.unifiedPaymentDate"), true);
+  assert.equal(isUnifiedPaymentField("payment.unifiedSubmissionDate"), true);
+  assert.equal(isUnifiedPaymentField("order.paymentDate"), false);
+  assert.equal(isUnifiedPaymentField("file.receivedDate"), false);
+});
 
 function analysisRow(fileId, fromDate, toDate) {
   return {

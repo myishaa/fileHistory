@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileSpreadsheet, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { showAppConfirm } from "@/components/app-dialog";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
 import { downloadQuickEntryExcelExport } from "@/lib/export-download";
 import {
@@ -465,7 +466,13 @@ export function QuickEntryExcelSettings() {
     }
   };
 
-  const editPreset = (preset: QuickEntryExcelPreset) => {
+  const editPreset = async (preset: QuickEntryExcelPreset) => {
+    if (
+      editorDirty &&
+      !(await showAppConfirm("Discard your unsaved Excel export changes?"))
+    ) {
+      return;
+    }
     setEditingId(preset.id);
     setName(preset.name);
     setSelectedFields(preset.fields);
@@ -795,7 +802,7 @@ export function QuickEntryExcelSettings() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => editPreset(preset)}
+                  onClick={() => void editPreset(preset)}
                   disabled={saving}
                   title={`Edit ${preset.name}`}
                   aria-label={`Edit ${preset.name}`}

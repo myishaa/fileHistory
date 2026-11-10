@@ -395,6 +395,7 @@ export type AdvancePaymentDetail = {
 };
 
 export type StageDeliveryDetail = {
+  id?: string;
   includeInPaymentTiming?: boolean;
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
@@ -691,6 +692,7 @@ export type AppSettings = {
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: TableFieldPreset[];
+  tableFieldPresetsConfigured?: boolean;
   liveStatusLockedFields?: string[];
   mmgLiveEnabled?: boolean;
   mmgLiveOptions?: string[];
@@ -757,6 +759,7 @@ const defaultSettings: AppSettings = {
   valueThresholdLevels: [],
   milestones: [],
   tableFieldPresets: defaultTableFieldPresets,
+  tableFieldPresetsConfigured: false,
   mmgLiveEnabled: false,
   mmgLiveOptions: [],
   mmgSummaryFields: [],
@@ -765,7 +768,7 @@ const defaultSettings: AppSettings = {
     { id: "0-90", label: "0-90", minDays: "0", maxDays: "90" },
     { id: "91-180", label: "91-180", minDays: "91", maxDays: "180" },
     { id: "181-365", label: "181-365", minDays: "181", maxDays: "365" },
-    { id: "365-plus", label: "365 and above", minDays: "366", maxDays: "" },
+    { id: "365-plus", label: "366 and above", minDays: "366", maxDays: "" },
   ],
   bgReceiptDelayDays: [10, 30, 60],
   specialFileMarkers: [],
@@ -1177,9 +1180,12 @@ async function loadAllOnce() {
         ...defaultSettings,
         ...settings.settings,
         activeUserId: auth.user.id,
-        tableFieldPresets: settings.settings.tableFieldPresets?.length
-          ? settings.settings.tableFieldPresets
-          : defaultTableFieldPresets,
+        tableFieldPresets:
+          settings.settings.tableFieldPresetsConfigured === true
+            ? (settings.settings.tableFieldPresets ?? [])
+            : settings.settings.tableFieldPresets?.length
+              ? settings.settings.tableFieldPresets
+              : defaultTableFieldPresets,
       }),
       auth.user.id,
     );
@@ -1356,13 +1362,17 @@ export const store = {
     // division list is refreshed for the new year.
     void loadAll();
   },
-  addFinancialYear(label: string, select = true) {
-    runMutation(() =>
-      request("/api/settings/financial-years", {
+  async addFinancialYear(label: string, select = true) {
+    try {
+      await request("/api/settings/financial-years", {
         method: "POST",
         body: JSON.stringify({ label, select }),
-      }),
-    );
+      });
+    } catch (error) {
+      await loadAll(true);
+      throw error;
+    }
+    await loadAll(true);
   },
   getFinancialYearUsageCount(label: string) {
     return request<{ count: number }>(
@@ -1847,12 +1857,26 @@ export const store = {
   ) {
     const settings = store.getSettings();
     const financialYear = financialYearOverride || settings.setupYear || settings.financialYear;
-    runMutation(() =>
-      request("/api/divisions", {
-        method: "POST",
-        body: JSON.stringify({ name, code, allocatedCapital, allocatedRevenue, ad, financialYear }),
-      }),
-    );
+    return (async () => {
+      try {
+        const result = await request<{ division: Division }>("/api/divisions", {
+          method: "POST",
+          body: JSON.stringify({
+            name,
+            code,
+            allocatedCapital,
+            allocatedRevenue,
+            ad,
+            financialYear,
+          }),
+        });
+        await loadAll(true);
+        return result;
+      } catch (error) {
+        await loadAll(true);
+        throw error;
+      }
+    })();
   },
   updateDivision(id: string, patch: Partial<Division> & { viewerPassword?: string }) {
     const settings = store.getSettings();
@@ -2024,21 +2048,34 @@ export const store = {
     });
   },
   addUser(user: Omit<AppUser, "id"> & { password: string }) {
-    runMutation(() =>
-      request("/api/users", {
-        method: "POST",
-        body: JSON.stringify(user),
-      }),
-    );
+    return (async () => {
+      try {
+        const result = await request<{ user: AppUser }>("/api/users", {
+          method: "POST",
+          body: JSON.stringify(user),
+        });
+        await loadAll(true);
+        return result;
+      } catch (error) {
+        await loadAll(true);
+        throw error;
+      }
+    })();
   },
   updateUser(id: string, patch: Partial<AppUser> & { password?: string }) {
-    setState({ users: state.users.map((user) => (user.id === id ? { ...user, ...patch } : user)) });
-    runMutation(() =>
-      request(`/api/users/${id}`, {
-        method: "PATCH",
-        body: JSON.stringify(patch),
-      }),
-    );
+    return (async () => {
+      try {
+        const result = await request<{ user: AppUser }>(`/api/users/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        await loadAll(true);
+        return result;
+      } catch (error) {
+        await loadAll(true);
+        throw error;
+      }
+    })();
   },
   deleteUser(id: string) {
     setState({ users: state.users.filter((user) => user.id !== id) });
@@ -2085,12 +2122,14 @@ export function fetchIndentors({
   prefix,
   page = 1,
   pageSize = 50,
+  signal,
 }: {
   divisionId?: string;
   q?: string;
   prefix?: boolean;
   page?: number;
   pageSize?: number;
+  signal?: AbortSignal;
 }) {
   const params = new URLSearchParams();
   if (divisionId) params.set("divisionId", divisionId);
@@ -2098,7 +2137,7 @@ export function fetchIndentors({
   if (prefix) params.set("prefix", "true");
   params.set("page", String(page));
   params.set("pageSize", String(pageSize));
-  return request<IndentorSearchResult>(`/api/indentors?${params.toString()}`);
+  return request<IndentorSearchResult>(`/api/indentors?${params.toString()}`, { signal });
 }
 
 export async function fetchAllIndentors({
@@ -2292,21 +2331,37 @@ export function savePreSoCashOutgoFilePlan(filePlan: {
   );
 }
 
-export function fetchFile(id: string) {
-  return request<{ file: FileRecord }>(`/api/files/${id}`);
+export function fetchFile(id: string, includeArchivedYears?: boolean) {
+  const params = new URLSearchParams();
+  if (includeArchivedYears !== undefined) {
+    params.set("includeArchivedYears", includeArchivedYears ? "true" : "false");
+  }
+  const serializedParams = params.toString();
+  const query = serializedParams ? `?${serializedParams}` : "";
+  return request<{ file: FileRecord }>(`/api/files/${id}${query}`);
 }
 
 export function fetchFilesByUniqueCode(code: string) {
   return request<{ files: FileRecord[] }>(`/api/files/by-unique-code/${encodeURIComponent(code)}`);
 }
 
-export function fetchFilesByIdentifier(code: string) {
-  return request<{ files: FileRecord[] }>(`/api/files/by-identifier/${encodeURIComponent(code)}`);
+export function fetchFilesByIdentifier(code: string, includeArchivedYears = true) {
+  const params = new URLSearchParams({
+    includeArchivedYears: includeArchivedYears ? "true" : "false",
+  });
+  return request<{ files: FileRecord[] }>(
+    `/api/files/by-identifier/${encodeURIComponent(code)}?${params.toString()}`,
+  );
 }
 
-export function fetchFileIdentifierSuggestions(query: string, includeDemandDescription = false) {
+export function fetchFileIdentifierSuggestions(
+  query: string,
+  includeDemandDescription = false,
+  includeArchivedYears = true,
+) {
   const params = new URLSearchParams({ q: query });
   if (includeDemandDescription) params.set("includeDemandDescription", "true");
+  params.set("includeArchivedYears", includeArchivedYears ? "true" : "false");
   return request<{ files: FileIdentifierSuggestion[] }>(
     `/api/files/identifier-suggestions?${params.toString()}`,
   );
@@ -2316,10 +2371,14 @@ export function fetchFilesForYear(
   year: string,
   includeArchivedYears = true,
   signal?: AbortSignal,
+  includeAllCancelledSupplyOrderFiles = false,
 ) {
   const params = new URLSearchParams();
   if (year) params.set("year", year);
   params.set("includeArchivedYears", includeArchivedYears ? "true" : "false");
+  if (includeAllCancelledSupplyOrderFiles) {
+    params.set("includeAllCancelledSupplyOrderFiles", "true");
+  }
   return request<{ files: FileRecord[] }>(
     `/api/files${params.toString() ? `?${params.toString()}` : ""}`,
     { signal },
@@ -2363,21 +2422,27 @@ export function fetchNextUniqueCode({
 export function lookupQuickStatusFiles({
   controlNo,
   description,
+  includeArchivedYears = true,
 }: {
   controlNo?: string;
   description?: string;
+  includeArchivedYears?: boolean;
 }) {
   const params = new URLSearchParams();
   if (controlNo) params.set("controlNo", controlNo);
   if (description) params.set("description", description);
+  params.set("includeArchivedYears", includeArchivedYears ? "true" : "false");
   return request<{ files: QuickStatusFileSummary[] }>(
     `/api/files/quick-status/lookup?${params.toString()}`,
   );
 }
 
-export function fetchQuickStatusContext(fileId: string) {
+export function fetchQuickStatusContext(fileId: string, includeArchivedYears = true) {
+  const params = new URLSearchParams({
+    includeArchivedYears: includeArchivedYears ? "true" : "false",
+  });
   return request<{ file: FileRecord; statuses: FileStatusUpdate[] }>(
-    `/api/files/quick-status/${fileId}`,
+    `/api/files/quick-status/${fileId}?${params.toString()}`,
   );
 }
 
@@ -2562,17 +2627,7 @@ function userCanAccessFileCategory(user: AppUser, file: Pick<FileRecord, "fileTy
 }
 
 function expandLegacyAllowedFileCategories(categories: string[]) {
-  const categorySet = new Set(categories);
-  if (
-    categorySet.has("goodsServices") &&
-    categorySet.has("amc") &&
-    categorySet.has("mpc") &&
-    categorySet.has("cars") &&
-    !categorySet.has("om")
-  ) {
-    categorySet.add("om");
-  }
-  return Array.from(categorySet);
+  return categories;
 }
 
 export function isIncomplete(f: FileRecord) {

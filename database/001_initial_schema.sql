@@ -49,6 +49,7 @@ create table app_settings (
   gem_bidding_modes jsonb not null default '["Custom", "Catalogue", "Comparison"]'::jsonb,
   milestones jsonb not null default '[]'::jsonb,
   table_field_presets jsonb not null default '[]'::jsonb,
+  table_field_presets_configured boolean not null default false,
   demand_processing_presets jsonb not null default '[]'::jsonb,
   demand_processing_day_ranges jsonb not null default '[{"id":"0-90","label":"0-90","minDays":"0","maxDays":"90"},{"id":"91-180","label":"91-180","minDays":"91","maxDays":"180"},{"id":"181-365","label":"181-365","minDays":"181","maxDays":"365"},{"id":"365-plus","label":"365 and above","minDays":"366","maxDays":""}]'::jsonb,
   bg_receipt_delay_days jsonb not null default '[10, 30, 60]'::jsonb,

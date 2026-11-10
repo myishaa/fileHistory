@@ -396,11 +396,12 @@ indentorsRouter.patch(
     const body = requireObjectBody(request.body);
     const existing = await getIndentor(id);
     if (!existing) throw new HttpError(404, "Indentor was not found.");
+    await assertDivisionAccess(user, existing.divisionId);
     const divisionId =
       typeof body.divisionId === "string" && body.divisionId.trim()
         ? body.divisionId.trim()
         : existing.divisionId;
-    await assertDivisionAccess(user, divisionId);
+    if (divisionId !== existing.divisionId) await assertDivisionAccess(user, divisionId);
     await ensureOptionalSfIdIndex();
 
     await pool.query(

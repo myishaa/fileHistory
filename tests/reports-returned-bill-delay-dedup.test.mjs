@@ -29,7 +29,7 @@ test("Delay Status emits one row per open returned-bill S.O. case", () => {
       {
         id: "returned-bill-delay-dedup",
         fileType: "AMC",
-        fileTypeGroup: "Group-B",
+        fileTypeGroup: "contract",
         ir: "No",
         demandCancelled: "No",
         completedMilestones: [],
@@ -52,11 +52,45 @@ test("Delay Status emits one row per open returned-bill S.O. case", () => {
   );
 });
 
-test("Delay Status keeps refloat delays in their own bin and ages from refloat dates", () => {
+test("Delay Status excludes returned-bill delays from closed files", () => {
+  const file = {
+    id: "closed-returned-bill-delay",
+    fileType: "AMC",
+    fileTypeGroup: "contract",
+    ir: "No",
+    demandCancelled: "No",
+    completedMilestones: [],
+    supplyOrders: [{
+      soDate: "2026-01-01",
+      soCancelled: "No",
+      noFurtherAction: "No",
+      billReturnCycles: [{ returnedDate: dateDaysAgo(10), reason: "Correction required" }],
+      supplementaryBills: [{
+        paymentDate: "",
+        billReturnCycles: [{ returnedDate: dateDaysAgo(10), reason: "Correction required" }],
+      }],
+    }],
+  };
+  const summaryFor = (candidate, delayMilestone) => buildReportsSummary({
+    files: [candidate],
+    division: "all",
+    delayDays: 5,
+    delayMilestone,
+  });
+
+  assert.equal(summaryFor(file, "billReturnedForCorrection").delayRows.length, 1);
+  assert.equal(summaryFor(file, "supplementaryBillReturnedForCorrection").delayRows.length, 1);
+
+  const closedFile = { ...file, completedMilestones: ["File Closed"] };
+  assert.equal(summaryFor(closedFile, "billReturnedForCorrection").delayRows.length, 0);
+  assert.equal(summaryFor(closedFile, "supplementaryBillReturnedForCorrection").delayRows.length, 0);
+});
+
+test("A recorded Refloat Bidding Date ends the delay even if opening or stage-over work remains", () => {
   const file = {
     id: "refloat-bidding-delay",
     fileType: "Goods & Services",
-    fileTypeGroup: "Group-A",
+    fileTypeGroup: "goodsServices",
     demandCancelled: "No",
     completedMilestones: ["CFA"],
     currentMilestone: "",
@@ -64,9 +98,11 @@ test("Delay Status keeps refloat delays in their own bin and ages from refloat d
     refloat: "Yes",
     tcec: "Yes",
     biddingStageOver: "No",
-    bidOpened: "Yes",
+    postTcecMinutesDate: dateDaysAgo(90),
     refloatBiddingDate: dateDaysAgo(60),
     refloatBidOpeningDate: dateDaysAgo(30),
+    refloatBidOpened: "No",
+    refloatBiddingStageOver: "No",
   };
   const summaryFor = (delayMilestone) => buildReportsSummary({
     files: [file],
@@ -79,30 +115,42 @@ test("Delay Status keeps refloat delays in their own bin and ages from refloat d
   const refloatBidding = summaryFor("refloatBidding").delayRows;
   const allBins = summaryFor("all").delayRows;
   assert.equal(ordinaryBidding.length, 0);
-  assert.equal(refloatBidding.length, 1);
-  assert.equal(refloatBidding[0].milestoneKey, "refloatBidding");
-  assert.equal(refloatBidding[0].stageStartDate, file.refloatBidOpeningDate);
-  assert.equal(allBins.length, 1);
+  assert.equal(refloatBidding.length, 0);
+  assert.equal(allBins.length, 0);
+  assert.deepEqual(
+    searchFiles([file], { dashboardFilter: "delayStatus:5:refloatBidding" }),
+    [],
+  );
+  assert.deepEqual(
+    searchFiles([file], { dashboardFilter: "biddingDelay:5:tenderLivePending" }),
+    [],
+  );
 
-  const recentRefloat = {
+  const bidDateStillMissing = {
     ...file,
-    id: "recent-refloat-bidding-delay",
-    refloatBidOpeningDate: dateDaysAgo(2),
+    id: "refloat-bidding-date-missing-stage-over-yes",
+    refloatBiddingDate: "",
+    refloatBiddingStageOver: "Yes",
   };
-  const recentSummary = buildReportsSummary({
-    files: [recentRefloat],
+  const pendingSummary = buildReportsSummary({
+    files: [bidDateStillMissing],
     division: "all",
     delayDays: 5,
     delayMilestone: "refloatBidding",
   });
-  assert.equal(recentSummary.delayRows.length, 0);
+  assert.equal(pendingSummary.delayRows.length, 1);
+  assert.equal(pendingSummary.delayRows[0].stageStartDate, file.postTcecMinutesDate);
+  assert.deepEqual(
+    searchFiles([bidDateStillMissing], { dashboardFilter: "delayStatus:5:refloatBidding" }).map(({ id }) => id),
+    [bidDateStillMissing.id],
+  );
 });
 
 test("Non-TCEC refloat tender-live delay starts after Refloat recommendation", () => {
   const file = {
     id: "refloat-tender-live-after-original-opening",
     fileType: "Goods & Services",
-    fileTypeGroup: "Group-A",
+    fileTypeGroup: "goodsServices",
     demandCancelled: "No",
     completedMilestones: ["CFA"],
     cfaDate: dateDaysAgo(180),
@@ -133,7 +181,7 @@ test("TCEC Refloat tender-live delay starts at Post-TCEC minutes", () => {
   const file = {
     id: "tcec-refloat-tender-live-after-post-tcec",
     fileType: "Goods & Services",
-    fileTypeGroup: "Group-A",
+    fileTypeGroup: "goodsServices",
     demandCancelled: "No",
     completedMilestones: ["CFA"],
     cfaDate: dateDaysAgo(180),
@@ -176,7 +224,7 @@ test("Bidding delay ignores RFP dates when RFP Vetting is not applicable", () =>
   const file = {
     id: "bidding-delay-inapplicable-rfp-date",
     fileType: "Goods & Services",
-    fileTypeGroup: "Group-A",
+    fileTypeGroup: "goodsServices",
     demandCancelled: "No",
     completedMilestones: ["CFA"],
     currentMilestone: "",
@@ -208,7 +256,7 @@ test("IR Delay Status requires an applicable IR workflow in summary and Search",
   const file = {
     id: "ir-delay-applicability",
     fileType: "Goods & Services",
-    fileTypeGroup: "Group-A",
+    fileTypeGroup: "goodsServices",
     ir: "No",
     demandCancelled: "No",
     completedMilestones: [],
@@ -249,7 +297,7 @@ test("Workflow Not Started ignores dates from disabled optional workflows", () =
   const file = {
     id: "workflow-not-started-stale-optional-dates",
     fileType: "Goods & Services",
-    fileTypeGroup: "Group-A",
+    fileTypeGroup: "goodsServices",
     mode: "Open Tender",
     receivedDate: dateDaysAgo(40),
     currentMilestone: "",

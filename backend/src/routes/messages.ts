@@ -4,6 +4,7 @@ import { visibleFileSql } from "../utils/qa-data.js";
 import type { FileMessage, FileMessageReply } from "../types.js";
 import {
   canAccessDivision,
+  canViewFileProcessing,
   canResolveMessages,
   canSendFileMessages,
   getDivisionScopeCondition,
@@ -247,7 +248,7 @@ messagesRouter.get(
   "/file-processing",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (messagingBlocked(user)) {
+    if (!canViewFileProcessing(user)) {
       response.json({ notifications: [] });
       return;
     }
@@ -259,7 +260,9 @@ messagesRouter.post(
   "/file-processing/:id/acknowledge",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (messagingBlocked(user)) throw new HttpError(403, "Universal viewers cannot use messaging.");
+    if (!canViewFileProcessing(user)) {
+      throw new HttpError(403, "You cannot acknowledge File Processing notifications.");
+    }
     const id = requireParam(request.params.id, "id");
     const notification = await acknowledgeFileProcessingNotification(id, user);
     if (!notification) throw new HttpError(404, "Notification not found.");

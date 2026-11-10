@@ -90,7 +90,8 @@ test("Bidding ranking SQL click-through uses the same Non-TCEC cycle rules", () 
   assert.match(sql, /f\.bid_date/);
   assert.match(sql, /f\.refloat_recommendation_date/);
   assert.match(sql, /f\.refloat_bidding_date/);
-  assert.match(sql, /not lower\(coalesce\(f\.tcec/);
+  assert.doesNotMatch(sql, /f\.bidding_stage_over/);
+  assert.doesNotMatch(sql, /f\.refloat_bidding_stage_over/);
   assert.match(sql, /\)\s+or\s+\(/);
   assert.match(sql, /f\.received_date/);
 });
@@ -101,8 +102,8 @@ test("Non-TCEC Refloat Bidding ranking contributes original and refloat samples"
     refloat: "Yes",
     refloatRecommendationDate: "2026-08-12",
     refloatBiddingDate: "2026-08-20",
-    biddingStageOver: "Yes",
-    refloatBiddingStageOver: "Yes",
+    biddingStageOver: "No",
+    refloatBiddingStageOver: "No",
   });
   const summary = buildDashboardSummary({ files: [candidate], divisions: [], settings });
   const row = summary.analytics.milestoneClearingRanking.find((item) => item.name === "Bidding");
@@ -137,9 +138,10 @@ test("Non-TCEC Technical Evaluation SQL click-through includes both completed cy
   assert.match(sql, /\)\s+or\s+\(/);
 });
 
-test("TCEC Refloat Bidding ranking stays on the normal Bidding cycle", () => {
+test("TCEC Refloat Bidding ranking contributes normal and refloat samples", () => {
   const candidate = file("tcec-refloat-bidding-ranking", {
     cfaDate: "2026-05-01",
+    bidDate: "2026-08-20",
     gem: "No",
     rfpVetting: "No",
     tcec: "Yes",
@@ -150,18 +152,19 @@ test("TCEC Refloat Bidding ranking stays on the normal Bidding cycle", () => {
     refloatBiddingDate: "2026-09-03",
     refloatBidOpeningDate: "2026-09-05",
     refloatPostTcecDate: "2026-09-11",
-    biddingStageOver: "Yes",
-    refloatBiddingStageOver: "Yes",
+    biddingStageOver: "No",
+    refloatBiddingStageOver: "No",
   });
   const summary = buildDashboardSummary({ files: [candidate], divisions: [], settings });
   const row = summary.analytics.milestoneClearingRanking.find((item) => item.name === "Bidding");
   assert.ok(row);
-  assert.equal(row.sampleSize, 1);
-  assert.equal(row.averageDays, 116);
+  assert.equal(row.sampleSize, 2);
+  assert.equal(row.fileCount, 1);
+  assert.equal(row.averageDays, 57); // 111 days for normal Bidding and 2 days for Refloat Bidding.
   const sql = dashboardFilterSql("analyticsMilestoneClearing:bidding", []);
-  assert.match(sql, /f\.post_tcec_date/);
+  assert.match(sql, /f\.post_tcec_minutes_date/);
   assert.doesNotMatch(sql, /f\.refloat_post_tcec_date/);
-  assert.doesNotMatch(sql, /f\.post_tcec_minutes_date/);
+  assert.doesNotMatch(sql, /f\.post_tcec_date/);
   assert.deepEqual(
     searchFiles([candidate], { dashboardFilter: "analyticsMilestoneClearing:bidding" })
       .map(({ id }) => id),

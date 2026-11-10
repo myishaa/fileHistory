@@ -50,11 +50,11 @@ const reportModes = [
   "mmgSummary", "demandProcessingAnalysis", "firmDatabase", "merData", "merComparison",
   "cashOutGoPlan", "preSoExpectedCashOutgo", "soPaymentMatrix", "paymentCompletedMatrix",
   "itemsDeliveredBillsPending", "itemsDeliveredBillsPrepared", "billsSubmitted",
-  "expectedCashOutgoFy", "spentTillDateFy", "billsPaidInMonth", "pendingReturnedBills",
+  "expectedCashOutgoFy", "billsPaidInMonth", "pendingReturnedBills",
   "returnedBillsResubmitted", "returnedBillsPaid", "supplementaryBillsSubmitted",
   "supplementaryBillsPaid", "supplementaryPendingReturnedBills",
   "supplementaryReturnedBillsResubmitted", "supplementaryReturnedBillsPaid", "cashOutgoForMonth",
-  "expectedExpenditureTillMonth", "currentMonthLiability", "monthlyFileInflow", "monthWiseSupplyOrder",
+  "monthlyFileInflow", "monthWiseSupplyOrder",
   "monthWiseDeliverySchedule", "monthWiseBgExpiry", "bgReceiptDelay", "warrantyBgMismatch", "delayStatus",
 ];
 
@@ -72,7 +72,6 @@ const reportLabels = {
   itemsDeliveredBillsPrepared: "Delivery / D.P. Done, Bill Prepared",
   billsSubmitted: "Bills Submitted, Payment Pending",
   expectedCashOutgoFy: "Expected Cash Outgo by D.P.",
-  spentTillDateFy: "Recorded Cash Outgo as on Date",
   billsPaidInMonth: "Bills Paid in Selected Month",
   pendingReturnedBills: "Pending returned bills",
   returnedBillsResubmitted: "Returned bills resubmitted and unpaid",
@@ -83,8 +82,6 @@ const reportLabels = {
   supplementaryReturnedBillsResubmitted: "Returned supplementary bills resubmitted",
   supplementaryReturnedBillsPaid: "Returned supplementary bills paid",
   cashOutgoForMonth: "Expected cash outgo exclusively for selected month",
-  expectedExpenditureTillMonth: "Expected Expenditure Up to Selected Month",
-  currentMonthLiability: "Cumulative Liability Up to Month",
   monthlyFileInflow: "Monthly file inflow",
   monthWiseSupplyOrder: "Month-wise Supply Order",
   monthWiseDeliverySchedule: "Month-wise Delivery / Contract Period Schedule",
@@ -95,10 +92,7 @@ const reportLabels = {
 };
 
 const breadcrumbAliases = {
-  "Recorded Cash Outgo as on Date": "Recorded Cash Outgo as on",
   "Expected cash outgo exclusively for selected month": "Expected Cash Outgo in",
-  "Expected Expenditure Up to Selected Month": "Expected Expenditure Up to",
-  "Cumulative Liability Up to Month": "Cumulative Liability Up to",
 };
 
 const dashboardClickSelector = [

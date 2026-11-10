@@ -11,7 +11,7 @@ function anomalyRows(order) {
         id: "warranty-bg-anomaly-test",
         division: "Trial",
         fileType: "AMC",
-        fileTypeGroup: "Contract",
+        fileTypeGroup: "contract",
         ir: "No",
         bg: "Yes",
         demandCancelled: "No",

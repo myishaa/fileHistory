@@ -68,6 +68,7 @@ psql "$DATABASE_URL" -f database/095_protected_backup_recovery_password.sql
 psql "$DATABASE_URL" -f database/096_refloat_bidding_fields.sql
 psql "$DATABASE_URL" -f database/097_master_firm_name_required.sql
 psql "$DATABASE_URL" -f database/098_permanent_message_deletion_and_nested_row_ids.sql
+psql "$DATABASE_URL" -f database/099_table_field_preset_configuration.sql
 ```
 
 The backend will read the same `DATABASE_URL` from `backend/.env`.

@@ -43,9 +43,10 @@ test("Archive filtering is explicit, and ordinary firm searches retain the searc
   const allFiles = [];
   appendSearchGlobalYearScope(allFiles, [], "__all_files__", "2026-27", {
     ...analyticsDrilldowns[0],
-    includeArchivedYears: true,
+    includeActiveArchivedYears: true,
   });
-  assert.deepEqual(allFiles, []);
+  assert.equal(allFiles.length, 1);
+  assert.match(allFiles[0], /financial_years archived_search_year/);
 
   const archivedExcluded = [];
   appendSearchGlobalYearScope(
@@ -55,14 +56,15 @@ test("Archive filtering is explicit, and ordinary firm searches retain the searc
     "2026-27",
     analyticsDrilldowns[0],
   );
-  // Explicit All Files scope intentionally bypasses the normal archive
-  // predicate; the include/exclude option applies to normal searchable scopes.
-  assert.deepEqual(archivedExcluded, []);
+  // All scopes follow the global FY archival rule.
+  assert.equal(archivedExcluded.length, 1);
+  assert.match(archivedExcluded[0], /financial_years archived_search_year/);
 
   const ordinaryFirmSearch = [];
   appendSearchGlobalYearScope(ordinaryFirmSearch, [], "__all_active_files__", "2026-27", {
     firm: "Supplier",
   });
-  assert.equal(ordinaryFirmSearch.length, 1);
+  assert.equal(ordinaryFirmSearch.length, 2);
   assert.match(ordinaryFirmSearch[0], /financial_years archived_search_year/);
+  assert.match(ordinaryFirmSearch[1], /fileclosed/);
 });

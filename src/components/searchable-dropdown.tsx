@@ -4,6 +4,7 @@ import { HelperContent } from "@/components/helper-content";
 import { createPortal } from "react-dom";
 import {
   type ChangeEvent,
+  type CSSProperties,
   type FocusEvent,
   type KeyboardEvent,
   type Ref,
@@ -27,6 +28,7 @@ type SearchableDropdownProps = {
   }>;
   placeholder?: string;
   disabled?: boolean;
+  style?: CSSProperties;
   className?: string;
   containerClassName?: string;
   "data-testid"?: string;
@@ -52,6 +54,7 @@ export function SearchableDropdown({
   optionItems,
   placeholder,
   disabled = false,
+  style,
   className,
   containerClassName,
   "data-testid": testId,
@@ -276,7 +279,11 @@ export function SearchableDropdown({
   const canClear = Boolean(query.trim() || (value.trim() && value !== resolvedClearValue));
 
   return (
-    <div ref={rootRef} className={`relative w-full min-w-40 ${containerClassName ?? "max-w-md"}`}>
+    <div
+      ref={rootRef}
+      style={style}
+      className={`relative w-full min-w-40 ${containerClassName ?? "max-w-md"}`}
+    >
       <input
         ref={setInputRef}
         value={

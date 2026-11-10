@@ -17,13 +17,15 @@ import {
   getActualPaymentCapital,
   getActualPaymentRevenue,
   getParentStagePaymentDate,
+  isPwbFollowUpStarted,
   hasUnpaidSupplyOrderPayment,
   isAdvancePaymentPaid,
   isAdvancePaymentPending,
   isParentStagePaymentOrder,
+  isSupplyOrderEligibleForMetrics,
   isExpiredDeliveryPeriodEntry,
   isValidDeliveryPeriodEntry,
-  rawSupplyOrders as normalizedRawSupplyOrders,
+  eligibleSupplyOrders as normalizedEligibleSupplyOrders,
 } from "@/lib/effective-deliveries";
 import { formatThousandsAndLakhs, getInrAmount } from "@/lib/money";
 import { isAutoTenderLive, isTcecComplete } from "@/lib/bidding-status";
@@ -792,7 +794,7 @@ function getMmgSummaryValues(
     ),
     soPending: formatCount(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
-        isSupplyOrderPendingOrder(file, order),
+        isMmgSupplyOrderPendingOrder(file, order),
       ).length,
     ),
     soLive: formatCount(
@@ -1190,7 +1192,7 @@ function getMmgSummaryValues(
     ),
     soPending: entryFileIds(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
-        isSupplyOrderPendingOrder(file, order),
+        isMmgSupplyOrderPendingOrder(file, order),
       ),
     ),
     soLive: entryFileIds(
@@ -1518,7 +1520,7 @@ function getMmgSummaryValues(
     ),
     soPending: entryFocusTargets(
       expectedOrderEntries(nonCancelledFiles).filter(({ file, order }) =>
-        isSupplyOrderPendingOrder(file, order),
+        isMmgSupplyOrderPendingOrder(file, order),
       ),
       "supplyorder",
       "pending",
@@ -1945,7 +1947,7 @@ function getMmgSummaryValues(
   });
   getFirmTypesInFiles(nonCancelledFiles).forEach((firmType) => {
     values[getFirmTypeKey(firmType)] = countFiles(nonCancelledFiles, (file) =>
-      rawSupplyOrders(file).some(
+      eligibleSupplyOrders(file).some(
         (order) =>
           !isCancelledOrder(file, order) &&
           normalizeFirmTypeKey(getFirmTypeName(order)) === normalizeFirmTypeKey(firmType),
@@ -1953,7 +1955,7 @@ function getMmgSummaryValues(
     );
     fileIdsByKey[getFirmTypeKey(firmType)] = fileIds(
       nonCancelledFiles.filter((file) =>
-        rawSupplyOrders(file).some(
+        eligibleSupplyOrders(file).some(
           (order) =>
             !isCancelledOrder(file, order) &&
             normalizeFirmTypeKey(getFirmTypeName(order)) === normalizeFirmTypeKey(firmType),
@@ -2062,7 +2064,7 @@ function getFileTypesInFiles(files: FileRecord[]) {
 function getFirmTypesInFiles(files: FileRecord[]) {
   const firmTypes = new Set<string>();
   files.forEach((file) => {
-    rawSupplyOrders(file).forEach((order) => {
+    eligibleSupplyOrders(file).forEach((order) => {
       if (isCancelledOrder(file, order)) return;
       const firmType = getFirmTypeName(order);
       if (firmType) firmTypes.add(firmType);
@@ -2082,7 +2084,7 @@ function countFiles(files: FileRecord[], predicate: (file: FileRecord) => boolea
 function countCancelledSupplyOrders(files: FileRecord[]) {
   return files.reduce((total, file) => {
     if (isDemandCancelled(file)) return total;
-    const cancelledRows = rawSupplyOrders(file).filter((order) => isYes(order.soCancelled)).length;
+    const cancelledRows = eligibleSupplyOrders(file).filter((order) => isYes(order.soCancelled)).length;
     if (cancelledRows > 0) return total + cancelledRows;
     return total + (isYes(file.soCancelled) ? 1 : 0);
   }, 0);
@@ -2091,7 +2093,7 @@ function countCancelledSupplyOrders(files: FileRecord[]) {
 function countShortclosedSupplyOrders(files: FileRecord[]) {
   return files.reduce((total, file) => {
     if (isDemandCancelled(file)) return total;
-    const shortclosedRows = rawSupplyOrders(file).filter((order) =>
+    const shortclosedRows = eligibleSupplyOrders(file).filter((order) =>
       isYes(order.shortclosure),
     ).length;
     if (shortclosedRows > 0) return total + shortclosedRows;
@@ -2123,7 +2125,7 @@ function effectiveOrderEntries(files: FileRecord[]) {
 
 function rawOrderEntries(files: FileRecord[]) {
   return files.flatMap((file) =>
-    rawSupplyOrders(file).map((order, orderIndex) => ({ file, order, orderIndex })),
+    eligibleSupplyOrders(file).map((order, orderIndex) => ({ file, order, orderIndex })),
   );
 }
 
@@ -2236,8 +2238,8 @@ function fileSupplyOrders(file: FileRecord) {
   return normalizedFileSupplyOrders(file);
 }
 
-function rawSupplyOrders(file: FileRecord) {
-  return normalizedRawSupplyOrders(file);
+function eligibleSupplyOrders(file: FileRecord) {
+  return normalizedEligibleSupplyOrders(file);
 }
 
 function getFileAmount(file: FileRecord, type: "capital" | "revenue") {
@@ -2273,7 +2275,7 @@ function getActualPaymentTotal(file: FileRecord, order: SupplyOrderDetail) {
 }
 
 function hasAnyActiveRawOrderAmount(file: FileRecord, type: "capital" | "revenue") {
-  return rawSupplyOrders(file).some(
+  return eligibleSupplyOrders(file).some(
     (order) =>
       !isCancelledOrder(file, order) &&
       hasAmount(type === "capital" ? order.soValueCapital : order.soValueRevenue),
@@ -2377,39 +2379,14 @@ function hasSupplyOrderDate(order: SupplyOrderDetail) {
   return hasFilledString(order.soDate);
 }
 
-function hasSupplyOrderValue(file: FileRecord, order: SupplyOrderDetail) {
-  const capitalSelected = (getInrAmount(file.valueCapital, file) ?? 0) !== 0;
-  const revenueSelected = (getInrAmount(file.valueRevenue, file) ?? 0) !== 0;
-  if (capitalSelected) return hasFilledString(order.soValueCapital);
-  if (revenueSelected) return hasFilledString(order.soValueRevenue);
-  return hasFilledString(order.soValueCapital) || hasFilledString(order.soValueRevenue);
-}
-
 function isSupplyOrderTabComplete(file: FileRecord, order: SupplyOrderDetail) {
-  if (!hasFilledString(order.soNo)) return false;
-  if (!isNo(file.gem) && !hasFilledString(order.gemSoNo)) return false;
-  if (!hasFilledString(order.soDate)) return false;
-  if (!hasSupplyOrderValue(file, order)) return false;
-  if (!hasFilledString(order.firm)) return false;
-  if (!hasFilledString(order.firmType)) return false;
-  if (
-    (order.firmType ?? "").trim().toUpperCase() === "OTHER" &&
-    !hasFilledString(order.firmTypeOther)
-  ) {
-    return false;
-  }
-  if (!isYes(order.stageDelivery) && !isNo(order.stageDelivery)) return false;
-  if (isYes(order.stageDelivery)) {
-    if (!hasFilledString(order.stageDeliveryCount)) return false;
-    if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
-  }
-  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
-  return true;
+  return isSupplyOrderEligibleForMetrics(file, order);
 }
 
-function isSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
+export function isMmgSupplyOrderPendingOrder(file: FileRecord, order: SupplyOrderDetail) {
   return (
     isMmgFollowUpOrder(file, order) &&
+    normalizeMilestoneName(order.currentMilestone) === "supplyorder" &&
     isFinancialSanctionCompleted(order) &&
     !isSupplyOrderTabComplete(file, order)
   );
@@ -2482,7 +2459,7 @@ function getBgReturnDate(order: SupplyOrderDetail, category: string) {
 }
 
 function countBgPendingOrders(files: FileRecord[], category: string) {
-  return expectedOrderEntries(files).filter(({ file, order }) =>
+  return rawOrderEntries(files).filter(({ file, order }) =>
     isBgPendingOrder(file, order, category),
   ).length;
 }
@@ -2496,7 +2473,7 @@ function isBgPendingOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     !isYes(order.noFurtherAction) &&
     (normalized === "psb" || normalized === "psbpwb"
       ? hasFilledString(order.soDate)
-      : hasFilledString(order.materialReceiptDate))
+      : isPwbFollowUpStarted(file, order))
   );
 }
 

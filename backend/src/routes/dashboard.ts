@@ -37,6 +37,7 @@ import {
   getAuthScopeCacheKey,
   getDivisionScopeCondition,
   getFileCategoryScopeCondition,
+  isDivisionScopedUser,
   requireAuth,
   type AuthRequest,
 } from "../utils/auth.js";
@@ -95,7 +96,7 @@ async function loadDashboardSuspectedAnomalyRows({
     includeArchivedYears,
   });
   const anomalyCacheKey = `dashboard:suspected-anomalies:${JSON.stringify({
-    version: 2,
+    version: 5,
     scope: getAuthScopeCacheKey(user),
     selectedYear,
     fileYear,
@@ -1411,6 +1412,19 @@ export function getSuspectedAnomalyRows(
       );
     }
     if (isYes(file.rfpVetting)) {
+      if (
+        hasFilledString(file.bidDate) &&
+        !hasFilledString(file.rfpVettingApprovalDate)
+      ) {
+        addIssue(
+          "RFP vetting",
+          "Bid Date exists but RFP Vetting Approval Date is blank",
+          "RFP Vetting Approval Date",
+          "Filled before Bid Date",
+          "Bid Date",
+          file.bidDate!,
+        );
+      }
       addPair(
         "RFP vetting",
         "RFP vetting initiation date should not be after RFP vetting approval date",
@@ -1782,6 +1796,19 @@ export function getSuspectedAnomalyRows(
     supplyOrders.forEach((rawOrder, rawIndex) => {
       const rawContext = `order:${rawOrder.soNo || rawOrder.gemSoNo || `S.O. ${rawIndex + 1}`}:${rawIndex}`;
       const rawLabel = rawOrder.soNo || rawOrder.gemSoNo || `S.O. ${rawIndex + 1}`;
+      const soCapitalValue = parseAmount(rawOrder.soValueCapital);
+      const soRevenueValue = parseAmount(rawOrder.soValueRevenue);
+      if (soCapitalValue > 0 && soRevenueValue > 0) {
+        addIssue(
+          "Supply Order",
+          "S.O. has both Capital and Revenue values",
+          "S.O. value side",
+          "Capital or Revenue, not both",
+          "S.O. values",
+          `Capital: ${formatAmountForAnomaly(soCapitalValue)}; Revenue: ${formatAmountForAnomaly(soRevenueValue)}`,
+          rawContext,
+        );
+      }
       const hasSoDate = hasFilledString(rawOrder.soDate);
       if (
         hasFilledString(rawOrder.currentMilestone) &&
@@ -3576,7 +3603,6 @@ function addApprovalDateCompletenessAnomalies(file: FileRecord, addIssue: AddAno
 }
 
 function addTcecCompletenessAnomalies(file: FileRecord, addIssue: AddAnomalyIssue) {
-  if (!isYes(file.tcec)) return;
   if (hasFilledString(file.preTcecMinutesDate) && !hasFilledString(file.preTcecDate)) {
     addIssue(
       "TCEC",
@@ -3587,6 +3613,30 @@ function addTcecCompletenessAnomalies(file: FileRecord, addIssue: AddAnomalyIssu
       file.preTcecMinutesDate!,
     );
   }
+  if (hasFilledString(file.postTcecMinutesDate) && !hasFilledString(file.postTcecDate)) {
+    addIssue(
+      "TCEC",
+      "Post-TCEC minutes date exists but Post-TCEC date is blank",
+      "Post-TCEC date",
+      "Filled",
+      "Post-TCEC minutes date",
+      file.postTcecMinutesDate!,
+    );
+  }
+  if (
+    hasFilledString(file.refloatPostTcecMinutesDate) &&
+    !hasFilledString(file.refloatPostTcecDate)
+  ) {
+    addIssue(
+      "TCEC",
+      "Refloat Post-TCEC minutes date exists but Refloat Post-TCEC date is blank",
+      "Refloat Post-TCEC date",
+      "Filled",
+      "Refloat Post-TCEC minutes date",
+      file.refloatPostTcecMinutesDate!,
+    );
+  }
+  if (!isYes(file.tcec)) return;
   if (
     (hasFilledString(file.postTcecDate) ||
       hasFilledString(file.postTcecMinutesDate) ||
@@ -3603,16 +3653,6 @@ function addTcecCompletenessAnomalies(file: FileRecord, addIssue: AddAnomalyIssu
       "Filled",
     );
   }
-  if (hasFilledString(file.postTcecMinutesDate) && !hasFilledString(file.postTcecDate)) {
-    addIssue(
-      "TCEC",
-      "Post-TCEC minutes date exists but Post-TCEC date is blank",
-      "Post-TCEC date",
-      "Filled",
-      "Post-TCEC minutes date",
-      file.postTcecMinutesDate!,
-    );
-  }
   if (
     isBiddingApplicableForFile(file) &&
     (hasFilledString(file.postTcecDate) || hasFilledString(file.postTcecMinutesDate)) &&
@@ -3625,19 +3665,6 @@ function addTcecCompletenessAnomalies(file: FileRecord, addIssue: AddAnomalyIssu
       "Yes",
       "Post-TCEC details",
       "Filled",
-    );
-  }
-  if (
-    hasFilledString(file.refloatPostTcecMinutesDate) &&
-    !hasFilledString(file.refloatPostTcecDate)
-  ) {
-    addIssue(
-      "TCEC",
-      "Refloat Post-TCEC minutes date exists but Refloat Post-TCEC date is blank",
-      "Refloat Post-TCEC date",
-      "Filled",
-      "Refloat Post-TCEC minutes date",
-      file.refloatPostTcecMinutesDate!,
     );
   }
   if (
@@ -5895,15 +5922,6 @@ const allFilesYear = "__all_files__";
 const allActiveFilesYear = "__all_active_files__";
 const activePlusCurrentFyClosedYear = "__active_plus_current_fy_closed__";
 const fileClosedMilestone = "File Closed";
-const protectedLiveStatusMilestones = [
-  "Refloat bidding",
-  "Refloat Post-TCEC",
-  "Bill returned for correction",
-  "Supplementary bill returned for correction",
-  "Material Receipt",
-  "D.P. expired",
-  "Job Completion",
-];
 
 function isFileActiveInYear(file: FileRecord, year: string) {
   if (file.year === year || file.activeYears?.includes(year)) return true;
@@ -6012,17 +6030,25 @@ function getFinancialYearStartNumber(financialYear: string | undefined) {
   return match ? Number(match[1]) : undefined;
 }
 
-function activeFilesExpression() {
-  return `(not ${fileClosedExpression()}
-      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
-      and not (${supplyOrderRowExists()} and not exists (
-        select 1 from supply_orders so_active
-        where so_active.file_id = f.id
-          and not ${isYesExpression("so_active.so_cancelled")}
-      )))`;
+function allSupplyOrdersCancelledExpression() {
+  return `(${supplyOrderRowExists()} and not exists (
+    select 1 from supply_orders so_active
+    where so_active.file_id = f.id
+      and not ${isYesExpression("so_active.so_cancelled")}
+  ))`;
 }
 
-function specificFinancialYearExpression(selectedYear: string, values: unknown[]) {
+function activeFilesExpression(includeAllCancelledSupplyOrderFiles = false) {
+  return `(not ${fileClosedExpression()}
+      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+      ${includeAllCancelledSupplyOrderFiles ? "" : `and not ${allSupplyOrdersCancelledExpression()}`})`;
+}
+
+function specificFinancialYearExpression(
+  selectedYear: string,
+  values: unknown[],
+  includeAllCancelledSupplyOrderFiles = false,
+) {
   const range = getFinancialYearDateRange(selectedYear);
   if (!range) return "true";
   const yearPlaceholder = addValue(values, selectedYear);
@@ -6034,11 +6060,7 @@ function specificFinancialYearExpression(selectedYear: string, values: unknown[]
   ) or (
     nullif(substring(coalesce(f.year, '') from '(19[0-9]{2}|20[0-9]{2})'), '')::integer <= ${startYear}
     and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
-    and not (${supplyOrderRowExists()} and not exists (
-      select 1 from supply_orders so_active
-      where so_active.file_id = f.id
-        and not ${isYesExpression("so_active.so_cancelled")}
-    ))
+    ${includeAllCancelledSupplyOrderFiles ? "" : `and not ${allSupplyOrdersCancelledExpression()}`}
     and (not ${fileClosedExpression()} or f.file_closure_date >= ${startPlaceholder}::date)
   ))`;
 }
@@ -6047,23 +6069,28 @@ function getSelectedYearCondition(
   selectedYear: string | undefined,
   values: unknown[],
   currentFinancialYear?: string,
+  includeAllCancelledSupplyOrderFiles = false,
 ) {
   if (!selectedYear) return undefined;
   if (selectedYear === allFilesYear) return undefined;
   if (selectedYear === allActiveFilesYear) {
-    return activeFilesExpression();
+    return activeFilesExpression(includeAllCancelledSupplyOrderFiles);
   }
   if (selectedYear === activePlusCurrentFyClosedYear) {
     const range = getFinancialYearDateRange(currentFinancialYear);
-    if (!range) return activeFilesExpression();
+    if (!range) return activeFilesExpression(includeAllCancelledSupplyOrderFiles);
     const start = addValue(values, range.start);
     const end = addValue(values, range.end);
-    return `(${activeFilesExpression()} or (${fileClosedExpression()}
+    return `(${activeFilesExpression(includeAllCancelledSupplyOrderFiles)} or (${fileClosedExpression()}
       and f.file_closure_date between ${start}::date and ${end}::date
       and lower(coalesce(f.demand_cancelled, '')) <> 'yes'))`;
   }
 
-  return specificFinancialYearExpression(selectedYear, values);
+  return specificFinancialYearExpression(
+    selectedYear,
+    values,
+    includeAllCancelledSupplyOrderFiles,
+  );
 }
 
 function paymentCompletedExpression() {
@@ -6080,9 +6107,21 @@ function getMilestoneClearingSelectedYearCondition(
   selectedYear: string | undefined,
   values: unknown[],
   currentFinancialYear?: string,
+  includeAllCancelledSupplyOrderFiles = false,
 ) {
-  if (selectedYear === allActiveFilesYear) return `not ${paymentCompletedExpression()}`;
-  return getSelectedYearCondition(selectedYear, values, currentFinancialYear);
+  if (selectedYear === allActiveFilesYear) {
+    return `not ${paymentCompletedExpression()}${
+      includeAllCancelledSupplyOrderFiles
+        ? ""
+        : ` and not ${allSupplyOrdersCancelledExpression()}`
+    }`;
+  }
+  return getSelectedYearCondition(
+    selectedYear,
+    values,
+    currentFinancialYear,
+    includeAllCancelledSupplyOrderFiles,
+  );
 }
 
 function getDashboardFileWhereSql({
@@ -6096,6 +6135,8 @@ function getDashboardFileWhereSql({
   activeDivision,
   fileCategories,
   includeArchivedYears = true,
+  includeAllCancelledSupplyOrderFiles = false,
+  excludeAllCancelledSupplyOrderFiles = false,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -6107,25 +6148,29 @@ function getDashboardFileWhereSql({
   activeDivision: string;
   fileCategories?: FileCategoryKey[];
   includeArchivedYears?: boolean;
+  includeAllCancelledSupplyOrderFiles?: boolean;
+  excludeAllCancelledSupplyOrderFiles?: boolean;
 }) {
   const conditions: string[] = [];
   const values = [...scopeValues];
   if (scopeSql) conditions.push(scopeSql);
 
-  if (selectedYear !== allFilesYear) {
-    const searchableYearCondition = getSearchableFinancialYearSql(
-      activeFilesExpression(),
-      includeArchivedYears,
-    );
-    if (searchableYearCondition) conditions.push(searchableYearCondition);
-  }
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  if (searchableYearCondition) conditions.push(searchableYearCondition);
 
   const selectedYearCondition = getSelectedYearCondition(
     selectedYear,
     values,
     currentFinancialYear,
+    includeAllCancelledSupplyOrderFiles,
   );
   if (selectedYearCondition) conditions.push(selectedYearCondition);
+  if (excludeAllCancelledSupplyOrderFiles) {
+    conditions.push(`not ${allSupplyOrdersCancelledExpression()}`);
+  }
 
   if (fileYear?.trim() && fileYear.trim() !== "all") {
     const placeholder = addValue(values, fileYear.trim());
@@ -6164,6 +6209,7 @@ function getDashboardMilestoneClearingFileWhereSql({
   activeDivision,
   fileCategories,
   includeArchivedYears = true,
+  includeAllCancelledSupplyOrderFiles = false,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -6175,23 +6221,23 @@ function getDashboardMilestoneClearingFileWhereSql({
   activeDivision: string;
   fileCategories?: FileCategoryKey[];
   includeArchivedYears?: boolean;
+  includeAllCancelledSupplyOrderFiles?: boolean;
 }) {
   const conditions: string[] = [];
   const values = [...scopeValues];
   if (scopeSql) conditions.push(scopeSql);
 
-  if (selectedYear !== allFilesYear) {
-    const searchableYearCondition = getSearchableFinancialYearSql(
-      activeFilesExpression(),
-      includeArchivedYears,
-    );
-    if (searchableYearCondition) conditions.push(searchableYearCondition);
-  }
+  const searchableYearCondition = getSearchableFinancialYearSql(
+    activeFilesExpression(),
+    includeArchivedYears,
+  );
+  if (searchableYearCondition) conditions.push(searchableYearCondition);
 
   const selectedYearCondition = getMilestoneClearingSelectedYearCondition(
     selectedYear,
     values,
     currentFinancialYear,
+    includeAllCancelledSupplyOrderFiles,
   );
   if (selectedYearCondition) conditions.push(selectedYearCondition);
 
@@ -6631,11 +6677,43 @@ function effectiveDpDateExpression(alias: string) {
 
 function supplyOrderPlacedExpression() {
   return supplyOrderChildExpression(
-    `not ${isYesExpression("so.so_cancelled")}
-      and ${hasFilledExpression("so.so_date")}
+    `${supplyOrderMetricsEligibleExpression("so")}
+      and not ${isYesExpression("so.so_cancelled")}
       and so.so_date <= (now() at time zone 'Asia/Kolkata')::date`,
-    hasFilledExpression("f.so_date"),
   );
+}
+
+function supplyOrderMetricsEligibleExpression(alias: string) {
+  const valueComplete = `(case
+    when coalesce(f.value_capital, 0) <> 0 then ${hasFilledExpression(`${alias}.so_value_capital`)}
+    when coalesce(f.value_revenue, 0) <> 0 then ${hasFilledExpression(`${alias}.so_value_revenue`)}
+    else (${hasFilledExpression(`${alias}.so_value_capital`)} or ${hasFilledExpression(`${alias}.so_value_revenue`)})
+  end)`;
+  return `${hasFilledExpression(`${alias}.financial_sanction_date`)}
+    and ${hasFilledExpression(`${alias}.so_no`)}
+    and (${isNoExpression("f.gem")} or ${hasFilledExpression(`${alias}.gem_so_no`)})
+    and ${hasFilledExpression(`${alias}.so_date`)}
+    and ${valueComplete}
+    and ${hasFilledExpression(`${alias}.firm`)}
+    and ${hasFilledExpression(`${alias}.firm_type`)}
+    and (upper(trim(coalesce(${alias}.firm_type, ''))) <> 'OTHER' or ${hasFilledExpression(
+      `${alias}.firm_type_other`,
+    )})
+    and (${isYesExpression(`${alias}.stage_delivery`)} or ${isNoExpression(
+      `${alias}.stage_delivery`,
+    )})
+    and (
+      not ${isYesExpression(`${alias}.stage_delivery`)}
+      or (
+        ${hasFilledExpression(`${alias}.stage_delivery_count`)}
+        and (${isYesExpression(`${alias}.stage_payment`)} or ${isNoExpression(
+          `${alias}.stage_payment`,
+        )})
+      )
+    )
+    and (${isYesExpression(`${alias}.advance_payment`)} or ${isNoExpression(
+      `${alias}.advance_payment`,
+    )})`;
 }
 
 function deliveryDueOrderExpression(extraCondition = "true") {
@@ -6713,6 +6791,14 @@ function effectiveOrderTabCompleteExpression(alias = "eso") {
         `${alias}.advance_payment`,
       )})
     )`;
+}
+
+function effectiveOrderMetricsEligibleExpression(alias = "eso") {
+  return `${hasFilledExpression(`${alias}.financial_sanction_date`)}
+    and ${effectiveOrderTabCompleteExpression(alias)}
+    and (${isYesExpression(`${alias}.advance_payment`)} or ${isNoExpression(
+      `${alias}.advance_payment`,
+    )})`;
 }
 
 function effectiveOrderCurrentMilestoneExpression(milestone: string, alias = "eso") {
@@ -8068,12 +8154,21 @@ function dateDiffCondition(startDate: string, endDate: string) {
 }
 
 function getPreviousApplicableMilestoneCompletionSql(
-  definitions: Array<{ end: string; applies?: string }>,
+  definitions: Array<{ name: string; end: string; applies?: string }>,
   index: number,
   currentEnd: string,
 ) {
   if (index <= 0) return "f.received_date";
-  const previousDates = definitions.slice(0, index).map((definition) => {
+  const controllingIndex = definitions.findIndex((definition) => definition.name === "Controlling");
+  const isPreControllingTarget = controllingIndex > 0 && index < controllingIndex;
+  const candidateEntries = definitions
+    .map((definition, candidateIndex) => ({ definition, candidateIndex }))
+    .filter(({ candidateIndex }) =>
+      isPreControllingTarget
+        ? candidateIndex < controllingIndex && candidateIndex !== index
+        : candidateIndex < index,
+    );
+  const previousDates = candidateEntries.map(({ definition }) => {
     const applies = definition.applies ?? "true";
     return `case when ${applies} and (${definition.end}) is not null and (${definition.end}) <= (${currentEnd}) then ${definition.end} else null end`;
   });
@@ -8392,7 +8487,7 @@ async function loadAnalyticsSqlSlice({
       applies: isYesExpression("f.tcec"),
     },
     {
-      name: "Financial Sanction",
+      name: "Financial Sanction (TCEC)",
       start: "f.cnc_approval_date",
       end: `(select min(so_end.financial_sanction_date)
         from supply_orders so_end
@@ -8432,7 +8527,7 @@ async function loadAnalyticsSqlSlice({
               string_agg(distinct milestone_samples.file_id, ',') as "fileIds"
        from (${cycleQueries.join("\nunion all\n")}) as milestone_samples`;
   const milestoneSelects = milestoneClearingDefinitions.map((definition, index) => {
-    if (definition.name === "Financial Sanction") {
+    if (definition.name === "Financial Sanction (TCEC)") {
       const start = "f.cnc_approval_date";
       const end = "so.financial_sanction_date";
       return milestoneCycleAggregate(index, definition.name, [
@@ -8459,12 +8554,10 @@ async function loadAnalyticsSqlSlice({
       return milestoneCycleAggregate(index, "Bidding", [
         milestoneCycleSelect("f.cfa_date", "f.bid_date", [
           biddingApplicableExpression(),
-          `(not ${isYesExpression("f.tcec")} or ${isYesExpression("f.bidding_stage_over")})`,
         ]),
         milestoneCycleSelect(refloatStart, "f.refloat_bidding_date", [
           biddingApplicableExpression(true),
           isYesExpression("f.refloat"),
-          isYesExpression("f.refloat_bidding_stage_over"),
         ]),
       ]);
     }
@@ -8651,6 +8744,7 @@ async function loadAnalyticsSqlSlice({
   const irClearingApplicable = `${deliveryInspectionApplicableExpression()} and ${isYesExpression("f.ir")}`;
   const billPreparationStart = `case
     when ${irClearingApplicable} then ${paymentIrReceiptDate}
+    when not (${deliveryInspectionApplicableExpression()}) then ${paymentJobCompletionDate}
     else ${paymentClearingStart}
   end`;
   const finalPaymentStageJoin = `left join lateral jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as payment_stage(stage)
@@ -9953,6 +10047,7 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
     .map((item) => normalizeLiveStatusMilestoneName(item.trim()))
     .filter(isVisibleLiveStatusMilestoneName);
   const configured = values.length ? values : defaultManualMilestones;
+  if (values.length) return appendFileClosedMilestone(dedupeLiveStatusMilestones(values));
   return appendFileClosedMilestone(
     dedupeLiveStatusMilestones(
       insertAdvancePaymentMilestone(
@@ -10115,6 +10210,9 @@ function normalizeLiveStatusMilestoneName(milestone: string) {
 }
 
 function getLiveStatusMilestoneLabel(milestone: string) {
+  if (normalizeMilestoneName(milestone) === "payment") {
+    return "Regular payment";
+  }
   if (normalizeMilestoneName(milestone) === "supplementarybillreturnedforcorrection") {
     return "Supp. bill returned";
   }
@@ -10147,9 +10245,6 @@ function getVisibleLiveMilestoneNames(
         .map((milestone) => milestone.name)
         .filter(isVisibleLiveStatusMilestoneName),
   );
-  protectedLiveStatusMilestones.forEach((milestone) => {
-    if (available.has(milestone) && !visible.includes(milestone)) visible.push(milestone);
-  });
   const expiredIndex = visible.indexOf("D.P. expired");
   const receiptIndex = visible.indexOf("Material Receipt");
   if (expiredIndex !== -1 && receiptIndex !== -1) {
@@ -11360,7 +11455,9 @@ async function loadStatusCounts({
       )} as refloat_in_process_bids,
        ${effectiveOrderCountFilter("true")} as order_supply_order_total,
        ${effectiveOrderCountFilter(
-         `not ${effectiveOrderCancelledExpression()} and ${effectiveOrderPlacedExpression()}`,
+         `${effectiveOrderMetricsEligibleExpression()}
+          and not ${effectiveOrderCancelledExpression()}
+          and ${effectiveOrderPlacedExpression()}`,
        )} as order_supply_order_placed,
 	       ${effectiveOrderCountFilter(
            effectiveOrderFinancialSanctionPendingExpression(),
@@ -12200,6 +12297,9 @@ dashboardRouter.get(
   "/suspected-anomalies/acceptances",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
+    if (isDivisionScopedUser(user)) {
+      throw new HttpError(403, "Division-scoped users cannot access suspected anomalies.");
+    }
     await ensureAnomalyGovernanceSchema();
     const canReadAll = user.role === "admin";
     const hasDivisionScope = user.role === "sub_admin" || user.role === "universal_viewer";
@@ -12281,6 +12381,9 @@ dashboardRouter.post(
   "/suspected-anomalies/acceptances/clear-history",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
+    if (isDivisionScopedUser(user)) {
+      throw new HttpError(403, "Division-scoped users cannot access suspected anomalies.");
+    }
     await ensureAnomalyGovernanceSchema();
     const body = request.body as { password?: unknown; signatures?: unknown };
     const password = readString(body.password)?.trim() ?? "";
@@ -12327,7 +12430,9 @@ dashboardRouter.post(
   "/suspected-anomalies/acceptances",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
-    if (user.role === "viewer") throw new HttpError(403, "Viewer cannot accept anomalies.");
+    if (isDivisionScopedUser(user)) {
+      throw new HttpError(403, "Division-scoped users cannot access suspected anomalies.");
+    }
     await ensureAnomalyGovernanceSchema();
     const body = request.body as { signature?: unknown; reason?: unknown };
     const signature = typeof body.signature === "string" ? body.signature.trim() : "";
@@ -12477,6 +12582,9 @@ dashboardRouter.get(
   asyncHandler(async (request, response) => {
     await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
+    if (isDivisionScopedUser(user)) {
+      throw new HttpError(403, "Division-scoped users cannot access suspected anomalies.");
+    }
     const settings = await loadSettings();
     const selectedYear = readString(request.query.selectedYear) ?? settings.selectedYear;
     const fileYear = readString(request.query.fileYear);
@@ -12601,6 +12709,9 @@ dashboardRouter.get(
   asyncHandler(async (request, response) => {
     await ensureFinancialYearArchiveSchema();
     const user = requireAuth(request as AuthRequest);
+    if (isDivisionScopedUser(user)) {
+      throw new HttpError(403, "Division-scoped users cannot access suspected anomalies.");
+    }
     const scope = getDivisionScopeCondition(user);
     const categoryScope = getFileCategoryScopeCondition(user);
     const settings = await loadSettings();
@@ -12982,6 +13093,10 @@ dashboardRouter.get(
       request.query.includeArchivedYears === undefined
         ? true
         : readBoolean(request.query.includeArchivedYears);
+    const includeAllCancelledSupplyOrderFiles =
+      request.query.includeAllCancelledSupplyOrderFiles === undefined
+        ? false
+        : readBoolean(request.query.includeAllCancelledSupplyOrderFiles);
     const includeAnalytics =
       request.query.includeAnalytics === undefined || readBoolean(request.query.includeAnalytics);
     const activeDivision = requestedDivision;
@@ -12996,6 +13111,7 @@ dashboardRouter.get(
       activeDivision,
       fileCategories,
       includeArchivedYears,
+      includeAllCancelledSupplyOrderFiles,
     });
     const milestoneClearingFileWhere = getDashboardMilestoneClearingFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -13008,6 +13124,7 @@ dashboardRouter.get(
       activeDivision,
       fileCategories,
       includeArchivedYears,
+      includeAllCancelledSupplyOrderFiles,
     });
     const financeFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -13020,6 +13137,8 @@ dashboardRouter.get(
       activeDivision,
       fileCategories,
       includeArchivedYears,
+      excludeAllCancelledSupplyOrderFiles:
+        selectedYear === allActiveFilesYear && !includeAllCancelledSupplyOrderFiles,
     });
     const firmHistoryFileWhere = getDashboardFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -13061,7 +13180,7 @@ dashboardRouter.get(
     const liveMilestones = readList(request.query.liveMilestones);
     const finance1AsOfDate = getFinanceSnapshotDate();
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 23,
+      version: 24,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -13080,11 +13199,12 @@ dashboardRouter.get(
       finance1InitiationTo,
       finance1AsOfDate,
       includeArchivedYears,
+      includeAllCancelledSupplyOrderFiles,
       includeAnalytics,
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.dashboardSummaryMs, async () => {
       const sharedFileLoads = new Map<string, Promise<FileRecord[]>>();
-      const includeArchivedFileRows = selectedYear === allFilesYear;
+      const includeArchivedFileRows = false;
       const loadSharedFiles = (whereSql: string, values: unknown[]) => {
         const loadKey = JSON.stringify({ whereSql, values, includeArchivedFileRows });
         const existing = sharedFileLoads.get(loadKey);
@@ -13166,6 +13286,7 @@ dashboardRouter.get(
         finance1InitiationFrom,
         finance1InitiationTo,
         includeAnalytics,
+        includeAllCancelledSupplyOrderFiles,
       });
 
       if (process.env.DASHBOARD_SQL_COMPARE === "true") {

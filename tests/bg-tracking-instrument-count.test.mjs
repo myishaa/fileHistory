@@ -9,11 +9,14 @@ test("BG Tracking counts separate PSB and PWB instruments on one S.O. separately
         id: "one-so-two-bg-instruments",
         division: "Trial",
         fileType: "Goods & Services",
-        fileTypeGroup: "Group-A",
+        fileTypeGroup: "goodsServices",
         bg: "Yes",
         demandCancelled: "No",
+        gem: "No",
         supplyOrders: [
           {
+            financialSanctionDate: "2026-03-01", soNo: "SO1", soValueRevenue: "100000",
+            firm: "Firm A", firmType: "MSE", stageDelivery: "No", advancePayment: "No",
             soDate: "2026-04-01",
             bgCoverageType: "PSB and PWB separately",
             psbApplicable: "Yes",

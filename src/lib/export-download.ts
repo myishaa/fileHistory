@@ -1,3 +1,5 @@
+import { showAppAlert } from "@/components/app-dialog";
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
   /\/$/,
   "",
@@ -9,13 +11,17 @@ export type FileSearchExportLayout = "columnwise" | "rowwise" | "sowise";
 export type ExportTable = {
   title?: string;
   headers: string[];
-  rows: Array<Array<string | number | undefined>>;
+  rows: Array<Array<string | number | Date | null | undefined>>;
+  numericColumns?: number[];
+  dateColumns?: number[];
+  dateTimeColumns?: number[];
   columnWidths?: number[];
   emphasizedColumns?: number[];
 };
 
 export type ExportPlot = {
   kind: "bar" | "line" | "pie";
+  orientation?: "horizontal" | "vertical";
   title: string;
   measure: string;
   unit?: string;
@@ -74,6 +80,11 @@ export async function downloadBackendExport(payload: ExportPayload) {
   try {
     const exportPayload = {
       ...payload,
+      tables: payload.tables.map(normalizeExportTable),
+      sheets: payload.sheets?.map((sheet) => ({
+        ...sheet,
+        tables: sheet.tables.map(normalizeExportTable),
+      })),
       plot: payload.plot ? normalizeExportPlot(payload.plot) : undefined,
       plots: payload.plots?.map(normalizeExportPlot),
     };
@@ -91,9 +102,29 @@ export async function downloadBackendExport(payload: ExportPayload) {
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Export failed.";
-    window.alert(message);
+    void showAppAlert(message, { title: "Export failed" });
     console.error(error);
   }
+}
+
+function normalizeExportTable(table: ExportTable): ExportTable {
+  const declaredColumns = new Set([
+    ...(table.numericColumns ?? []),
+    ...(table.dateColumns ?? []),
+    ...(table.dateTimeColumns ?? []),
+  ]);
+  const dateTimeColumns = new Set(table.dateTimeColumns ?? []);
+  table.rows.forEach((row) =>
+    row.forEach((cell, index) => {
+      if (cell instanceof Date && Number.isFinite(cell.getTime()) && !declaredColumns.has(index)) {
+        dateTimeColumns.add(index);
+      }
+    }),
+  );
+  return {
+    ...table,
+    ...(dateTimeColumns.size ? { dateTimeColumns: [...dateTimeColumns] } : {}),
+  };
 }
 
 function normalizeExportPlot(plot: ExportPlot): ExportPlot {
@@ -138,7 +169,7 @@ export async function downloadBackendFileSearchExport(payload: FileSearchExportP
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : "File export failed.";
-    window.alert(message);
+    void showAppAlert(message, { title: "File export failed" });
     console.error(error);
   }
 }
@@ -164,7 +195,7 @@ export async function downloadQuickEntryExcelExport(payload: {
     await downloadExportResponse(response, payload.fileName, "Quick Entry export failed");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Quick Entry export failed.";
-    window.alert(message);
+    void showAppAlert(message, { title: "Quick Entry export failed" });
     console.error(error);
   }
 }

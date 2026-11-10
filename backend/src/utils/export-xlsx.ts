@@ -1,9 +1,11 @@
 import { deflateRawSync } from "node:zlib";
 
+export type ExportCell = string | number | Date | null | undefined;
+
 type ExportTable = {
   title?: string;
   headers: string[];
-  rows: string[][];
+  rows: ExportCell[][];
   numericColumns?: number[];
   dateColumns?: number[];
   dateTimeColumns?: number[];
@@ -13,6 +15,7 @@ type ExportTable = {
 
 type ExportPlot = {
   kind: "bar" | "line" | "pie";
+  orientation?: "horizontal" | "vertical";
   title: string;
   measure: string;
   unit?: string;
@@ -64,7 +67,15 @@ function makeNumberCell(reference: string, value: number, style = 0) {
 }
 
 function toExcelDateSerial(value: unknown) {
-  const match = String(value ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (value instanceof Date && !Number.isFinite(value.getTime())) return undefined;
+  const text = value instanceof Date ? value.toISOString() : String(value ?? "").trim();
+  const displayDate = text.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+  const normalized = displayDate ? `${displayDate[3]}-${displayDate[2]}-${displayDate[1]}` : text;
+  if (/^\d{4}-\d{2}-\d{2}[T ]/.test(normalized)) {
+    const serial = toExcelDateTimeSerial(normalized);
+    return serial === undefined ? undefined : Math.floor(serial);
+  }
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return undefined;
   const [, yearText, monthText, dayText] = match;
   const year = Number(yearText);
@@ -79,7 +90,9 @@ function toExcelDateSerial(value: unknown) {
 }
 
 function toExcelDateTimeSerial(value: unknown) {
-  const match = String(value ?? "").trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})$/);
+  if (value instanceof Date && !Number.isFinite(value.getTime())) return undefined;
+  const text = value instanceof Date ? value.toISOString() : String(value ?? "").trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})?$/);
   if (!match) return undefined;
   const [, yearText, monthText, dayText, hourText, minuteText, secondText] = match;
   const year = Number(yearText);
@@ -95,11 +108,19 @@ function toExcelDateTimeSerial(value: unknown) {
     date.getUTCDate() !== day || date.getUTCHours() !== hour ||
     date.getUTCMinutes() !== minute || date.getUTCSeconds() !== second
   ) return undefined;
-  return timestamp / 86_400_000 + 25569;
+  const timezone = match[8];
+  let offsetMinutes = 0;
+  if (timezone && timezone !== "Z") {
+    const hours = Number(timezone.slice(1, 3));
+    const minutes = Number(timezone.slice(4, 6));
+    if (hours > 23 || minutes > 59) return undefined;
+    offsetMinutes = (hours * 60 + minutes) * (timezone[0] === "+" ? 1 : -1);
+  }
+  return (timestamp + Number(match[7] ?? 0) * 1000 - offsetMinutes * 60_000) / 86_400_000 + 25569;
 }
 
 function worksheetXml(
-  rows: string[][],
+  rows: ExportCell[][],
   columnWidths?: number[],
   emphasizedCells = new Map<number, Set<number>>(),
   rowStyles = new Map<number, number>(),
@@ -117,6 +138,12 @@ function worksheetXml(
         const baseStyle = rowStyles.get(rowIndex) ?? 0;
         const style = emphasized ? (baseStyle === 7 ? 8 : 1) : baseStyle;
         const reference = `${columnName(columnIndex)}${rowIndex + 1}`;
+        if (typeof value === "number" && Number.isFinite(value)) {
+          const dateStyle = dateTimeCells.get(rowIndex)?.has(columnIndex)
+            ? 10
+            : dateCells.get(rowIndex)?.has(columnIndex) ? 9 : style;
+          return makeNumberCell(reference, value, dateStyle);
+        }
         if (numericCells.get(rowIndex)?.has(columnIndex)) {
           const numericValue = Number(String(value ?? "").replace(/,/g, "").trim());
           if (String(value ?? "").trim() && Number.isFinite(numericValue)) {
@@ -127,7 +154,10 @@ function worksheetXml(
           const dateSerial = toExcelDateSerial(value);
           if (dateSerial !== undefined) return makeNumberCell(reference, dateSerial, 9);
         }
-        if (dateTimeCells.get(rowIndex)?.has(columnIndex)) {
+        if (
+          dateTimeCells.get(rowIndex)?.has(columnIndex) ||
+          (value instanceof Date && Number.isFinite(value.getTime()))
+        ) {
           const dateTimeSerial = toExcelDateTimeSerial(value);
           if (dateTimeSerial !== undefined) return makeNumberCell(reference, dateTimeSerial, 10);
         }
@@ -158,13 +188,14 @@ function chartUnitTitle(unit?: string) {
   if (!unit) return "";
   if (/lakh/i.test(unit)) return "Lakhs";
   if (/inr|rupee|₹/i.test(unit)) return "INR";
-  if (/count|files?|cases?|rows?/i.test(unit)) return unit.trim();
+  if (/count|files?|cases?|records?|rows?/i.test(unit)) return unit.trim();
   return "";
 }
 
 function chartCategoryTitle(plot: ExportPlot) {
   const explicitTitle = plot.xAxisTitle?.trim();
   const chartContext = `${plot.title} ${plot.measure}`;
+  if (/^firm\s+type$/i.test(explicitTitle ?? "")) return "Firm Type";
   if (/\bfirm\b/i.test(explicitTitle ?? "") || /\bfirms?\b/i.test(chartContext)) {
     return "Firm Name";
   }
@@ -227,14 +258,20 @@ function chartXml(
     return `<c:ser><c:idx val="${index}"/><c:order val="${index}"/><c:tx><c:strRef><c:f>'Chart Data'!$${column}$${headerRow}</c:f><c:strCache><c:ptCount val="1"/><c:pt idx="0"><c:v>${xmlEscape(series.name)}</c:v></c:pt></c:strCache></c:strRef></c:tx><c:spPr><a:solidFill><a:srgbClr val="${seriesColor}"/></a:solidFill><a:ln><a:solidFill><a:srgbClr val="${seriesColor}"/></a:solidFill></a:ln></c:spPr><c:cat><c:strRef><c:f>${categoryRange}</c:f><c:strCache><c:ptCount val="${plot.categories.length}"/>${plot.categories.map((category, point) => `<c:pt idx="${point}"><c:v>${xmlEscape(category)}</c:v></c:pt>`).join("")}</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:f>${valuesRange}</c:f><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="${plot.categories.length}"/>${series.values.map((value, point) => `<c:pt idx="${point}"><c:v>${Number.isFinite(value) ? value : 0}</c:v></c:pt>`).join("")}</c:numCache></c:numRef></c:val>${chartKind === "line" ? `<c:marker><c:symbol val="circle"/><c:size val="5"/></c:marker>` : ""}</c:ser>`;
   }).join("");
   const axisIds = `<c:axId val="${100000 + chartIndex * 2}"/><c:axId val="${100001 + chartIndex * 2}"/>`;
+  const isHorizontalBar = plot.orientation === "horizontal";
   const cartesianChart = chartKind === "bar"
-    ? `<c:barChart><c:barDir val="col"/><c:grouping val="${plot.stackedBars ? "stacked" : "clustered"}"/><c:varyColors val="0"/>${seriesXml}<c:gapWidth val="70"/>${axisIds}</c:barChart>`
+    ? `<c:barChart><c:barDir val="${isHorizontalBar ? "bar" : "col"}"/><c:grouping val="${plot.stackedBars ? "stacked" : "clustered"}"/><c:varyColors val="0"/>${seriesXml}<c:gapWidth val="70"/>${axisIds}</c:barChart>`
     : `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${seriesXml}<c:marker val="1"/>${axisIds}</c:lineChart>`;
-  const categoryAxis = `<c:catAx><c:axId val="${100000 + chartIndex * 2}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="b"/>${axisTitleXml(chartCategoryTitle(plot))}<c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="${100001 + chartIndex * 2}"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>`;
+  const categoryAxis = `<c:catAx><c:axId val="${100000 + chartIndex * 2}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${isHorizontalBar ? "l" : "b"}"/>${axisTitleXml(chartCategoryTitle(plot))}<c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="${100001 + chartIndex * 2}"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/></c:catAx>`;
   const unitTitle = chartUnitTitle(plot.unit);
-  const valueAxis = `<c:valAx><c:axId val="${100001 + chartIndex * 2}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>${unitTitle ? axisTitleXml(unitTitle) : ""}<c:majorGridlines><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="D9E1F2"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="${100000 + chartIndex * 2}"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`;
+  const valueAxis = `<c:valAx><c:axId val="${100001 + chartIndex * 2}"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${isHorizontalBar ? "b" : "l"}"/>${unitTitle ? axisTitleXml(unitTitle) : ""}<c:majorGridlines><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="D9E1F2"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="General" sourceLinked="1"/><c:majorTickMark val="out"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:crossAx val="${100000 + chartIndex * 2}"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`;
+  const chartLabel = plot.orientation === "horizontal"
+    ? "Bar chart"
+    : plot.orientation === "vertical"
+      ? "Column chart"
+      : "Bar chart";
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:date1904 val="0"/><c:lang val="en-US"/><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr/></a:pPr><a:r><a:rPr lang="en-US" sz="1400" b="1"/><a:t>${xmlEscape(`${plot.title} · ${chartKind === "bar" ? "Bar chart" : "Line chart"}`)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>${cartesianChart}${categoryAxis}${valueAxis}</c:plotArea>${plot.series.length > 1 ? `<c:legend><c:legendPos val="b"/><c:layout/><c:overlay val="0"/></c:legend>` : ""}<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings></c:chartSpace>`;
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><c:date1904 val="0"/><c:lang val="en-US"/><c:chart><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr/></a:pPr><a:r><a:rPr lang="en-US" sz="1400" b="1"/><a:t>${xmlEscape(`${plot.title} · ${chartKind === "bar" ? chartLabel : "Line chart"}`)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/><c:plotArea><c:layout/>${cartesianChart}${categoryAxis}${valueAxis}</c:plotArea>${plot.series.length > 1 ? `<c:legend><c:legendPos val="b"/><c:layout/><c:overlay val="0"/></c:legend>` : ""}<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:printSettings><c:headerFooter/><c:pageMargins b="0.75" l="0.7" r="0.7" t="0.75" header="0.3" footer="0.3"/><c:pageSetup/></c:printSettings></c:chartSpace>`;
 }
 
 function makeZip(files: Array<{ name: string; content: string | Buffer }>) {
@@ -301,13 +338,13 @@ export function renderXlsxDocument(document: ExportDocument) {
     if (plot.kind === "pie") chartSpecs.push({ plot, kind: "pie" });
     else chartSpecs.push({ plot, kind: "bar" }, { plot, kind: "line" });
   }
-  const reportRows: string[][] = [[document.title]];
+  const reportRows: ExportCell[][] = [[document.title]];
   const emphasizedCells = new Map<number, Set<number>>();
   const rowStyles = new Map<number, number>([[0, 2]]);
   const numericCells = new Map<number, Set<number>>();
   const dateCells = new Map<number, Set<number>>();
   const dateTimeCells = new Map<number, Set<number>>();
-  const appendRow = (row: string[], emphasizedColumns: number[] = [], style = 0) => {
+  const appendRow = (row: ExportCell[], emphasizedColumns: number[] = [], style = 0) => {
     const rowIndex = reportRows.length;
     reportRows.push(row);
     if (style) rowStyles.set(rowIndex, style);
@@ -371,7 +408,7 @@ export function renderXlsxDocument(document: ExportDocument) {
     if (plot.expandedYears?.length) appendRow([`Expanded years: ${plot.expandedYears.join(", ")}`], [], 4);
     appendRow([chartCategoryTitle(plot), ...plot.series.map((series) => series.name)], [], 6);
     plot.categories.forEach((category, index) => {
-      appendRow([category, ...plot.series.map((series) => String(series.values[index] ?? 0))]);
+      appendRow([category, ...plot.series.map((series) => series.values[index] ?? 0)]);
     });
     appendRow([]);
   }
@@ -398,14 +435,14 @@ export function renderXlsxDocument(document: ExportDocument) {
       : chartXml(plot, chartData.ranges[plots.indexOf(plot)], kind, index),
   }));
   const renderTables = (tables: ExportTable[]) => {
-    const rows: string[][] = [];
+    const rows: ExportCell[][] = [];
     const emphasizedCells = new Map<number, Set<number>>();
     const rowStyles = new Map<number, number>();
     const numericCells = new Map<number, Set<number>>();
     const dateCells = new Map<number, Set<number>>();
     const dateTimeCells = new Map<number, Set<number>>();
     const columnWidths: number[] = [];
-    const appendRow = (row: string[], style = 0, emphasizedColumns: number[] = []) => {
+    const appendRow = (row: ExportCell[], style = 0, emphasizedColumns: number[] = []) => {
       const rowIndex = rows.length;
       rows.push(row);
       if (style) rowStyles.set(rowIndex, style);

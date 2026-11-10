@@ -10,6 +10,8 @@ type SupplyOrderEntry = {
   order: SupplyOrderDetail;
   orderIndex: number;
   stageIndex?: number;
+  supplyOrderId?: string;
+  stageId?: string;
 };
 
 type PaymentEntry = SupplyOrderEntry & {
@@ -19,7 +21,9 @@ type PaymentEntry = SupplyOrderEntry & {
 type FileDeliveryCache = {
   sourceRows: SupplyOrderDetail[] | undefined;
   noOfSo: string | undefined;
+  baseEntries?: SupplyOrderEntry[];
   baseRows?: SupplyOrderDetail[];
+  effectiveEntries?: SupplyOrderEntry[];
   effectiveRows?: SupplyOrderDetail[];
   supplyOrderEntries?: SupplyOrderEntry[];
   paymentEntries?: PaymentEntry[];
@@ -46,18 +50,100 @@ function getFileDeliveryCache(file: FileRecord) {
 function getBaseSupplyOrderRows(file: FileRecord) {
   const cache = getFileDeliveryCache(file);
   if (cache.baseRows) return cache.baseRows;
-  cache.baseRows = cache.sourceRows?.map((row) => ({ ...row })).filter(hasFilledObjectValue) ?? [];
+  cache.baseRows = getBaseSupplyOrderEntries(file).map(({ order }) => order);
   return cache.baseRows;
+}
+
+function getBaseSupplyOrderEntries(file: FileRecord) {
+  const cache = getFileDeliveryCache(file);
+  if (cache.baseEntries) return cache.baseEntries;
+  cache.baseEntries = cache.sourceRows?.flatMap((row, orderIndex) => {
+    const order = { ...row };
+    return hasFilledObjectValue(order)
+      ? [{ order, orderIndex, supplyOrderId: order.id }]
+      : [];
+  }) ?? [];
+  return cache.baseEntries;
 }
 
 function getEffectiveSupplyOrderRows(file: FileRecord) {
   const cache = getFileDeliveryCache(file);
   if (cache.effectiveRows) return cache.effectiveRows;
-  const rows = getBaseSupplyOrderRows(file);
-  cache.effectiveRows = hasExplicitSupplyOrderCount(file.noOfSo)
-    ? rows.slice(0, parseExpectedSupplyOrderCount(file.noOfSo))
-    : rows;
+  cache.effectiveRows = getEffectiveSupplyOrderEntries(file).map(({ order }) => order);
   return cache.effectiveRows;
+}
+
+function getDeclaredSupplyOrderEntries(file: FileRecord) {
+  const entries = getBaseSupplyOrderEntries(file);
+  return hasExplicitSupplyOrderCount(file.noOfSo)
+    ? entries.slice(0, parseExpectedSupplyOrderCount(file.noOfSo))
+    : entries;
+}
+
+function getDeclaredSupplyOrderRows(file: FileRecord) {
+  return getDeclaredSupplyOrderEntries(file).map(({ order }) => order);
+}
+
+function getEffectiveSupplyOrderEntries(file: FileRecord) {
+  const cache = getFileDeliveryCache(file);
+  if (cache.effectiveEntries) return cache.effectiveEntries;
+  cache.effectiveEntries = getDeclaredSupplyOrderEntries(file).filter(({ order }) =>
+    isSupplyOrderEligibleForMetrics(file, order),
+  );
+  return cache.effectiveEntries;
+}
+
+export function isSupplyOrderEligibleForMetrics(file: FileRecord, order: SupplyOrderDetail) {
+  if (!hasFilledString(order.financialSanctionDate)) return false;
+  if (!hasFilledString(order.soNo)) return false;
+  if (!isNo(file.gem) && !hasFilledString(order.gemSoNo)) return false;
+  if (!hasFilledString(order.soDate)) return false;
+  if (!hasSupplyOrderValue(file, order)) return false;
+  if (!hasFilledString(order.firm)) return false;
+  if (!hasFilledString(order.firmType)) return false;
+  if (
+    (order.firmType ?? "").trim().toUpperCase() === "OTHER" &&
+    !hasFilledString(order.firmTypeOther)
+  ) {
+    return false;
+  }
+  if (!isYes(order.stageDelivery) && !isNo(order.stageDelivery)) return false;
+  if (isYes(order.stageDelivery)) {
+    if (!hasFilledString(order.stageDeliveryCount)) return false;
+    if (!isYes(order.stagePayment) && !isNo(order.stagePayment)) return false;
+  }
+  if (!isYes(order.advancePayment) && !isNo(order.advancePayment)) return false;
+  return true;
+}
+
+export function isAwaitingSupplyOrderPlacement(order: SupplyOrderDetail) {
+  return hasFilledString(order.financialSanctionDate) && !hasFilledString(order.soDate);
+}
+
+function hasSupplyOrderValue(file: FileRecord, order: SupplyOrderDetail) {
+  const capitalValue = getInrAmount(file.valueCapital, file) ?? 0;
+  const revenueValue = getInrAmount(file.valueRevenue, file) ?? 0;
+  if (capitalValue !== 0) return hasFilledString(order.soValueCapital);
+  if (revenueValue !== 0) return hasFilledString(order.soValueRevenue);
+  return hasFilledString(order.soValueCapital) || hasFilledString(order.soValueRevenue);
+}
+
+function getInrAmount(value: string | number | undefined, file: FileRecord) {
+  const amount = parseAmount(value);
+  if (amount === undefined) return undefined;
+  const currency = (file.currency ?? "INR").trim().toUpperCase();
+  if (!currency || currency === "INR") return amount;
+  const exchangeRate = parseAmount(file.exchangeRate);
+  if (exchangeRate === undefined || exchangeRate <= 0) return undefined;
+  return amount * exchangeRate;
+}
+
+function parseAmount(value: string | number | undefined) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  const cleaned = (value ?? "").replace(/,/g, "").trim();
+  if (!cleaned) return undefined;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 export function countSupplyOrderRows(file: FileRecord) {
@@ -70,26 +156,82 @@ export function countExpectedSupplyOrderRows(file: FileRecord) {
 }
 
 export function rawSupplyOrders(file: FileRecord) {
+  return getDeclaredSupplyOrderRows(file);
+}
+
+export function rawSupplyOrderEntries(file: FileRecord) {
+  return getDeclaredSupplyOrderEntries(file);
+}
+
+export function eligibleSupplyOrders(file: FileRecord) {
   return getEffectiveSupplyOrderRows(file);
 }
 
+export function eligibleSupplyOrderEntries(file: FileRecord) {
+  return getEffectiveSupplyOrderEntries(file);
+}
+
 export function expectedSupplyOrders(file: FileRecord) {
-  const rows = getEffectiveSupplyOrderRows(file);
-  const missing = countExpectedSupplyOrderRows(file) - rows.length;
-  if (missing <= 0) return rows;
+  return expectedSupplyOrderEntries(file).map(({ order }) => order);
+}
+
+export function expectedSupplyOrderEntries(file: FileRecord) {
+  const entries = getDeclaredSupplyOrderEntries(file);
+  const missing = countExpectedSupplyOrderRows(file) - entries.length;
+  if (missing <= 0) return entries;
+  const usedOrderIndexes = new Set(entries.map(({ orderIndex }) => orderIndex));
+  const missingOrderIndexes: number[] = [];
+  for (let orderIndex = 0; missingOrderIndexes.length < missing; orderIndex += 1) {
+    if (!usedOrderIndexes.has(orderIndex)) missingOrderIndexes.push(orderIndex);
+  }
+  const missingEntries = missingOrderIndexes.map(
+    (orderIndex): SupplyOrderEntry => ({
+      order: { currentMilestone: "Supply Order" },
+      orderIndex,
+    }),
+  );
   return [
-    ...rows,
-    ...Array.from(
-      { length: missing },
-      (): SupplyOrderDetail => ({
-        currentMilestone: "Supply Order",
-      }),
-    ),
+    ...entries,
+    ...missingEntries,
   ];
 }
 
 export function fileSupplyOrders(file: FileRecord) {
   return fileSupplyOrderEntries(file).map((entry) => entry.order);
+}
+
+export function isPwbFollowUpStarted(file: FileRecord, order: SupplyOrderDetail) {
+  return hasFilledString(getPwbFollowUpTriggerDate(file, order));
+}
+
+export function getPwbFollowUpTriggerDate(file: FileRecord, order: SupplyOrderDetail) {
+  if (isContractFileType(file)) return order.soDate;
+  const field = isYes(file.ir)
+    ? "irReceiptDate"
+    : "actualJobCompletionDate";
+  if (isYes(order.stageDelivery) && order.stageDeliveries?.length) {
+    const dates = order.stageDeliveries
+      .map((stage) => stage[field])
+      .filter((date): date is string => hasFilledString(date))
+      .sort((a, b) => a.localeCompare(b));
+    if (isYes(order.stagePayment)) return dates[0];
+    if (dates.length !== order.stageDeliveries.length) return undefined;
+    return dates[dates.length - 1];
+  }
+  return order[field];
+}
+
+export function getBillPreparationTriggerDate(file: FileRecord, order: SupplyOrderDetail) {
+  const field = isDeliveryInspectionApplicableByGroup(file)
+    ? "irReceiptDate"
+    : "jobCompletionDate";
+  return isParentStagePaymentOrder(order)
+    ? getParentStagePaymentDate(order, field)
+    : order[field];
+}
+
+export function isSupplyOrderActiveForFollowUp(file: FileRecord, order: SupplyOrderDetail) {
+  return !isYes(file.demandCancelled) && !isYes(order.soCancelled) && !isYes(order.noFurtherAction);
 }
 
 export function hasUnpaidSupplyOrderPayment(order: SupplyOrderDetail) {
@@ -102,8 +244,12 @@ export function hasUnpaidSupplyOrderPayment(order: SupplyOrderDetail) {
 export function fileSupplyOrderEntries(file: FileRecord) {
   const cache = getFileDeliveryCache(file);
   if (cache.supplyOrderEntries) return cache.supplyOrderEntries;
-  cache.supplyOrderEntries = getEffectiveSupplyOrderRows(file).flatMap((order, orderIndex) =>
-    expandSupplyOrderStageEntries(order, orderIndex),
+  cache.supplyOrderEntries = getEffectiveSupplyOrderEntries(file).flatMap(
+    ({ order, orderIndex, supplyOrderId }) =>
+      expandSupplyOrderStageEntries(order, orderIndex).map((entry) => ({
+        ...entry,
+        supplyOrderId,
+      })),
   );
   return cache.supplyOrderEntries;
 }
@@ -126,17 +272,21 @@ export function filePaymentOrders(file: FileRecord) {
 export function filePaymentEntries(file: FileRecord): PaymentEntry[] {
   const cache = getFileDeliveryCache(file);
   if (cache.paymentEntries) return cache.paymentEntries;
-  const effectiveRows = getEffectiveSupplyOrderRows(file);
-  cache.paymentEntries = effectiveRows.flatMap((order, orderIndex) => {
-    const paymentOrders =
-      isYes(order.stageDelivery) && !isYes(order.stagePayment)
-        ? [{ order, orderIndex }]
-        : expandSupplyOrderStageEntries(order, orderIndex);
-    const advanceOrder = getAdvancePaymentOrder(order);
-    return advanceOrder
-      ? [...paymentOrders, { order: advanceOrder, orderIndex, advancePayment: true }]
-      : paymentOrders;
-  });
+  cache.paymentEntries = getEffectiveSupplyOrderEntries(file).flatMap(
+    ({ order, orderIndex, supplyOrderId }) => {
+      const paymentOrders =
+        isYes(order.stageDelivery) && !isYes(order.stagePayment)
+          ? [{ order, orderIndex, supplyOrderId }]
+          : expandSupplyOrderStageEntries(order, orderIndex);
+      const advanceOrder = getAdvancePaymentOrder(order);
+      return advanceOrder
+        ? [
+            ...paymentOrders,
+            { order: advanceOrder, orderIndex, supplyOrderId, advancePayment: true },
+          ]
+        : paymentOrders;
+    },
+  );
   return cache.paymentEntries;
 }
 
@@ -177,7 +327,7 @@ export function effectivePaymentEntries(files: FileRecord[]) {
 
 export function advancePaymentEntries(files: FileRecord[]) {
   return files.flatMap((file) =>
-    rawSupplyOrders(file)
+    getEffectiveSupplyOrderRows(file)
       .filter(isAdvancePaymentApplicable)
       .map((order) => ({ file, order, advance: order.advancePaymentDetail ?? {} })),
   );
@@ -280,7 +430,8 @@ export function isSupplyOrderMilestoneCurrent(
     normalizeMilestoneName(order.currentMilestone) === normalized &&
     isSupplyOrderMilestoneApplicable(file, order, normalized);
   if (normalized === "financialsanction")
-    return isFinancialSanctionPendingOrder(file, order) || storedCurrent;
+    return !isFinancialSanctionCompletedOrder(order) &&
+      (isFinancialSanctionPendingOrder(file, order) || storedCurrent);
   if (normalized === "supplyorder") {
     return isSupplyOrderPendingOrder(order) && storedCurrent;
   }
@@ -370,7 +521,7 @@ function expandSupplyOrderStageEntries(
   orderIndex: number,
 ): SupplyOrderEntry[] {
   if (!isYes(order.stageDelivery) || !order.stageDeliveries?.length) {
-    return [{ order, orderIndex }];
+    return [{ order, orderIndex, supplyOrderId: order.id }];
   }
 
   return order.stageDeliveries.map((stage, index) => {
@@ -384,6 +535,7 @@ function expandSupplyOrderStageEntries(
       order: {
         ...order,
         ...stage,
+        id: order.id,
         deliveryPeriodStartDate:
           stage.deliveryPeriodStartDate ||
           (index === 0 ? order.soDate : getNextDate(previousDeliveryPeriodDate) || order.soDate),
@@ -434,6 +586,8 @@ function expandSupplyOrderStageEntries(
       },
       orderIndex,
       stageIndex: index,
+      supplyOrderId: order.id,
+      stageId: stage.id,
     };
   });
 }
@@ -705,9 +859,7 @@ function isBgCheckboxCurrentOrder(file: FileRecord, order: SupplyOrderDetail, ca
 }
 
 function isPwbDueForWorkflow(file: FileRecord, order: SupplyOrderDetail) {
-  return isJobCompletionWorkflow(file)
-    ? hasFilledString(order.jobCompletionDate)
-    : hasFilledString(order.materialReceiptDate);
+  return isPwbFollowUpStarted(file, order);
 }
 
 function isIrPreparationCurrentOrder(file: FileRecord, order: SupplyOrderDetail) {

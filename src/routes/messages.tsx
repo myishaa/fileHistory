@@ -11,7 +11,7 @@ import {
   useMessages,
 } from "@/lib/files-store";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
-import { hasCapability } from "@/lib/permissions";
+import { canViewFileProcessing, hasCapability } from "@/lib/permissions";
 
 type MessageView = "pending" | "resolved" | "sent" | "received" | "processing";
 
@@ -34,14 +34,18 @@ function MessagesPage() {
   const messages = useMessages();
   const fileProcessingNotifications = useFileProcessingNotifications();
   const messagingBlocked = !hasCapability(activeUser, "canSendFileMessages");
+  const canAccessFileProcessing = canViewFileProcessing(activeUser);
   const isDivisionUser = activeUser?.role === "division_user";
+  const isDivisionViewer = activeUser?.role === "viewer";
   const canManageMessages = hasCapability(activeUser, "canResolveMessages");
-  const defaultView: MessageView = isDivisionUser ? "processing" : "pending";
-  const view = search.view ?? defaultView;
+  const defaultView: MessageView = canAccessFileProcessing ? "processing" : "pending";
+  const view = isDivisionViewer ? "processing" : search.view ?? defaultView;
   const currentPage = search.page ?? 1;
-  const visibleViews = isDivisionUser
-    ? (["processing", "sent", "received"] as const)
-    : (["pending", "resolved"] as const);
+  const visibleViews = isDivisionViewer
+    ? (["processing"] as const)
+    : isDivisionUser
+      ? (["processing", "sent", "received"] as const)
+      : (["pending", "resolved"] as const);
   const pendingMessages = messages.filter((message) => message.status === "pending");
   const resolvedMessages = messages.filter((message) => message.status === "resolved");
   const viewMessages =
@@ -93,7 +97,7 @@ function MessagesPage() {
     safePage * pageSize,
   );
 
-  if (messagingBlocked) {
+  if (messagingBlocked && !canAccessFileProcessing) {
     return (
       <div className="mx-auto max-w-3xl rounded-md border border-border bg-card p-6">
         <h1 className="text-lg font-semibold">Messages</h1>
@@ -317,6 +321,10 @@ function getMessagePaginationPages(currentPage: number, totalPages: number, maxV
   return Array.from({ length: endPage - startPage + 1 }, (_, index) => startPage + index);
 }
 
+function normalizeMessageSection(section: string) {
+  return section.trim().toLowerCase() === "file details" ? "File details" : section;
+}
+
 function FileProcessingNotificationRow({
   notification,
 }: {
@@ -332,7 +340,7 @@ function FileProcessingNotificationRow({
             to: "/add",
             search: {
               fileId: notification.fileId,
-              section: "File Details",
+              section: "File details",
               milestone: undefined,
               quickFocus: false,
             },
@@ -374,7 +382,7 @@ function FileProcessingNotificationRow({
               to: "/add",
               search: {
                 fileId: notification.fileId,
-                section: "File Details",
+                section: "File details",
                 milestone: undefined,
                 quickFocus: false,
               },
@@ -412,6 +420,7 @@ function MessageRow({
   canManage: boolean;
 }) {
   const navigate = useNavigate();
+  const section = normalizeMessageSection(message.section);
   const canMarkViewed = isDivisionUser && message.status === "resolved" && !message.viewedAt;
   const canDelete = !!activeUserId && message.createdByUserId === activeUserId;
   const canResolve = canManage && message.status === "pending";
@@ -425,7 +434,7 @@ function MessageRow({
             to: "/add",
             search: {
               fileId: message.fileId,
-              section: message.section,
+              section,
               milestone: undefined,
               quickFocus: false,
             },
@@ -450,7 +459,7 @@ function MessageRow({
         </div>
       </button>
       <div className="truncate text-sm text-muted-foreground">{message.divisionName}</div>
-      <div className="truncate text-sm text-muted-foreground">{message.section}</div>
+      <div className="truncate text-sm text-muted-foreground">{section}</div>
       <div className="flex justify-end gap-1">
         <button
           type="button"
@@ -459,7 +468,7 @@ function MessageRow({
               to: "/add",
               search: {
                 fileId: message.fileId,
-                section: message.section,
+                section,
                 milestone: undefined,
                 quickFocus: false,
               },

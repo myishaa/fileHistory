@@ -30,7 +30,6 @@ export const delayMilestoneOptions = [
   { key: "irReceipt", label: "IR Receipt" },
   { key: "billPreparation", label: "Bill preparation" },
   { key: "billSentForPayment", label: "Bill sent for payment" },
-  { key: "payment", label: "Payment" },
   { key: "paymentPreSubmission", label: "Payment cycle (ASL, bill trigger to bill submission)" },
   { key: "paymentPostSubmission", label: "Payment cycle (PCDA, bill submission to payment)" },
   { key: "paymentCumulative", label: "Payment cycle (ASL+PCDA, bill trigger to payment)" },

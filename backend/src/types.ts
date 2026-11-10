@@ -126,6 +126,7 @@ export type AppSettings = {
   valueThresholdLevels: ValueThresholdLevel[];
   milestones: string[];
   tableFieldPresets: unknown[];
+  tableFieldPresetsConfigured?: boolean;
   liveStatusLockedFields?: string[];
   mmgLiveEnabled?: boolean;
   mmgLiveOptions?: string[];
@@ -337,6 +338,7 @@ export type AdvancePaymentDetail = {
 };
 
 export type StageDeliveryDetail = {
+  id?: string;
   includeInPaymentTiming?: boolean;
   stageAmountCapital?: string;
   stageAmountRevenue?: string;
