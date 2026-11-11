@@ -63,7 +63,7 @@ export function normalizeFirmRatingConfig(config?: FirmRatingConfig): FirmRating
 }
 
 export function calculateFirmRatingScore(
-  values: Record<string, string> | undefined,
+  values: Record<string, string | number> | undefined,
   config?: FirmRatingConfig,
 ) {
   const fields = normalizeFirmRatingConfig(config).fields;
@@ -71,7 +71,7 @@ export function calculateFirmRatingScore(
   let hasScoredValue = false;
   for (const field of fields) {
     const rawValue = values?.[field.id];
-    if (rawValue === undefined || rawValue.trim() === "") continue;
+    if (rawValue === undefined || rawValue === null || String(rawValue).trim() === "") continue;
     const score = Number.parseFloat(String(rawValue));
     const weight = Number.parseFloat(String(field.weight ?? "1"));
     if (!Number.isFinite(score) || !Number.isFinite(weight) || weight <= 0) continue;

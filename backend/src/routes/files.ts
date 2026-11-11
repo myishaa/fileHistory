@@ -409,7 +409,8 @@ type ExportColumn = {
 type FileSearchExportLayout = "columnwise" | "rowwise" | "sowise";
 type FileSearchExportTable = {
   headers: string[];
-  rows: string[][];
+  rows: Array<Array<string | number>>;
+  numericColumns?: number[];
 };
 
 const supplyOrderFields = {
@@ -2139,60 +2140,72 @@ export function normalizeSearchExportMoney(
   files: FileRecord[],
   columns: ExportColumn[],
   layout: FileSearchExportLayout,
+  numeric = false,
 ): FileSearchExportTable {
   const amountColumns = searchExportColumnKeys(files, columns, layout)
     .map((key, index) => ({ key, index }))
     .filter(({ key }) => isSearchExportMoneyField(key));
   const numberFormat = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
+  const rows = table.rows.map((row) => {
+    const file = files[Number.parseInt(String(row[0] ?? ""), 10) - 1];
+    if (!file) return row;
+    const next = [...row];
+    for (const { key, index } of amountColumns) {
+      const value = next[index];
+      if (!value) continue;
+      let multiplier = 1;
+      if (
+        [
+          "valueCapital",
+          "valueRevenue",
+          "soValueCapital",
+          "soValueRevenue",
+          "stageAmountCapital",
+          "stageAmountRevenue",
+        ].includes(key) &&
+        Boolean(file.currency?.trim()) &&
+        (file.currency ?? "INR").trim().toUpperCase() !== "INR"
+      ) {
+        const rate = Number(String(file.exchangeRate ?? "").replace(/,/g, "").trim());
+        if (!Number.isFinite(rate) || rate <= 0) {
+          next[index] = "";
+          continue;
+        }
+        multiplier = rate;
+      }
+      next[index] = String(value)
+        .split(/([;\n])/)
+        .map((part) => {
+          if (part === ";" || part === "\n") return part;
+          const match = part.match(/^([\s]*(?:\d+\.\s+)?)(₹?\s*-?[\d,]+(?:\.\d+)?)(\s*)$/);
+          if (!match) return part;
+          const amount = Number(match[2].replace(/[₹,\s]/g, ""));
+          if (!Number.isFinite(amount)) return part;
+          return `${match[1]}${numberFormat.format((amount * multiplier) / 100_000)}${match[3]}`;
+        })
+        .join("");
+      if (numeric) {
+        const text = String(next[index]).trim();
+        const parsed = text && text !== "-" ? Number(text.replace(/[₹,\s]/g, "")) : NaN;
+        if (Number.isFinite(parsed)) next[index] = parsed;
+      }
+    }
+    return next;
+  });
   return {
     ...table,
-    rows: table.rows.map((row) => {
-      const file = files[Number.parseInt(row[0] ?? "", 10) - 1];
-      if (!file) return row;
-      const next = [...row];
-      for (const { key, index } of amountColumns) {
-        const value = next[index];
-        if (!value) continue;
-        let multiplier = 1;
-        if (
-          [
-            "valueCapital",
-            "valueRevenue",
-            "soValueCapital",
-            "soValueRevenue",
-            "stageAmountCapital",
-            "stageAmountRevenue",
-          ].includes(key) &&
-          Boolean(file.currency?.trim()) &&
-          (file.currency ?? "INR").trim().toUpperCase() !== "INR"
-        ) {
-          const rate = Number(
-            String(file.exchangeRate ?? "")
-              .replace(/,/g, "")
-              .trim(),
-          );
-          if (!Number.isFinite(rate) || rate <= 0) {
-            next[index] = "";
-            continue;
-          }
-          multiplier = rate;
-        }
-        next[index] = String(value)
-          .split(/([;\n])/)
-          .map((part) => {
-            if (part === ";" || part === "\n") return part;
-            // A numbered entry requires whitespace after its dot; a decimal never does.
-            const match = part.match(/^(\s*(?:\d+\.\s+)?)(₹?\s*-?[\d,]+(?:\.\d+)?)(\s*)$/);
-            if (!match) return part;
-            const amount = Number(match[2].replace(/[₹,\s]/g, ""));
-            return Number.isFinite(amount)
-              ? `${match[1]}${numberFormat.format((amount * multiplier) / 100_000)}${match[3]}`
-              : part;
-          })
-          .join("");
-      }
-      return next;
-    }),
+    rows,
+    numericColumns: numeric
+      ? amountColumns
+          .map(({ index }) => index)
+          .filter((index) => rows.some((row) => {
+            const value = row[index];
+            return value !== undefined && String(value).trim() !== "" && String(value).trim() !== "-";
+          }) && rows.every((row) => {
+            const value = row[index];
+            return value === undefined || String(value).trim() === "" || String(value).trim() === "-" || typeof value === "number";
+          }))
+      : undefined,
   };
 }
 
@@ -15623,6 +15636,7 @@ filesRouter.post(
       results.files,
       columns,
       layout,
+      format === "excel",
     );
     const exportDescription = [
       description,
@@ -15645,6 +15659,7 @@ filesRouter.post(
         {
           headers: exportTable.headers,
           rows: exportTable.rows,
+          numericColumns: format === "excel" ? exportTable.numericColumns : undefined,
         },
       ],
     };

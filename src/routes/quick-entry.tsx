@@ -4,8 +4,10 @@ import {
   ArrowRight,
   Check,
   FileText,
+  FileSpreadsheet,
   FolderOpen,
   Pencil,
+  Printer,
   RotateCcw,
   Save,
   ScanLine,
@@ -15,6 +17,7 @@ import { rawSupplyOrders } from "@/lib/effective-deliveries";
 import { CompactTableText } from "@/components/compact-table-text";
 import { showAppConfirm } from "@/components/app-dialog";
 import { TimelineStageSelect } from "@/components/timeline-stage-select";
+import { ClearableTextarea } from "@/components/clearable-input";
 import { QuickEntryAccess } from "@/components/quick-access";
 import {
   fetchFileIdentifierSuggestions,
@@ -40,6 +43,7 @@ import {
 } from "@/lib/file-type-groups";
 import { hasCapability } from "@/lib/permissions";
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
+import { downloadBackendExport, getExportFileName } from "@/lib/export-download";
 
 export const Route = createFileRoute("/quick-entry")({
   component: QuickEntryPage,
@@ -761,7 +765,7 @@ function QuickEntryEditor() {
               ) : null}
             </div>
             <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-              <MilestoneHistoryPanel file={context.file} />
+              <MilestoneHistoryPanel file={context.file} statuses={context.statuses} />
               <StatusHistoryPanel
                 statuses={context.statuses}
                 editingStatusId={editingStatusId}
@@ -927,10 +931,11 @@ function StatusComposer({
           {words}/50 words
         </span>
       </div>
-      <textarea
+      <ClearableTextarea
         id="file-status-draft"
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onClear={() => onChange("")}
         disabled={disabled}
         placeholder="Enter latest file status"
         rows={2}
@@ -951,7 +956,13 @@ function StatusComposer({
   );
 }
 
-function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
+function MilestoneHistoryPanel({
+  file,
+  statuses,
+}: {
+  file: FileRecord;
+  statuses: FileStatusUpdate[];
+}) {
   const orders = rawSupplyOrders(file);
   const [activeOrderIndex, setActiveOrderIndex] = useState<number | null>(null);
   const [activeStageIndex, setActiveStageIndex] = useState<number | null>(null);
@@ -992,7 +1003,29 @@ function MilestoneHistoryPanel({ file }: { file: FileRecord }) {
       );
   return (
     <div className="rounded-md border border-border bg-muted/20 p-3">
-      <h3 className="text-sm font-semibold">Milestone History</h3>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-semibold">Milestone History</h3>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => exportQuickStatusDetails(file, statuses, "pdf")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+            title="Export this file and its supply-order history as PDF"
+            aria-label="Export file history as PDF"
+          >
+            <Printer className="size-3.5" /> PDF
+          </button>
+          <button
+            type="button"
+            onClick={() => exportQuickStatusDetails(file, statuses, "excel")}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent"
+            title="Export general, file, supply-order, and status-history sheets as Excel"
+            aria-label="Export file history as Excel"
+          >
+            <FileSpreadsheet className="size-3.5" /> Excel
+          </button>
+        </div>
+      </div>
       <p className="mt-1 text-xs text-muted-foreground">
         Only applicable milestones are shown. Pending means the milestone applies but is not
         completed yet. Incomplete future D.P. dates are red; due or overdue incomplete delivery is
@@ -1744,9 +1777,10 @@ function StatusHistoryPanel({
               <div key={status.id} className="rounded-md bg-muted/45 p-2">
                 {editing ? (
                   <>
-                    <textarea
+                    <ClearableTextarea
                       value={editingStatusText}
                       onChange={(event) => onChange(event.target.value)}
+                      onClear={() => onChange("")}
                       rows={3}
                       className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                     />
@@ -1810,6 +1844,360 @@ function StatusHistoryPanel({
       </div>
     </div>
   );
+}
+
+function exportQuickStatusDetails(
+  file: FileRecord,
+  statuses: FileStatusUpdate[],
+  format: "pdf" | "excel",
+) {
+  const orders = rawSupplyOrders(file);
+  const generalTable = quickExportKeyValueTable("General information", [
+    ["File identifier", file.uniqueCode],
+    ["Control number", file.imms],
+    ["File number", file.fileNo],
+    ["Financial year", file.year],
+    ["Division", file.division],
+    ["Officer", file.officer],
+    ["Indentor", file.indentor],
+    ["Demand description", file.demandDescription],
+    ["Received date", quickExportDate(file.receivedDate)],
+    ["Current milestone", file.currentMilestone],
+    ["Supply orders", orders.length],
+    ["File status updates", statuses.length],
+  ]);
+  const fileLevelTable = quickExportKeyValueTable("File-level details", [
+    ["File ID", file.id],
+    ["Title", file.title],
+    ["Division ID", file.divisionId],
+    ["Division", file.division],
+    ["Officer", file.officer],
+    ["Indentor", file.indentor],
+    ["Financial year", file.year],
+    ["File type", file.fileType],
+    ["File type group", file.fileTypeGroup],
+    ["Mode", file.mode],
+    ["Demand description", file.demandDescription],
+    ["Capital value", file.valueCapital],
+    ["Revenue value", file.valueRevenue],
+    ["Currency", file.currency],
+    ["Exchange rate", file.exchangeRate],
+    ["GTE", file.gte],
+    ["TCEC", file.tcec],
+    ["GeM", file.gem],
+    ["GeM bidding mode", file.gemBiddingMode],
+    ["High value", file.highValue],
+    ["AD", file.ad],
+    ["RQA", file.rqa],
+    ["IFA", file.ifa],
+    ["PSB", file.psb],
+    ["BG", file.bg],
+    ["IR", file.ir],
+    ["RFP vetting", file.rfpVetting],
+    ["Refloat", file.refloat],
+    ["Bidding stage over", file.biddingStageOver],
+    ["Refloat bidding stage over", file.refloatBiddingStageOver],
+    ["Received date", quickExportDate(file.receivedDate)],
+    ["Scrutiny date", quickExportDate(file.scrutinyDate)],
+    ["Scrutiny response date", quickExportDate(file.scrutinyResponseDate)],
+    ["Scrutiny completion date", quickExportDate(file.scrutinyCompletionDate)],
+    ["IMMS date", quickExportDate(file.immsDate)],
+    ["High value meeting date", quickExportDate(file.highValueMeetingDate)],
+    ["High value minutes date", quickExportDate(file.highValueMinutesDate)],
+    ["AD sent date", quickExportDate(file.adSentDate)],
+    ["AD vetting date", quickExportDate(file.adVettingDate)],
+    ["RQA sent date", quickExportDate(file.rqaSentDate)],
+    ["RQA approval date", quickExportDate(file.rqaApprovalDate)],
+    ["IFA sent date", quickExportDate(file.ifaSentDate)],
+    ["IFA final date", quickExportDate(file.ifaFinalDate)],
+    ["Pre-TCEC date", quickExportDate(file.preTcecDate)],
+    ["Pre-TCEC minutes date", quickExportDate(file.preTcecMinutesDate)],
+    ["Post-TCEC date", quickExportDate(file.postTcecDate)],
+    ["Post-TCEC minutes date", quickExportDate(file.postTcecMinutesDate)],
+    ["CFA sent date", quickExportDate(file.cfaSentDate)],
+    ["CFA approval date", quickExportDate(file.cfaDate)],
+    ["GeM undertaking date", quickExportDate(file.gemUndertakingDate)],
+    ["Refloat GeM undertaking date", quickExportDate(file.refloatGemUndertakingDate)],
+    ["Refloat recommendation date", quickExportDate(file.refloatRecommendationDate)],
+    ["RFP vetting initiation date", quickExportDate(file.rfpVettingInitiationDate)],
+    ["RFP vetting approval date", quickExportDate(file.rfpVettingApprovalDate)],
+    ["Pre-bid meeting date", quickExportDate(file.preBidMeetingDate)],
+    ["Bid date", quickExportDate(file.bidDate)],
+    ["Bid opening date", quickExportDate(file.bidOpeningDate)],
+    ["CNC date", quickExportDate(file.cncDate)],
+    ["CNC approval date", quickExportDate(file.cncApprovalDate)],
+    ["Demand cancelled", file.demandCancelled],
+    ["Demand cancelled date", quickExportDate(file.demandCancelledDate)],
+    ["Current milestone", file.currentMilestone],
+    ["Completed milestones", file.completedMilestones?.join(", ")],
+    ["File closure date", quickExportDate(file.fileClosureDate)],
+  ]);
+  const fileTimelineTable = quickExportTimelineTable(
+    "File milestone timeline",
+    getQuickStatusFileTimelineItems(file),
+  );
+  const supplyOrderTable = {
+    title: "Supply-order level details",
+    headers: [
+      "S.No.",
+      "S.O. No.",
+      "GeM S.O. No.",
+      "Financial sanction",
+      "S.O. date",
+      "Firm",
+      "Firm unique no.",
+      "Firm type",
+      "S.O. capital",
+      "S.O. revenue",
+      "Bill capital",
+      "Bill revenue",
+      "D.P.",
+      "Revised D.P.",
+      "Material receipt",
+      "Job completion",
+      "IR preparation",
+      "IR receipt",
+      "Bill preparation",
+      "Bill no.",
+      "Bill sent for payment",
+      "Payment date",
+      "Payment mode",
+      "Actual payment capital",
+      "Actual payment revenue",
+      "S.O. cancelled",
+      "Cancellation date",
+      "Shortclosure",
+      "Shortclosure date",
+      "Current milestone",
+    ],
+    rows: orders.length
+      ? orders.map((order, index) => [
+          index + 1,
+          quickExportValue(order.soNo),
+          quickExportValue(order.gemSoNo),
+          quickExportDate(order.financialSanctionDate),
+          quickExportDate(order.soDate),
+          quickExportValue(order.firm),
+          quickExportValue(order.firmUniqueNo),
+          quickExportValue(order.firmType || order.firmTypeOther),
+          quickExportValue(order.soValueCapital),
+          quickExportValue(order.soValueRevenue),
+          quickExportValue(order.billAmountCapital),
+          quickExportValue(order.billAmountRevenue),
+          quickExportDate(order.dpDate),
+          quickExportDate(order.revisedDp),
+          quickExportDate(order.materialReceiptDate),
+          quickExportDate(order.jobCompletionDate),
+          quickExportDate(order.irPreparationDate),
+          quickExportDate(order.irReceiptDate),
+          quickExportDate(order.billPreparationDate),
+          quickExportValue(order.billNo),
+          quickExportDate(order.billSentForPaymentDate),
+          quickExportDate(order.paymentDate),
+          quickExportValue(order.paymentMode),
+          quickExportValue(order.actualPaymentCapital),
+          quickExportValue(order.actualPaymentRevenue),
+          quickExportValue(order.soCancelled),
+          quickExportDate(order.soCancelledDate),
+          quickExportValue(order.shortclosure),
+          quickExportDate(order.shortclosureDate),
+          quickExportValue(order.currentMilestone),
+        ])
+      : [["", "No supply orders found."]],
+  };
+  const stageTable = {
+    title: "Stage delivery details",
+    headers: [
+      "S.O. No.",
+      "Stage",
+      "Stage amount capital",
+      "Stage amount revenue",
+      "Period start",
+      "D.P.",
+      "Revised D.P.",
+      "Material receipt",
+      "Job completion",
+      "IR preparation",
+      "IR receipt",
+      "Bill preparation",
+      "Bill no.",
+      "Bill sent for payment",
+      "Payment date",
+      "Payment mode",
+    ],
+    rows: orders.flatMap((order, orderIndex) =>
+      getQuickStatusStages(order).map((stage, stageIndex) => [
+        quickExportValue(order.soNo || `S.O. ${orderIndex + 1}`),
+        stageIndex + 1,
+        quickExportValue(stage.stageAmountCapital),
+        quickExportValue(stage.stageAmountRevenue),
+        quickExportDate(stage.deliveryPeriodStartDate),
+        quickExportDate(stage.dpDate),
+        quickExportDate(stage.revisedDp),
+        quickExportDate(stage.materialReceiptDate),
+        quickExportDate(stage.jobCompletionDate),
+        quickExportDate(stage.irPreparationDate),
+        quickExportDate(stage.irReceiptDate),
+        quickExportDate(stage.billPreparationDate),
+        quickExportValue(stage.billNo),
+        quickExportDate(stage.billSentForPaymentDate),
+        quickExportDate(stage.paymentDate),
+        quickExportValue(stage.paymentMode),
+      ]),
+    ),
+  };
+  if (!stageTable.rows.length) stageTable.rows = [["", "No stage delivery details found."]];
+  const supplementaryBillTable = {
+    title: "Supplementary bill details",
+    headers: [
+      "S.O. No.",
+      "Bill no.",
+      "Capital amount",
+      "Revenue amount",
+      "Sent for payment",
+      "Payment date",
+      "Payment mode",
+      "Actual payment capital",
+      "Actual payment revenue",
+      "Remarks",
+    ],
+    rows: orders.flatMap((order, orderIndex) =>
+      (order.supplementaryBills ?? []).map((bill) => [
+        quickExportValue(order.soNo || `S.O. ${orderIndex + 1}`),
+        quickExportValue(bill.billNo),
+        quickExportValue(bill.billAmountCapital),
+        quickExportValue(bill.billAmountRevenue),
+        quickExportDate(bill.billSentForPaymentDate),
+        quickExportDate(bill.paymentDate),
+        quickExportValue(bill.paymentMode),
+        quickExportValue(bill.actualPaymentCapital),
+        quickExportValue(bill.actualPaymentRevenue),
+        quickExportValue(bill.remarks),
+      ]),
+    ),
+  };
+  if (!supplementaryBillTable.rows.length) {
+    supplementaryBillTable.rows = [["", "No supplementary bill details found."]];
+  }
+  const supplyOrderTimelineTable = quickExportSupplyOrderTimelineTable(file, orders);
+  const statusHistoryTable = {
+    title: "File status history",
+    headers: ["S.No.", "Status", "Created by", "Role", "Created at", "Last edited by", "Last edited at"],
+    rows: [...statuses]
+      .sort((left, right) => getTime(right.createdAt) - getTime(left.createdAt))
+      .map((status, index) => [
+        index + 1,
+        status.text,
+        quickExportValue(status.createdByName),
+        quickExportValue(status.createdByRole),
+        formatDateTime(status.createdAt),
+        quickExportValue(status.updatedByName),
+        status.updatedAt ? formatDateTime(status.updatedAt) : "Not edited",
+      ]),
+  };
+  if (!statusHistoryTable.rows.length) {
+    statusHistoryTable.rows = [["", "No file status history found."]];
+  }
+
+  const fileTables = [fileLevelTable, fileTimelineTable];
+  const supplyOrderTables = [
+    supplyOrderTable,
+    stageTable,
+    supplementaryBillTable,
+    supplyOrderTimelineTable,
+  ];
+  const historyTables = [statusHistoryTable];
+  void downloadBackendExport({
+    format,
+    title: `File history - ${file.uniqueCode || file.imms || file.fileNo || file.id}`,
+    subtitle: "Complete file, supply-order, milestone, and file-status history",
+    fileName: getExportFileName(
+      file.imms || file.uniqueCode || file.fileNo || "file-history",
+      format === "excel" ? "xlsx" : "pdf",
+    ),
+    primarySheetName: "General Information",
+    tables:
+      format === "excel"
+        ? [generalTable]
+        : [generalTable, ...fileTables, ...supplyOrderTables, ...historyTables],
+    sheets:
+      format === "excel"
+        ? [
+            { name: "File Level", tables: fileTables },
+            { name: "S.O. Level", tables: supplyOrderTables },
+            { name: "File Status History", tables: historyTables },
+          ]
+        : undefined,
+  });
+}
+
+function quickExportKeyValueTable(title: string, details: Array<[string, unknown]>) {
+  return {
+    title,
+    headers: ["S.No.", "Field", "Value"],
+    rows: details.map(([label, value], index) => [index + 1, label, quickExportValue(value)]),
+  };
+}
+
+function quickExportTimelineTable(title: string, items: QuickTimelineItem[]) {
+  const firstDate = parseDate(items[0]?.date);
+  let previousDate: Date | undefined;
+  const rows = items.map((item, index) => {
+    const currentDate = parseDate(item.date);
+    const row = [
+      index + 1,
+      item.label,
+      formatDate(item.date),
+      formatDays(daysBetween(previousDate, currentDate)),
+      formatDays(daysBetween(firstDate, currentDate)),
+      item.deliveryStatus || "Completed",
+    ];
+    previousDate = currentDate;
+    return row;
+  });
+  return {
+    title,
+    headers: ["S.No.", "Milestone", "Date", "Time gap", "Cumulative time", "Status"],
+    rows: rows.length ? rows : [["", "No timeline dates are filled."]],
+  };
+}
+
+function quickExportSupplyOrderTimelineTable(file: FileRecord, orders: SupplyOrderDetail[]) {
+  const rows = orders.flatMap((order, orderIndex) => {
+    const items = getQuickStatusOrderTimelineItems(file, order);
+    const firstDate = parseDate(items[0]?.date);
+    let previousDate: Date | undefined;
+    return items.map((item, itemIndex) => {
+      const currentDate = parseDate(item.date);
+      const row = [
+        quickExportValue(order.soNo || `S.O. ${orderIndex + 1}`),
+        itemIndex + 1,
+        item.label,
+        formatDate(item.date),
+        formatDays(daysBetween(previousDate, currentDate)),
+        formatDays(daysBetween(firstDate, currentDate)),
+        item.deliveryStatus || "Completed",
+      ];
+      previousDate = currentDate;
+      return row;
+    });
+  });
+  return {
+    title: "Supply-order milestone timeline",
+    headers: ["S.O. No.", "S.No.", "Milestone", "Date", "Time gap", "Cumulative time", "Status"],
+    rows: rows.length ? rows : [["", "", "No supply-order timeline dates are filled."]],
+  };
+}
+
+function quickExportDate(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text && hasDate(text) ? formatDate(text) : quickExportValue(value);
+}
+
+function quickExportValue(value: unknown) {
+  if (value === undefined || value === null || String(value).trim() === "") return "Not set";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  return String(value);
 }
 
 function openFullFile(navigate: ReturnType<typeof useNavigate>, fileId: string) {

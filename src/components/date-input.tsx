@@ -150,7 +150,29 @@ export const DateInput = forwardRef<HTMLInputElement, DateInputProps>(function D
     />
   );
 
-  if (!calendar) return input;
+  if (!calendar) {
+    return (
+      <div className="relative inline-block">
+        {input}
+        {displayValue || value ? (
+          <button
+            type="button"
+            aria-label="Clear date"
+            title="Clear date"
+            disabled={Boolean(props.disabled)}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              setDisplayValue("");
+              onChange("");
+            }}
+            className="absolute right-2 top-1/2 inline-flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition hover:bg-accent hover:text-accent-foreground disabled:pointer-events-none disabled:opacity-50"
+          >
+            <X className="size-4" />
+          </button>
+        ) : null}
+      </div>
+    );
+  }
 
   const selectedDate = isoToLocalDate(value);
   const disabled = Boolean(props.disabled);

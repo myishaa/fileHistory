@@ -86,9 +86,41 @@ function showPasswordPrompt(message: string, title: string) {
 	    input.style.border = "1px solid #94a3b8";
 	    input.style.background = "#ffffff";
 	    input.style.color = "#0f172a";
-	    input.style.padding = "0 12px";
+    input.style.padding = "0 44px 0 12px";
 	    input.style.fontSize = "14px";
 	    input.style.outline = "none";
+
+    const inputWrap = document.createElement("span");
+    inputWrap.style.position = "relative";
+    inputWrap.style.display = "block";
+    inputWrap.style.marginTop = "10px";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", "Show password");
+    toggle.title = "Show password";
+    toggle.style.position = "absolute";
+    toggle.style.right = "6px";
+    toggle.style.top = "50%";
+    toggle.style.width = "28px";
+    toggle.style.height = "28px";
+    toggle.style.transform = "translateY(-50%)";
+    toggle.style.border = "0";
+    toggle.style.borderRadius = "4px";
+    toggle.style.background = "transparent";
+    toggle.style.color = "#475569";
+    toggle.style.cursor = "pointer";
+    toggle.style.fontSize = "16px";
+    toggle.textContent = "◉";
+    toggle.addEventListener("mousedown", (event) => event.preventDefault());
+    toggle.addEventListener("click", () => {
+      const visible = input.type === "text";
+      input.type = visible ? "password" : "text";
+      toggle.setAttribute("aria-label", visible ? "Show password" : "Hide password");
+      toggle.title = visible ? "Show password" : "Hide password";
+      toggle.textContent = visible ? "◉" : "◉";
+      input.focus();
+    });
 
     const actions = document.createElement("div");
     actions.style.display = "flex";
@@ -137,7 +169,8 @@ function showPasswordPrompt(message: string, title: string) {
     });
     document.addEventListener("keydown", onKeyDown);
 
-	    label.appendChild(input);
+    inputWrap.append(input, toggle);
+    label.appendChild(inputWrap);
 	    actions.append(cancel, submit);
 	    panel.append(heading, label, actions);
     overlay.appendChild(panel);

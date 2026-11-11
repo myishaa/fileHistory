@@ -24,7 +24,9 @@ import { chartColorVariables } from "@/lib/chart-colors";
 import { TopBar } from "@/components/top-bar";
 import { UrgentMessagePrompt } from "@/components/urgent-messages";
 import { AppDialogProvider } from "@/components/app-dialog";
+import { PasswordInput } from "@/components/password-input";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
+import { UnsavedChangesDialog } from "@/components/unsaved-changes-dialog";
 import { store, useActiveUser, useDivisions, useSettings, useStoreStatus } from "@/lib/files-store";
 import { defaultAppFontScale, normalizeAppFontScale } from "@/lib/font-scale";
 import {
@@ -158,8 +160,7 @@ function RootComponent() {
       hasUnsavedChanges() &&
       (current.pathname !== next.pathname ||
         (current.pathname === "/add" &&
-          (current.search as { fileId?: unknown }).fileId !==
-            (next.search as { fileId?: unknown }).fileId)),
+          JSON.stringify(current.search) !== JSON.stringify(next.search))),
     enableBeforeUnload: shouldBlockNavigation,
     withResolver: true,
   });
@@ -242,98 +243,65 @@ function RootComponent() {
             } as CSSProperties
           }
         >
-        {isPublicLivePage ? (
-          <Outlet />
-        ) : isOpeningSession ? (
-          <main className="grid min-h-screen place-items-center bg-background px-4">
-            <div className="max-w-md text-center">
-              {storeStatus.error ? (
-                <>
-                  <p role="alert" className="text-sm text-destructive">
-                    {storeStatus.error}
+          {isPublicLivePage ? (
+            <Outlet />
+          ) : isOpeningSession ? (
+            <main className="grid min-h-screen place-items-center bg-background px-4">
+              <div className="max-w-md text-center">
+                {storeStatus.error ? (
+                  <>
+                    <p role="alert" className="text-sm text-destructive">
+                      {storeStatus.error}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void store.reload()}
+                      className="mt-3 text-sm font-medium text-primary underline underline-offset-2"
+                    >
+                      Retry connection
+                    </button>
+                  </>
+                ) : (
+                  <p role="status" className="text-sm text-muted-foreground">
+                    Opening software...
                   </p>
+                )}
+              </div>
+            </main>
+          ) : activeUser ? (
+            <>
+              {!isNoticeBoardEmbed ? <TopBar /> : null}
+              {!isNoticeBoardEmbed ? (
+                <UrgentMessagePrompt suppress={noticeBoardRotationActive} />
+              ) : null}
+              {storeStatus.error ? (
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  className="mx-6 mt-4 flex items-start justify-between gap-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive lg:mx-8"
+                >
+                  <p>{storeStatus.error}</p>
                   <button
                     type="button"
-                    onClick={() => void store.reload()}
-                    className="mt-3 text-sm font-medium text-primary underline underline-offset-2"
+                    onClick={() => store.clearError()}
+                    className="shrink-0 font-medium underline underline-offset-2"
                   >
-                    Retry connection
+                    Dismiss
                   </button>
-                </>
-              ) : (
-                <p role="status" className="text-sm text-muted-foreground">
-                  Opening software...
-                </p>
-              )}
-            </div>
-          </main>
-        ) : activeUser ? (
-          <>
-            {!isNoticeBoardEmbed ? <TopBar /> : null}
-            {!isNoticeBoardEmbed ? (
-              <UrgentMessagePrompt suppress={noticeBoardRotationActive} />
-            ) : null}
-            {storeStatus.error ? (
-              <div
-                role="alert"
-                aria-live="assertive"
-                className="mx-6 mt-4 flex items-start justify-between gap-4 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive lg:mx-8"
-              >
-                <p>{storeStatus.error}</p>
-                <button
-                  type="button"
-                  onClick={() => store.clearError()}
-                  className="shrink-0 font-medium underline underline-offset-2"
-                >
-                  Dismiss
-                </button>
-              </div>
-            ) : null}
-            <main className={isNoticeBoardEmbed ? "p-0" : "p-6 lg:p-8"}>
-              <Outlet />
-            </main>
-          </>
-        ) : (
-          <LoginScreen />
-        )}
-        {unsavedChanges && navigationBlocker.status === "blocked" ? (
-          <div
-            className="fixed inset-0 z-[100] grid place-items-center bg-foreground/35 p-4"
-            role="presentation"
-          >
-            <section
-              aria-labelledby="unsaved-changes-title"
-              aria-describedby="unsaved-changes-description"
-              aria-modal="true"
-              role="alertdialog"
-              className="w-full max-w-lg rounded-lg border border-border bg-card p-6 shadow-[var(--shadow-elevated)]"
-            >
-              <h2 id="unsaved-changes-title" className="text-lg font-semibold">
-                Unsaved changes
-              </h2>
-              <p id="unsaved-changes-description" className="mt-2 text-sm text-muted-foreground">
-                You have changes that haven’t been saved. If you leave this page, those changes
-                will be lost.
-              </p>
-              <div className="mt-6 flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={navigationBlocker.reset}
-                  className="h-9 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent"
-                >
-                  Stay on this page
-                </button>
-                <button
-                  type="button"
-                  onClick={navigationBlocker.proceed}
-                  className="h-9 rounded-md bg-destructive px-4 text-sm font-medium text-destructive-foreground hover:opacity-90"
-                >
-                  Leave without saving
-                </button>
-              </div>
-            </section>
-          </div>
-        ) : null}
+                </div>
+              ) : null}
+              <main className={isNoticeBoardEmbed ? "p-0" : "p-6 lg:p-8"}>
+                <Outlet />
+              </main>
+            </>
+          ) : (
+            <LoginScreen />
+          )}
+          <UnsavedChangesDialog
+            open={unsavedChanges && navigationBlocker.status === "blocked"}
+            onStay={navigationBlocker.reset}
+            onLeave={navigationBlocker.proceed}
+          />
         </div>
       </AppDialogProvider>
     </QueryClientProvider>
@@ -483,8 +451,7 @@ function LoginScreen() {
           )}
           <label className="block text-sm">
             <span className="mb-1 block text-xs font-medium text-muted-foreground">Password</span>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               disabled={ipBlocked}

@@ -52,6 +52,7 @@ import {
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import { isDivisionScopedUser } from "@/lib/permissions";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { ClearableInput } from "@/components/clearable-input";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
@@ -86,6 +87,7 @@ import {
   isDeliveryInspectionApplicableByGroup,
 } from "@/lib/file-type-groups";
 import { downloadBackendExport, type ExportPlot, type ExportTable } from "@/lib/export-download";
+import { showAppAlert } from "@/components/app-dialog";
 import { delayMilestoneOptions, getDelayMilestoneKey } from "@/lib/delay-status-options";
 import {
   areRequiredAdvanceGuaranteesReceived,
@@ -1459,6 +1461,7 @@ function ReportsPage({
   const [firmDatabaseLoading, setFirmDatabaseLoading] = useState(false);
   const [firmDatabaseError, setFirmDatabaseError] = useState<string | undefined>();
   const [reportsLoading, setReportsLoading] = useState(false);
+  const [cashOutgoAllExportLoading, setCashOutgoAllExportLoading] = useState(false);
   const [hasLoadedReports, setHasLoadedReports] = useState(false);
   const [reportsCalculationNonce, setReportsCalculationNonce] = useState(0);
   const [compactReportLoading, setCompactReportLoading] = useState(false);
@@ -2348,6 +2351,11 @@ function ReportsPage({
     includeArchivedYears,
     reportSummarySections,
   ]);
+  const allCashOutgoReportsQuery = useMemo(() => {
+    const params = new URLSearchParams(reportsQuery);
+    params.set("sections", combinedCashOutgoExportSections.join(","));
+    return params.toString();
+  }, [reportsQuery]);
   const currentReportsRequestKey = `${effectiveCalculationNonce}:${reportMode}:${reportsQuery}`;
   const currentReportsError =
     reportsErrorRequestKey === currentReportsRequestKey ? reportsError : undefined;
@@ -4043,23 +4051,52 @@ function ReportsPage({
     "Historical view uses the latest dates entered in the file.",
     "Example: a Bill Sent date of 10 September is not pending as of 31 August.",
   ].join("\n");
-  const exportAllCashOutgoReports = (format: "excel" | "pdf") => {
-    const tables: ExportTable[] = combinedCashOutgoExportModes.map((mode) =>
-      buildCashOutgoExportTable(mode, cashOutgoRowSources, {
-        today: isHistoricalDateRangeReport(mode) ? historicalReportToDate : today,
-        monthKey: isMonthSelectionReport(mode) ? selectedCashOutgoMonth : currentMonthKey,
-        financialYear: effectiveFinancialYear,
-      }, format),
-    );
-    void downloadBackendExport({
-      format,
-      title:
-        activeDivision === "all"
-          ? "Cash Outgo Reports - All divisions"
-          : `Cash Outgo Reports - ${activeDivision}`,
-      description: cashOutgoCombinedExportDescription,
-      tables,
-    });
+  const exportAllCashOutgoReports = async (format: "excel" | "pdf") => {
+    if (cashOutgoAllExportLoading) return;
+    const controller = new AbortController();
+    const untrackController = trackReportController(controller);
+    setCashOutgoAllExportLoading(true);
+    try {
+      // The regular report request is intentionally section-scoped to the
+      // currently selected view. Fetch all eight requested sections for the
+      // combined export so unopened views are populated as well.
+      const { summary } = await fetchReportsSummary(allCashOutgoReportsQuery, controller.signal);
+      if (controller.signal.aborted) return;
+      const rowSources = getCashOutgoRowSourcesFromSummary(
+        summary,
+        effectiveFinancialYear,
+        selectedCashOutgoMonth,
+      );
+      const tables: ExportTable[] = combinedCashOutgoExportModes.map((mode) =>
+        buildCashOutgoExportTable(
+          mode,
+          rowSources,
+          {
+            today: isHistoricalDateRangeReport(mode) ? historicalReportToDate : today,
+            monthKey: isMonthSelectionReport(mode) ? selectedCashOutgoMonth : currentMonthKey,
+            financialYear: effectiveFinancialYear,
+          },
+          format,
+        ),
+      );
+      await downloadBackendExport({
+        format,
+        title:
+          activeDivision === "all"
+            ? "Cash Outgo Reports - All divisions"
+            : `Cash Outgo Reports - ${activeDivision}`,
+        description: cashOutgoCombinedExportDescription,
+        tables,
+      });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const message = error instanceof Error ? error.message : "Could not prepare all reports.";
+      void showAppAlert(message, { title: "Export failed" });
+      console.error(error);
+    } finally {
+      untrackController();
+      setCashOutgoAllExportLoading(false);
+    }
   };
   const exportAllCashOutgoPdf = () => exportAllCashOutgoReports("pdf");
   const exportAllCashOutgoExcel = () => exportAllCashOutgoReports("excel");
@@ -4096,17 +4133,18 @@ function ReportsPage({
           plot,
         );
   const exportMerSoftwareComparison = (format: "pdf" | "excel", plots?: ExportPlot[]) => {
+    const numericAmounts = format === "excel";
     const exportRows = merSoftwareComparisonRows.map((row) => [
       row.month,
-      formatThousandsAndLakhs(readMerAmount(row.merCapital), 2),
-      formatThousandsAndLakhs(readMerAmount(row.merRevenue), 2),
-      formatThousandsAndLakhs(readMerAmount(row.softwareCapital), 2),
-      formatThousandsAndLakhs(readMerAmount(row.softwareRevenue), 2),
+      numericAmounts ? readMerAmount(row.merCapital) : formatThousandsAndLakhs(readMerAmount(row.merCapital), 2),
+      numericAmounts ? readMerAmount(row.merRevenue) : formatThousandsAndLakhs(readMerAmount(row.merRevenue), 2),
+      numericAmounts ? readMerAmount(row.softwareCapital) : formatThousandsAndLakhs(readMerAmount(row.softwareCapital), 2),
+      numericAmounts ? readMerAmount(row.softwareRevenue) : formatThousandsAndLakhs(readMerAmount(row.softwareRevenue), 2),
       merComparisonIsOrganizationWide
-        ? formatThousandsAndLakhs(readMerAmount(row.differenceCapital), 2)
+        ? numericAmounts ? readMerAmount(row.differenceCapital) : formatThousandsAndLakhs(readMerAmount(row.differenceCapital), 2)
         : "-",
       merComparisonIsOrganizationWide
-        ? formatThousandsAndLakhs(readMerAmount(row.differenceRevenue), 2)
+        ? numericAmounts ? readMerAmount(row.differenceRevenue) : formatThousandsAndLakhs(readMerAmount(row.differenceRevenue), 2)
         : "-",
     ]);
     void downloadBackendExport({
@@ -4139,6 +4177,7 @@ function ReportsPage({
               : "Difference Revenue (all-scope only)",
           ],
           rows: exportRows,
+          numericColumns: numericAmounts ? [1, 2, 3, 4, 5, 6] : undefined,
         },
       ],
     });
@@ -4832,18 +4871,20 @@ function ReportsPage({
                       <button
                         type="button"
                         onClick={exportAllCashOutgoPdf}
+                        disabled={cashOutgoAllExportLoading}
                         className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.6875rem] font-semibold text-foreground transition hover:bg-accent"
                       >
                         <FileText className="size-3.5 shrink-0" aria-hidden="true" />
-                        <span>PDF</span>
+                        <span>{cashOutgoAllExportLoading ? "Preparing…" : "PDF"}</span>
                       </button>
                       <button
                         type="button"
                         onClick={exportAllCashOutgoExcel}
+                        disabled={cashOutgoAllExportLoading}
                         className="inline-flex min-w-0 items-center justify-center gap-1 rounded-md border border-border bg-background px-2 py-1.5 text-[0.6875rem] font-semibold text-foreground transition hover:bg-accent"
                       >
                         <FileSpreadsheet className="size-3.5 shrink-0" aria-hidden="true" />
-                        <span>Excel</span>
+                        <span>{cashOutgoAllExportLoading ? "Preparing…" : "Excel"}</span>
                       </button>
                     </div>
                   </div>
@@ -6262,6 +6303,9 @@ const combinedCashOutgoExportModes = cashOutgoReportGroups
   .filter((group) => group.title !== "MER")
   .flatMap((group) => group.modes.map((mode) => mode.key))
   .filter((mode) => mode !== "soPaymentMatrix" && mode !== "paymentCompletedMatrix");
+const combinedCashOutgoExportSections = Array.from(
+  new Set(combinedCashOutgoExportModes.flatMap((mode) => getReportSummarySections(mode) ?? [])),
+);
 const supplyOrderDeliveryReportModes = getReportModeOptions([
   "monthlyFileInflow",
   "monthWiseSupplyOrder",
@@ -7123,6 +7167,43 @@ function CollapsibleReportGroup({
 }
 
 type CashOutgoRowSources = Parameters<typeof getRowsForReportMode>[1];
+
+function getCashOutgoRowSourcesFromSummary(
+  summary: ReportsSummaryPayload,
+  financialYear: string,
+  selectedCashOutgoMonth: string,
+): CashOutgoRowSources {
+  const financialYearRange = getFinancialYearRange(financialYear);
+  const expectedCashOutgoFyRows = filterRowsByMonthRange(
+    summary.expectedCashOutgoDpRows ?? [],
+    financialYearRange.startMonthKey,
+    financialYearRange.endMonthKey,
+  );
+  const actualCashOutgoRows = summary.actualCashOutgoRows ?? [];
+  const expectedCashOutgoBillPreparationRows = summary.expectedCashOutgoBillPreparationRows ?? [];
+  const billSentForPaymentRows = summary.billSentForPaymentRows ?? [];
+  return {
+    expectedCashOutgoReceiptPendingBillRows: summary.expectedCashOutgoReceiptPendingBillRows ?? [],
+    expectedCashOutgoBillPreparationRows,
+    billSentForPaymentRows,
+    expectedCashOutgoFyRows,
+    billsPaidInMonthRows: combineRowsForMonth(selectedCashOutgoMonth, [actualCashOutgoRows]),
+    cashOutgoForMonthRows: combineRowsForMonth(selectedCashOutgoMonth, [
+      expectedCashOutgoBillPreparationRows,
+      billSentForPaymentRows,
+      expectedCashOutgoFyRows,
+    ]),
+    pendingReturnedBillRows: summary.pendingReturnedBillRows ?? [],
+    returnedBillResubmittedRows: summary.returnedBillResubmittedRows ?? [],
+    returnedBillPaidRows: summary.returnedBillPaidRows ?? [],
+    supplementaryBillSentForPaymentRows: summary.supplementaryBillSentForPaymentRows ?? [],
+    supplementaryActualCashOutgoRows: summary.supplementaryActualCashOutgoRows ?? [],
+    supplementaryPendingReturnedBillRows: summary.supplementaryPendingReturnedBillRows ?? [],
+    supplementaryReturnedBillResubmittedRows:
+      summary.supplementaryReturnedBillResubmittedRows ?? [],
+    supplementaryReturnedBillPaidRows: summary.supplementaryReturnedBillPaidRows ?? [],
+  };
+}
 
 function buildCashOutgoExportTable(
   mode: ReportMode,
@@ -8766,6 +8847,7 @@ function DemandProcessingAnalysisReport({
   const toField = getDemandProcessingField(toFieldId);
   const [rangeChartExportPlot, setRangeChartExportPlot] = useState<ExportPlot | undefined>();
   const exportAnalysis = (format: "pdf" | "excel") => {
+    const numericAmounts = format === "excel";
     void downloadBackendExport({
       format,
       title,
@@ -8789,11 +8871,12 @@ function DemandProcessingAnalysisReport({
         {
           title: getAnalysisUnitBucketTitle(analysisUnit),
           headers: ["Day range", "Count", "Capital", "Revenue"],
+          numericColumns: numericAmounts ? [1, 2, 3] : undefined,
           rows: rangeRows.map((row) => [
             row.label,
             row.count,
-            formatLakhValue(row.valueCapital),
-            formatLakhValue(row.valueRevenue),
+            numericAmounts ? row.valueCapital / 100_000 : formatLakhValue(row.valueCapital),
+            numericAmounts ? row.valueRevenue / 100_000 : formatLakhValue(row.valueRevenue),
           ]),
         },
       ],
@@ -9760,11 +9843,12 @@ function DemandProcessingFilterValueInput({
           className={commonClass}
         />
       ) : (
-        <input
+        <ClearableInput
           type={field.type === "amount" ? "number" : "text"}
           value={value}
           disabled={disabled}
           onChange={(event) => onUpdate({ [valueKey]: event.target.value })}
+          onClear={() => onUpdate({ [valueKey]: "" })}
           className={commonClass}
         />
       )}
@@ -10442,12 +10526,13 @@ function CashOutgoOffsetDaysControl({
         />
       </span>
       <span className="flex min-w-0 items-center gap-1">
-        <input
+        <ClearableInput
           type="number"
           min="0"
           value={unlocked ? value : normalizedDays}
           disabled={!unlocked || saving}
           onChange={(event) => onValueChange(event.target.value)}
+          onClear={() => onValueChange("")}
           className={filterControlClass(
             active,
             "h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-sm disabled:opacity-70",
@@ -12710,9 +12795,10 @@ function MerDataReport({
 
 function MerAmountInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   return (
-    <input
+    <ClearableInput
       value={formatAmountInput(value)}
       onChange={(event) => handleFormattedAmountInput(event.currentTarget, onChange)}
+      onClear={() => onChange("")}
       inputMode="decimal"
       className="h-8 w-36 rounded-md border border-input bg-background px-2 text-right text-sm tabular-nums outline-none focus:ring-2 focus:ring-ring/40"
     />
@@ -12750,11 +12836,12 @@ function CashOutGoPlanOffsetControl({
         <span className="flex h-9 items-center rounded-md border border-border bg-secondary/20 px-2 text-xs text-muted-foreground">
           Default {defaultDays}d
         </span>
-        <input
+        <ClearableInput
           type="number"
           min="0"
           value={customEnabled ? (customDays ?? defaultDays) : defaultDays}
           onChange={(event) => onCustomDaysChange(event.target.value)}
+          onClear={() => onCustomDaysChange("")}
           className={filterControlClass(
             active,
             "h-9 w-20 rounded-md border border-input bg-background px-2 text-sm",
@@ -14225,6 +14312,7 @@ function PreSoExpectedCashOutgoReport({
       ].join("\n"),
       tables: (["revenue", "capital", "total"] as const).map((measure) => {
         const measureRows = getPreSoMonthwiseMeasureRows(visibleMonthwiseRows, measure);
+        const amountColumnIndex = (groupLabel ? 1 : 0) + 1 + (measure === "total" ? 1 : 0);
         return {
           title: `${formatPaymentMeasureLabel(measure)} - Monthwise cash outgo`,
           headers: [
@@ -14233,19 +14321,25 @@ function PreSoExpectedCashOutgoReport({
             ...(measure === "total" ? ["Files"] : []),
             formatPaymentMeasureLabel(measure),
           ],
+          numericColumns:
+            format === "excel"
+              ? [amountColumnIndex, ...(measure === "total" ? [amountColumnIndex - 1] : [])]
+              : undefined,
           rows: [
             ...measureRows.map((row) => [
               ...(groupLabel ? [row.groupLabel || ""] : []),
               formatMonthKeyLabel(row.monthKey),
               ...(measure === "total" ? [row.count] : []),
-              formatLakhValue(row[measure]),
+              format === "excel" ? row[measure] / 100_000 : formatLakhValue(row[measure]),
             ]),
             [
               ...Array.from(
                 { length: (groupLabel ? 1 : 0) + (measure === "total" ? 1 : 0) + 1 },
                 (_, index) => (index === 0 ? "All rows total" : ""),
               ),
-              formatLakhValue(measureRows.reduce((sum, row) => sum + row[measure], 0)),
+              format === "excel"
+                ? measureRows.reduce((sum, row) => sum + row[measure], 0) / 100_000
+                : formatLakhValue(measureRows.reduce((sum, row) => sum + row[measure], 0)),
             ],
           ],
         };
@@ -14411,7 +14505,7 @@ function PreSoExpectedCashOutgoReport({
                   <div className="mt-3 grid gap-2 sm:grid-cols-2">
                     <label className="text-xs text-muted-foreground">
                       S.O. offset days
-                      <input
+                      <ClearableInput
                         type="number"
                         min="0"
                         value={offset.soOffsetDays}
@@ -14419,12 +14513,13 @@ function PreSoExpectedCashOutgoReport({
                         onChange={(event) =>
                           onStageOffsetChange(stage.key, "soOffsetDays", event.target.value)
                         }
+                        onClear={() => onStageOffsetChange(stage.key, "soOffsetDays", "")}
                         className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
                       />
                     </label>
                     <label className="text-xs text-muted-foreground">
                       Payment offset days
-                      <input
+                      <ClearableInput
                         type="number"
                         min="0"
                         value={offset.paymentOffsetDays}
@@ -14432,6 +14527,7 @@ function PreSoExpectedCashOutgoReport({
                         onChange={(event) =>
                           onStageOffsetChange(stage.key, "paymentOffsetDays", event.target.value)
                         }
+                        onClear={() => onStageOffsetChange(stage.key, "paymentOffsetDays", "")}
                         className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm disabled:opacity-50"
                       />
                     </label>
@@ -17631,11 +17727,12 @@ function DelayStatusReport({
               />
             </span>
             <span className="flex items-center gap-0.5">
-              <input
+              <ClearableInput
                 type="number"
                 min="0"
                 value={selectedDays}
                 onChange={(event) => onDaysChange(event.target.value)}
+                onClear={() => onDaysChange("")}
                 className={filterControlClass(
                   daysFilterActive,
                   "h-9 min-w-0 rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40",
@@ -18693,14 +18790,18 @@ function exportFirmDatabaseReport(
     "averageOrderValue",
     "highestOrderValue",
   ]);
+  const numericAmounts = format === "excel";
   const exportDescription = getReportExportDescription(description, "Monetary values are in Lakh.");
   const emphasizedColumns: number[] = [];
+  const numericColumns: number[] = [];
   let exportColumnIndex = 0;
   columns.forEach((column) => {
     if (column.key === sortKey) emphasizedColumns.push(exportColumnIndex);
+    if (numericAmounts && monetaryColumnKeys.has(column.key)) numericColumns.push(exportColumnIndex);
     exportColumnIndex += 1;
     if (column.key === "firmName" && includeAnalysisValueColumn) {
       emphasizedColumns.push(exportColumnIndex);
+      if (numericAmounts && monetaryColumnKeys.has(sortKey)) numericColumns.push(exportColumnIndex);
       exportColumnIndex += 1;
     }
   });
@@ -18719,6 +18820,7 @@ function exportFirmDatabaseReport(
             : []),
         ]),
         emphasizedColumns,
+        numericColumns: numericAmounts ? numericColumns : undefined,
         rows: exportRows.map((row, index) =>
           columns.flatMap((column) => {
             const value =
@@ -18726,17 +18828,23 @@ function exportFirmDatabaseReport(
                 ? column.key === "divisions"
                   ? "—"
                   : monetaryColumnKeys.has(column.key)
-                    ? formatLakhValue(row.numeric[column.key] ?? 0)
+                    ? numericAmounts
+                      ? (row.numeric[column.key] ?? 0) / 100_000
+                      : formatLakhValue(row.numeric[column.key] ?? 0)
                     : String(row[column.key] ?? "—")
                 : column.key === "serial"
                   ? String(index + 1)
                   : column.key === "divisions"
                     ? String(index + 1)
                     : monetaryColumnKeys.has(column.key)
-                      ? formatLakhValue(row.numeric[column.key] ?? 0)
+                      ? numericAmounts
+                        ? (row.numeric[column.key] ?? 0) / 100_000
+                        : formatLakhValue(row.numeric[column.key] ?? 0)
                       : String(row[column.key] ?? "");
             const analysisValue = monetaryColumnKeys.has(sortKey)
-              ? formatLakhValue(row.numeric[sortKey] ?? 0)
+              ? numericAmounts
+                ? (row.numeric[sortKey] ?? 0) / 100_000
+                : formatLakhValue(row.numeric[sortKey] ?? 0)
               : String(row[sortKey] ?? "");
             return [
               value,
@@ -18768,6 +18876,7 @@ function exportMmgSummary(
   format: "excel" | "pdf",
   description?: string,
 ) {
+  const numericValues = format === "excel";
   void downloadBackendExport({
     format,
     title,
@@ -18776,12 +18885,24 @@ function exportMmgSummary(
       {
         headers: ["Field", "Value"],
         columnWidths: [260, 510],
+        numericColumns: numericValues ? [1] : undefined,
         rows: rows.length
-          ? rows.map((row) => [row.label, row.value])
+          ? rows.map((row) => [row.label, numericValues ? toMmgExcelValue(row.value) : row.value])
           : [["No MMG Summary fields selected."]],
       },
     ],
   });
+}
+
+function toMmgExcelValue(value: string | number) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : "";
+  const text = value.trim();
+  if (!text || text === "-" || text === "—" || /^n\.a\.?$/i.test(text)) return value;
+  const normalized = text.replace(/,/g, "");
+  const lakhMatch = normalized.match(/^(-?\d+(?:\.\d+)?)\s*lakh(?:s)?$/i);
+  if (lakhMatch) return Number(lakhMatch[1]);
+  if (/^-?\d+(?:\.\d+)?$/.test(normalized)) return Number(normalized);
+  return value;
 }
 
 async function exportMonthlyOperationalReport(
@@ -18794,6 +18915,19 @@ async function exportMonthlyOperationalReport(
   additionalTables: ExportTable[] = [],
 ) {
   const plots = Array.isArray(plot) ? plot : undefined;
+  const numericColumns =
+    format === "excel"
+      ? columns
+          .map((column, index) => ({ column, index }))
+          .filter(({ column }) => rows.some((row) => isExportNumericValue(row[column.key])))
+          .filter(({ column }) =>
+            rows.every((row) => {
+              const value = row[column.key];
+              return value === undefined || value === "" || value === "-" || value === "—" || isExportNumericValue(value);
+            }),
+          )
+          .map(({ index }) => index)
+      : [];
   await downloadBackendExport({
     format,
     title,
@@ -18803,11 +18937,32 @@ async function exportMonthlyOperationalReport(
     tables: [
       {
         headers: columns.map((column) => column.label),
-        rows: rows.map((row) => columns.map((column) => row[column.key] ?? "")),
+        numericColumns: numericColumns.length ? numericColumns : undefined,
+        rows: rows.map((row) =>
+          columns.map((column, index) => {
+            const value = row[column.key] ?? "";
+            if (format !== "excel" || !numericColumns.includes(index)) return value;
+            return parseExportNumericValue(value);
+          }),
+        ),
       },
       ...additionalTables,
     ],
   });
+}
+
+function isExportNumericValue(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  if (!text || text === "-" || text === "—") return false;
+  return Number.isFinite(Number(text.replace(/[₹,\s]/g, "")));
+}
+
+function parseExportNumericValue(value: string | number) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : "";
+  const parsed = Number(value.replace(/[₹,\s]/g, ""));
+  return Number.isFinite(parsed) ? parsed : value;
 }
 
 async function downloadDelayStatus(

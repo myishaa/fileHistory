@@ -24,6 +24,7 @@ import { hasCapability } from "@/lib/permissions";
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
 import { showAppAlert, showAppConfirm } from "@/components/app-dialog";
+import { ClearableTextarea } from "@/components/clearable-input";
 
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL ?? "http://localhost:3000").replace(
   /\/$/,
@@ -361,6 +362,12 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
     document.documentElement.dataset.noticeBoardRotation === "active",
   );
   const dismissPrompt = useCallback(() => {
+    // The prompt may be opened while the Global Filter dropdown owns focus.
+    // Restoring that focus as the dialog unmounts reopens the dropdown while
+    // the focus trap is still handling the same focus event, which can recurse
+    // until the browser throws a maximum-call-stack error. Explicit dismissals
+    // should leave focus where the user moved it instead.
+    skipFocusRestoreRef.current = true;
     setOpen(false);
     setDismissedUntil(Date.now() + URGENT_POPUP_DISMISS_MS);
   }, []);
@@ -427,13 +434,27 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
       dialog;
     initialFocus.focus();
 
+    let redirectingFocus = false;
+    let redirectTimer: number | undefined;
     const containFocus = (event: FocusEvent) => {
+      if (redirectingFocus) return;
       const target = event.target as HTMLElement | null;
       const ownerDialog = target?.closest<HTMLElement>('[role="dialog"], [role="alertdialog"]');
       if (dialog.contains(event.target as Node) || (ownerDialog && ownerDialog !== dialog)) return;
-      (dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
-        focusableElements()[0] ??
-        dialog).focus();
+      redirectingFocus = true;
+      // Let the browser finish the current focus event before redirecting.
+      // A synchronous focus call here can re-enter React's onFocus handler for
+      // a SearchableDropdown and recurse through this listener.
+      redirectTimer = window.setTimeout(() => {
+        redirectTimer = undefined;
+        redirectingFocus = false;
+        if (!dialog.isConnected) return;
+        const nextFocusTarget =
+          dialog.querySelector<HTMLElement>("[data-dialog-initial-focus]") ??
+          focusableElements()[0] ??
+          dialog;
+        if (nextFocusTarget !== document.activeElement) nextFocusTarget.focus();
+      }, 0);
     };
     const trapTabAndEscape = (event: KeyboardEvent) => {
       const active = document.activeElement as HTMLElement | null;
@@ -465,6 +486,7 @@ export function UrgentMessagePrompt({ suppress = false }: { suppress?: boolean }
     return () => {
       document.removeEventListener("focusin", containFocus, true);
       document.removeEventListener("keydown", trapTabAndEscape, true);
+      if (redirectTimer !== undefined) window.clearTimeout(redirectTimer);
       if (skipFocusRestoreRef.current) {
         skipFocusRestoreRef.current = false;
         return;
@@ -957,9 +979,10 @@ export function UrgentMessagesPanel({ kind }: { kind: "reminder" | "admin" }) {
             </div>
             <label className="text-xs font-medium">
               Message
-              <textarea
+              <ClearableTextarea
                 value={body}
                 onChange={(event) => setBody(event.target.value)}
+                onClear={() => setBody("")}
                 maxLength={100}
                 rows={3}
                 className="mt-1 w-full rounded-md border border-input bg-background px-2.5 py-2 text-sm"

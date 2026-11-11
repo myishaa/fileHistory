@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchQuickStatusContext,
@@ -1350,6 +1350,7 @@ type SnapshotReportTable = {
   title: string;
   headers: string[];
   rows: Array<Array<string | number>>;
+  numericColumns?: number[];
   wide?: boolean;
 };
 type SnapshotReportSection = {
@@ -1920,9 +1921,7 @@ function SearchPage() {
   }, [search.revenueOnly]);
   useEffect(() => {
     if (!search.localFilters) {
-      setSoCancelledPresenceFilter(
-        defaultSoCancelledPresenceFilter,
-      );
+      setSoCancelledPresenceFilter(defaultSoCancelledPresenceFilter);
     }
   }, [search.localFilters, defaultSoCancelledPresenceFilter]);
   useEffect(() => {
@@ -3547,7 +3546,11 @@ function SearchPage() {
     );
     appendIncludeExcludeParam(params, "fileClosedPresenceFilter", fileClosedPresenceFilter);
     appendSearchBool(params, "rstFilter", rstFilter);
-    appendIncludeExcludeParam(params, "soCancelledPresenceFilter", effectiveSoCancelledPresenceFilter);
+    appendIncludeExcludeParam(
+      params,
+      "soCancelledPresenceFilter",
+      effectiveSoCancelledPresenceFilter,
+    );
     appendIncludeExcludeParam(params, "shortclosedSoPresenceFilter", shortclosedSoPresenceFilter);
     appendIncludeExcludeParam(
       params,
@@ -3828,17 +3831,19 @@ function SearchPage() {
   }, [localFiltersRestored, searchQuery, filterValidationError]);
 
   const results = backendResults;
+  const isCancelledOrderFocusSearch = search.focusTarget === "socancelled:yes";
+  const shouldAutoExpandSearchResults =
+    !isCancelledOrderFocusSearch &&
+    Boolean(
+      search.dashboardFilter?.startsWith("snapshotFileIds:") ||
+      search.dashboardFilter?.startsWith("fileIds:"),
+    );
   useEffect(() => {
-    if (
-      !(
-        search.dashboardFilter?.startsWith("snapshotFileIds:") ||
-        search.dashboardFilter?.startsWith("fileIds:")
-      )
-    ) {
+    if (!shouldAutoExpandSearchResults) {
       return;
     }
     setExpandedSearchFileIds(new Set(results.filter(hasDetailedSearchRows).map((file) => file.id)));
-  }, [results, search.dashboardFilter]);
+  }, [results, shouldAutoExpandSearchResults]);
 
   const totalPages = Math.max(1, Math.ceil(searchTotal / pageSize));
   const currentPage = Math.min(page, totalPages);
@@ -4700,90 +4705,29 @@ function SearchPage() {
         </div>
       </div>
 
-      <div className="section-accent-border flex min-w-0 items-center gap-2 rounded-xl border border-border bg-card p-2.5 shadow-[var(--shadow-card)]">
-        <Search className="size-4 text-muted-foreground ml-2" />
-        <input
-          value={freeText}
-          onChange={(event) => setFreeText(event.target.value)}
-          placeholder="Free search"
-          className="flex-1 h-10 bg-transparent outline-none text-sm"
-        />
-        {freeText ? (
-          <button
-            type="button"
-            onClick={() => setFreeText("")}
-            className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Clear free search"
-            title="Clear free search"
-          >
-            <X className="size-4" aria-hidden="true" />
-          </button>
-        ) : null}
-        <SearchHelper items={searchFilterHelpers.freeSearch} label="Free search help" />
-      </div>
-
-      {canViewSuspectedAnomalies ? (
-        <div className="section-accent-border flex min-h-10 flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-1.5 text-sm shadow-[var(--shadow-card)]">
-          <label htmlFor="search-anomaly-status" className="font-medium">
-            Anomaly status
-          </label>
-          <select
-            id="search-anomaly-status"
-            value={anomalyPresenceFilter}
-            disabled={!anomalyFileIdsReady}
-            onChange={(event) => {
-              const next = event.target.value as "all" | "has" | "none";
-              setAnomalyPresenceFilter(next);
-              void navigate({
-                to: "/search",
-                search: (previous) => ({
-                  ...previous,
-                  anomalyPresenceFilter: next === "all" ? undefined : next,
-                }),
-              });
-            }}
-            className="h-8 rounded border border-input bg-background px-2 text-sm disabled:opacity-60"
-            aria-label="Filter Search Files by anomaly status"
-          >
-            <option value="all">All</option>
-            <option value="has">Has anomaly</option>
-            <option value="none">No anomaly</option>
-          </select>
-          {!anomalyFileIdsReady && anomalyFileIdsLoading ? (
-            <span className="text-xs text-muted-foreground" role="status">
-              Loading anomaly list…
-            </span>
+      <div className="section-accent-border flex min-w-0 flex-nowrap items-center gap-3 overflow-x-auto rounded-xl border border-border bg-card p-2.5 shadow-[var(--shadow-card)]">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <Search className="ml-2 size-4 shrink-0 text-muted-foreground" />
+          <input
+            value={freeText}
+            onChange={(event) => setFreeText(event.target.value)}
+            placeholder="Free search"
+            className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none"
+          />
+          {freeText ? (
+            <button
+              type="button"
+              onClick={() => setFreeText("")}
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              aria-label="Clear free search"
+              title="Clear free search"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
           ) : null}
-          {!anomalyFileIdsReady && !anomalyFileIdsLoading && anomalyFileIdsError ? (
-            <>
-              <span className="text-xs text-destructive" role="alert">
-                Could not load anomaly list.
-              </span>
-              <button
-                type="button"
-                onClick={() => setAnomalyLoadAttempt((attempt) => attempt + 1)}
-                className="text-xs font-medium text-primary underline-offset-2 hover:underline"
-              >
-                Retry
-              </button>
-            </>
-          ) : null}
-          {anomalyFileIdsReady && anomalyFileIdsError ? (
-            <>
-              <span className="text-xs text-destructive" role="status">
-                Could not refresh anomaly list; using the last loaded list.
-              </span>
-              <button
-                type="button"
-                onClick={() => setAnomalyLoadAttempt((attempt) => attempt + 1)}
-                className="text-xs font-medium text-primary underline-offset-2 hover:underline"
-              >
-                Retry
-              </button>
-            </>
-          ) : null}
+          <SearchHelper items={searchFilterHelpers.freeSearch} label="Free search help" />
         </div>
-      ) : null}
+      </div>
 
       {(searchError || (searchLoading && !hasLoadedSearchResults)) && (
         <div
@@ -4807,30 +4751,6 @@ function SearchPage() {
         }
       >
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setFiltersOpen((current) => !current)}
-            className={
-              "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-accent " +
-              (activeFilterCount > 0
-                ? "border-destructive/60 bg-destructive/10 text-destructive"
-                : "border-border bg-background text-foreground")
-            }
-            aria-expanded={filtersOpen}
-          >
-            <SlidersHorizontal
-              className={
-                "size-4 " + (activeFilterCount > 0 ? "text-destructive" : "text-muted-foreground")
-              }
-            />
-            Filters
-            {activeFilterCount > 0 ? (
-              <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
-                {activeFilterCount}
-              </span>
-            ) : null}
-          </button>
-          <SearchHelper items={searchFilterHelpers.filters} label="Search filters help" />
           {visibleFilterChips.length ? (
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {visibleFilterChips.map((chip, index) => (
@@ -4879,14 +4799,104 @@ function SearchPage() {
             <span className="text-xs text-muted-foreground">No filters selected</span>
           )}
         </div>
-        <button
-          type="button"
-          onClick={clearAll}
-          disabled={!hasFilters}
-          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
-        >
-          <X className="size-3.5" /> Reset filters
-        </button>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setFiltersOpen((current) => !current)}
+            className={
+              "inline-flex h-9 shrink-0 items-center gap-2 rounded-md border px-3 text-sm font-medium hover:bg-accent " +
+              (activeFilterCount > 0
+                ? "border-destructive/60 bg-destructive/10 text-destructive"
+                : "border-border bg-background text-foreground")
+            }
+            aria-expanded={filtersOpen}
+          >
+            <SlidersHorizontal
+              className={
+                "size-4 " + (activeFilterCount > 0 ? "text-destructive" : "text-muted-foreground")
+              }
+            />
+            Filters
+            {activeFilterCount > 0 ? (
+              <span className="rounded-full bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground">
+                {activeFilterCount}
+              </span>
+            ) : null}
+          </button>
+          <SearchHelper items={searchFilterHelpers.filters} label="Search filters help" />
+
+          {canViewSuspectedAnomalies ? (
+            <div className="flex min-w-0 shrink-0 items-center gap-2 text-sm">
+              <label htmlFor="search-anomaly-status" className="font-medium">
+                Anomaly status
+              </label>
+              <select
+                id="search-anomaly-status"
+                value={anomalyPresenceFilter}
+                disabled={!anomalyFileIdsReady}
+                onChange={(event) => {
+                  const next = event.target.value as "all" | "has" | "none";
+                  setAnomalyPresenceFilter(next);
+                  void navigate({
+                    to: "/search",
+                    search: (previous) => ({
+                      ...previous,
+                      anomalyPresenceFilter: next === "all" ? undefined : next,
+                    }),
+                  });
+                }}
+                className="h-8 rounded border border-input bg-background px-2 text-sm disabled:opacity-60"
+                aria-label="Filter Search Files by anomaly status"
+              >
+                <option value="all">All</option>
+                <option value="has">Has anomaly</option>
+                <option value="none">No anomaly</option>
+              </select>
+              {!anomalyFileIdsReady && anomalyFileIdsLoading ? (
+                <span className="text-xs text-muted-foreground" role="status">
+                  Loading anomaly list…
+                </span>
+              ) : null}
+              {!anomalyFileIdsReady && !anomalyFileIdsLoading && anomalyFileIdsError ? (
+                <>
+                  <span className="text-xs text-destructive" role="alert">
+                    Could not load anomaly list.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAnomalyLoadAttempt((attempt) => attempt + 1)}
+                    className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : null}
+              {anomalyFileIdsReady && anomalyFileIdsError ? (
+                <>
+                  <span className="text-xs text-destructive" role="status">
+                    Could not refresh anomaly list; using the last loaded list.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAnomalyLoadAttempt((attempt) => attempt + 1)}
+                    className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                  >
+                    Retry
+                  </button>
+                </>
+              ) : null}
+            </div>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={clearAll}
+            disabled={!hasFilters}
+            className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
+          >
+            <X className="size-3.5" /> Reset filters
+          </button>
+        </div>
       </div>
 
       <div
@@ -5003,8 +5013,7 @@ function SearchPage() {
                             ),
                         ).length
                       : 0) +
-                    (group.title === "Supply Order / Firm" &&
-                    localSoCancelledFilter !== null
+                    (group.title === "Supply Order / Firm" && localSoCancelledFilter !== null
                       ? 1
                       : 0);
                   return (
@@ -5042,19 +5051,18 @@ function SearchPage() {
                             .filter(
                               (option) =>
                                 option.filter !== "miscSoCancelled" ||
-                                (importantWorkflowFilterModes.miscSoCancelled ?? "none") !==
-                                  "none",
+                                (importantWorkflowFilterModes.miscSoCancelled ?? "none") !== "none",
                             )
                             .map((option) => (
-                            <ThreeWayFilter
-                              key={option.filter}
-                              label={option.label}
-                              helper={option.helper}
-                              value={importantWorkflowFilterModes[option.filter] ?? "none"}
-                              onChange={(mode) =>
-                                setImportantWorkflowFilterMode(option.filter, mode)
-                              }
-                            />
+                              <ThreeWayFilter
+                                key={option.filter}
+                                label={option.label}
+                                helper={option.helper}
+                                value={importantWorkflowFilterModes[option.filter] ?? "none"}
+                                onChange={(mode) =>
+                                  setImportantWorkflowFilterMode(option.filter, mode)
+                                }
+                              />
                             ))}
                         </div>
 
@@ -6938,8 +6946,8 @@ function exportFileSnapshot(
       `File: ${file.uniqueCode || file.imms || file.fileNo || file.id}`,
     ].join("\n"),
     fileName: `${getExportFileName(title)}.${format === "excel" ? "xlsx" : "pdf"}`,
-    tables: sections.map((section) =>
-      section.table
+    tables: sections.map((section) => {
+      const table = section.table
         ? {
             ...section.table,
             title: getSnapshotExportSectionTitle(file, section),
@@ -6948,9 +6956,56 @@ function exportFileSnapshot(
             title: getSnapshotExportSectionTitle(file, section),
             headers: ["S.No.", "Field", "Value"],
             rows: (section.rows ?? []).map((row, index) => [index + 1, row.label, row.value]),
-          },
-    ),
+          };
+      return format === "excel" ? normalizeSnapshotExcelTable(table) : table;
+    }),
   });
+}
+
+function normalizeSnapshotExcelTable(table: SnapshotReportTable): SnapshotReportTable {
+  const isStageTable = table.headers.includes("Capital") && table.headers.includes("Revenue");
+  if (isStageTable) {
+    const numericColumns = table.headers.flatMap((header, index) =>
+      /^(capital|revenue)$/i.test(header) ? [index] : [],
+    );
+    return {
+      ...table,
+      numericColumns,
+      rows: table.rows.map((row) =>
+        row.map((value, index) =>
+          numericColumns.includes(index) ? parseSnapshotNumericValue(value) : value,
+        ),
+      ),
+    };
+  }
+  if (table.headers.length === 3 && table.headers[1] === "Field" && table.headers[2] === "Value") {
+    const numericRows = table.rows.map((row) => {
+      const label = String(row[1] ?? "");
+      if (!isSnapshotAmountLabel(label)) return { row, numeric: false };
+      const parsed = parseSnapshotNumericValue(row[2] ?? "");
+      return { row: [...row.slice(0, 2), parsed], numeric: typeof parsed === "number" };
+    });
+    if (numericRows.some((item) => item.numeric)) {
+      return {
+        ...table,
+        numericColumns: [2],
+        rows: numericRows.map((item) => item.row),
+      };
+    }
+  }
+  return table;
+}
+
+function isSnapshotAmountLabel(label: string) {
+  return /(?:capital|revenue|amount|payment|value|bg|advance)/i.test(label);
+}
+
+function parseSnapshotNumericValue(value: string | number) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : "";
+  const text = value.trim();
+  if (!text || text === "-" || text === "—") return value;
+  const parsed = Number(text.replace(/[₹,\s]/g, ""));
+  return Number.isFinite(parsed) ? parsed : value;
 }
 
 function getSnapshotExportSectionTitle(file: FileRecord, section: SnapshotReportSection) {
@@ -7174,9 +7229,9 @@ function DrillPathTrail({
           <span key={`${item.label}-${index}`} className="inline-flex items-center gap-1">
             {index > 0 ? <ChevronRight className="size-3" aria-hidden="true" /> : null}
             {href ? (
-              <a href={href} className={labelClassName}>
+              <Link to={href as never} className={labelClassName}>
                 {item.label}
-              </a>
+              </Link>
             ) : (
               <span className={labelClassName}>{item.label}</span>
             )}
@@ -8312,7 +8367,9 @@ function getConfiguredMilestones(milestones: string[] | undefined) {
     .map((item) => normalizeConfiguredMilestoneLabel(item.trim()))
     .filter(Boolean);
   if (values.length) return appendFileClosedMilestone(values);
-  return appendFileClosedMilestone(insertBillSentMilestone(insertRefloatMilestones(defaultMilestones)));
+  return appendFileClosedMilestone(
+    insertBillSentMilestone(insertRefloatMilestones(defaultMilestones)),
+  );
 }
 
 function getConfiguredFirmTypes(firmTypes: string[] | undefined) {
@@ -9903,8 +9960,7 @@ function getOrderDelayMilestones() {
     {
       key: "pwb",
       current: "pwb",
-      start: (file: FileRecord, order: SupplyOrderDetail) =>
-        getPwbFollowUpTriggerDate(file, order),
+      start: (file: FileRecord, order: SupplyOrderDetail) => getPwbFollowUpTriggerDate(file, order),
       complete: (order: SupplyOrderDetail) => getBgReceivedDate(order, "pwb"),
     },
     {
@@ -11427,7 +11483,8 @@ function isStatus4SupplyOrderCleared(file: FileRecord) {
   return Boolean(
     file.completedMilestones?.some(
       (milestone) => normalizeMilestoneName(milestone) === "supplyorder",
-    ) || fileSupplyOrders(file).some(
+    ) ||
+    fileSupplyOrders(file).some(
       (order) => hasSupplyOrderDate(order) && !isDateAfterToday(order.soDate),
     ),
   );

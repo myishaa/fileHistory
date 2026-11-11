@@ -42,6 +42,7 @@ import {
   filePaymentOrders as normalizedFilePaymentOrders,
   fileSupplyOrders as normalizedFileSupplyOrders,
   rawSupplyOrderEntries,
+  eligibleSupplyOrderEntries as normalizedEligibleSupplyOrderEntries,
   getEffectiveSupplyOrderCurrentMilestone as getCanonicalSupplyOrderCurrentMilestone,
   getPaymentTimingTriggerDate,
   hasUnpaidSupplyOrderPayment,
@@ -102,6 +103,7 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { DateInput, formatIsoDateForDisplay } from "@/components/date-input";
+import { ClearableInput } from "@/components/clearable-input";
 import { showAppAlert, showAppPrompt } from "@/components/app-dialog";
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { CompactTableText, getCompactTableTextWidth } from "@/components/compact-table-text";
@@ -142,6 +144,7 @@ import {
   getDashboardActivitySummaryState,
   getDashboardActivitySummaryStatusText,
 } from "@/lib/dashboard-activity-summary-state";
+import { getDashboardRecommendedFilterScope } from "@/lib/dashboard-filter-recommendations";
 import {
   getStatus4CurrentFiles,
   getStatus4RequestKey,
@@ -1465,7 +1468,12 @@ export function Dashboard() {
     } else if (isAnalyticsPanelKey(requestedPanel)) {
       setActiveAnalyticsPanel(requestedPanel);
     }
-  }, [canViewSuspectedAnomalies, locationSearch.analyticsPanel, locationSearch.tab]);
+  }, [
+    canViewSuspectedAnomalies,
+    locationSearch.analyticsPanel,
+    locationSearch.status1View,
+    locationSearch.tab,
+  ]);
   const [topFirmLimit, setTopFirmLimit] = useState<AnalyticsResultLimitKey>("20");
   const [selectedFirmAnalysisFirm, setSelectedFirmAnalysisFirm] = useState("");
   const [firmAnalysisView, setFirmAnalysisView] = useState<"existing" | "coParticipants">(
@@ -2049,98 +2057,35 @@ export function Dashboard() {
     settings.financialYear,
   ].join("|");
   const applyDashboardRecommendedFilters = useCallback(
-    (dashboardTab: DashboardTab, analyticsPanel: AnalyticsPanelKey) => {
+    (dashboardTab: DashboardTab, analyticsPanel: AnalyticsPanelKey, statusView = status1View) => {
       if (appliedFilterCombinationLock) return;
-      if (dashboardTab === "analytics") {
-        const firmHistoryPanels = [
-          "topFirms",
-          "firmAnalysis",
-          "indentorFirmLinkage",
-          "firmPerformance",
-        ];
-        const recommendedGlobalYear = firmHistoryPanels.includes(analyticsPanel)
-          ? ALL_FILES_YEAR
-          : settings.financialYear;
-        const recommendedFileYear =
-          analyticsPanelGroups.find((group) => group.keys.includes(analyticsPanel))
-            ?.recommendedFileYear === "all"
-            ? "all"
-            : settings.financialYear;
-        store.updateSessionSelectedYear(recommendedGlobalYear);
-        setFileYearLocked(false);
-        setSelectedFileYear(recommendedFileYear);
-        window.sessionStorage.setItem(
-          fileYearFilterStorageKey,
-          JSON.stringify({ locked: false, year: recommendedFileYear }),
-        );
-        window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
-        return;
-      }
-      if (dashboardTab === "fyActivity") {
-        const recommendedYear = settings.financialYear;
-        store.updateSessionSelectedYear(recommendedYear);
-        setFyActivityGlobalYear(recommendedYear);
-        setFileYearLocked(false);
-        setSelectedFileYear("all");
-        setFyActivityFileYear("all");
-        window.sessionStorage.setItem(fyActivityGlobalYearStorageKey, recommendedYear);
-        window.sessionStorage.setItem(
-          fyActivityFileYearStorageKey,
-          JSON.stringify({ locked: false, year: "all" }),
-        );
-        window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
-        return;
-      }
-      if (dashboardTab === "finance1" || dashboardTab === "snapshot") {
-        const recommendedYear = settings.financialYear;
-        store.updateSessionSelectedYear(recommendedYear);
-        setFileYearLocked(false);
-        setSelectedFileYear(recommendedYear);
-        window.sessionStorage.setItem(
-          fileYearFilterStorageKey,
-          JSON.stringify({ locked: false, year: recommendedYear }),
-        );
-        window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
-        return;
-      }
-      if (
-        dashboardTab === "status" ||
-        dashboardTab === "liveStatus" ||
-        dashboardTab === "status3" ||
-        dashboardTab === "status4"
-      ) {
-        store.updateSessionSelectedYear(ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR);
-        setSelectedFileYear("all");
-        setFileYearLocked(false);
-        window.sessionStorage.setItem(
-          fileYearFilterStorageKey,
-          JSON.stringify({ locked: false, year: "all" }),
-        );
-        window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
-        return;
-      }
+      const { globalYear, fileYear } = getDashboardRecommendedFilterScope(
+        dashboardTab,
+        analyticsPanel,
+        settings.financialYear,
+        dashboardTab === "status" ? statusView : undefined,
+      );
+      store.updateSessionSelectedYear(globalYear);
+      setFileYearLocked(false);
+      setSelectedFileYear(fileYear);
       if (dashboardTab === "finance") {
-        const recommendedYear = settings.financialYear;
-        store.updateSessionSelectedYear(recommendedYear);
-        setFinanceGlobalYear(recommendedYear);
-        setSelectedFileYear("all");
-        setFinanceFileYear("all");
-        setFileYearLocked(false);
-        window.sessionStorage.setItem(financeGlobalYearStorageKey, recommendedYear);
-        window.sessionStorage.setItem(
-          fileYearFilterStorageKey,
-          JSON.stringify({ locked: false, year: "all" }),
-        );
-        window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
+        setFinanceGlobalYear(globalYear);
+        setFinanceFileYear(fileYear);
+      } else if (dashboardTab === "fyActivity") {
+        setFyActivityGlobalYear(globalYear);
+        setFyActivityFileYear(fileYear);
       }
+      const storageKey =
+        dashboardTab === "fyActivity" ? fyActivityFileYearStorageKey : fileYearFilterStorageKey;
+      window.sessionStorage.setItem(storageKey, JSON.stringify({ locked: false, year: fileYear }));
+      window.dispatchEvent(new Event("recordkeeper:filter-scope-changed"));
     },
     [
       appliedFilterCombinationLock,
       fileYearFilterStorageKey,
-      financeGlobalYearStorageKey,
       fyActivityFileYearStorageKey,
-      fyActivityGlobalYearStorageKey,
       settings.financialYear,
+      status1View,
     ],
   );
   const previousDashboardRecommendationRef = useRef<
@@ -2270,6 +2215,31 @@ export function Dashboard() {
     appliedFilterCombinationLock,
     settings.financialYear,
   ]);
+
+  // Reconcile every dashboard option after the persisted subfilter hydration
+  // effect. Otherwise a value saved by the previous option can overwrite the
+  // new option's recommendation when the router enters it from another tab or
+  // page. A saved filter-combination lock remains authoritative.
+  const routeDashboardTab = isDashboardTab(locationSearch.tab) ? locationSearch.tab : undefined;
+  const routeStatus1View =
+    locationSearch.status1View === "cancelled" || locationSearch.status1View === "closed"
+      ? locationSearch.status1View
+      : "live";
+  useEffect(() => {
+    if (!routeDashboardTab || appliedFilterCombinationLock) return;
+    applyDashboardRecommendedFilters(
+      routeDashboardTab,
+      activeAnalyticsPanel,
+      routeDashboardTab === "status" ? routeStatus1View : undefined,
+    );
+  }, [
+    activeAnalyticsPanel,
+    appliedFilterCombinationLock,
+    applyDashboardRecommendedFilters,
+    routeDashboardTab,
+    routeStatus1View,
+  ]);
+
   const updateFileYearSelection = (year: string) => {
     if (appliedFilterCombinationLock) return;
     setSelectedFileYear(year);
@@ -7598,7 +7568,12 @@ export function Dashboard() {
         focusTarget: cancelledFocusTargets ? "socancelled:yes" : undefined,
         focusTargets: cancelledFocusTargets,
         drillPath: serializeDrillPath(
-          getDashboardDrillPath(activeDashboardTab, dashboardFilter, status3DisplayStage),
+          getDashboardDrillPath(
+            activeDashboardTab,
+            dashboardFilter,
+            status3DisplayStage,
+            status1View,
+          ),
         ),
       },
     });
@@ -8575,19 +8550,21 @@ export function Dashboard() {
                 </div>
                 <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   Activity from
-                  <input
+                  <ClearableInput
                     type="date"
                     value={status1ActivityFromDate}
                     onChange={(event) => setStatus1ActivityFromDate(event.target.value)}
+                    onClear={() => setStatus1ActivityFromDate("")}
                     className="h-8 rounded-md border border-input bg-background px-2 text-foreground"
                   />
                 </label>
                 <label className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
                   Activity to
-                  <input
+                  <ClearableInput
                     type="date"
                     value={status1ActivityToDate}
                     onChange={(event) => setStatus1ActivityToDate(event.target.value)}
+                    onClear={() => setStatus1ActivityToDate("")}
                     className="h-8 rounded-md border border-input bg-background px-2 text-foreground"
                   />
                 </label>
@@ -9758,7 +9735,7 @@ export function Dashboard() {
                               </TooltipProvider>
                             </span>
                             <span className="flex items-center gap-1.5">
-                              <input
+                              <ClearableInput
                                 type="number"
                                 min="0"
                                 step="1"
@@ -9772,6 +9749,7 @@ export function Dashboard() {
                                     setAnalyticsDelayDays(value);
                                   }
                                 }}
+                                onClear={() => setAnalyticsDelayDays("")}
                                 onBlur={() => {
                                   if (!analyticsDelayDays) {
                                     setAnalyticsDelayDays(String(defaultAnalyticsDelayDays));
@@ -18649,6 +18627,7 @@ function ManualMilestoneFlowNode({
   onCurrentClick: () => void;
   onCompletedClick: () => void;
 }) {
+  const historical = useContext(Status1HistoricalContext);
   const tone = getMilestoneTone(milestone.current);
   const metrics: StatusMetric[] = [
     {
@@ -18674,6 +18653,10 @@ function ManualMilestoneFlowNode({
       ],
     },
   ];
+  const visibleMetrics = historical
+    ? metrics.filter((metric) => metric.statusKind !== "live")
+    : metrics;
+  if (!visibleMetrics.length) return null;
 
   return (
     <div className="relative min-w-0">
@@ -18697,8 +18680,8 @@ function ManualMilestoneFlowNode({
               <span className="block truncate text-sm font-semibold">{milestone.name}</span>
             </span>
           </span>
-          <div className="grid min-w-0 grid-cols-2 gap-1.5">
-            {metrics.map((metric) => (
+          <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleMetrics.length)}>
+            {visibleMetrics.map((metric) => (
               <StatusMetricBox
                 key={metric.label}
                 metric={{
@@ -18718,6 +18701,12 @@ function ManualMilestoneFlowNode({
       ) : null}
     </div>
   );
+}
+
+function getStatusMetricGridClass(count: number) {
+  if (count <= 1) return "grid-cols-1";
+  if (count === 2 || count === 4) return "grid-cols-2";
+  return "grid-cols-2 sm:grid-cols-3";
 }
 
 function StatusFlowNode({
@@ -18766,15 +18755,7 @@ function StatusFlowNode({
               <span className="block truncate text-sm font-semibold">{title}</span>
             </span>
           </span>
-          <div
-            className={`grid gap-1.5 ${
-              visibleItems.length === 1
-                ? "grid-cols-1"
-                : visibleItems.length === 4
-                  ? "grid-cols-2"
-                  : "grid-cols-3"
-            }`}
-          >
+          <div className={"grid gap-1.5 " + getStatusMetricGridClass(visibleItems.length)}>
             {visibleItems.map((item) => (
               <StatusSubBox
                 key={item.label}
@@ -24279,9 +24260,10 @@ function SuspectedAnomalyGroupedView({
     <div className="space-y-3">
       <div className="flex max-w-2xl items-center gap-2 rounded-md border border-border bg-background px-3">
         <Search className="size-4 shrink-0 text-muted-foreground" />
-        <input
+        <ClearableInput
           value={freeSearch}
           onChange={(event) => setFreeSearch(event.target.value)}
+          onClear={() => setFreeSearch("")}
           placeholder="Free search files, control numbers, descriptions, or anomaly details"
           aria-label="Search suspected anomalies"
           className="h-10 min-w-0 flex-1 bg-transparent text-sm outline-none"
@@ -26006,11 +25988,6 @@ function MilestoneFlowNode({
     onSupplementaryNormalPendingClick,
     onSupplementaryResubmittedPendingClick,
   });
-  const metricGridClass =
-    metrics.length === 4
-      ? "grid grid-cols-2 gap-1.5"
-      : "grid grid-cols-2 gap-1.5 sm:grid-cols-3";
-
   return (
     <div className="relative min-w-0">
       <div
@@ -26041,7 +26018,6 @@ function MilestoneFlowNode({
             <GroupedStatusMetricGrid
               metrics={metrics}
               tone={tone}
-              fallbackClassName={metricGridClass}
             />
           )}
         </div>
@@ -26089,17 +26065,14 @@ function PaymentMetricGrid({
   };
   const rows: Array<{
     label: string;
-    className: string;
     metrics: Array<StatusMetric | undefined>;
   }> = [
     {
       label: "Overall",
-      className: "grid-cols-1",
       metrics: [findMetric("Payment Pending")],
     },
     {
       label: "Payment counters",
-      className: "grid-cols-2 sm:grid-cols-4",
       metrics: [
         findMetric("Due"),
         findMetric("In process"),
@@ -26109,12 +26082,10 @@ function PaymentMetricGrid({
     },
     {
       label: "",
-      className: "grid-cols-2",
       metrics: [findMetric("Advance Pending"), relabelMetric("Advance Paid", "Advance Completed")],
     },
     {
       label: "",
-      className: "grid-cols-2 sm:grid-cols-4",
       metrics: [
         findMetric("Bills returned"),
         findMetric("Return pending"),
@@ -26135,7 +26106,7 @@ function PaymentMetricGrid({
               {row.label}
             </span>
           ) : null}
-          <div className={"grid min-w-0 gap-1.5 " + row.className}>
+          <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(row.metrics.length)}>
             {row.metrics.map((metric) => (
               <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
             ))}
@@ -26250,6 +26221,11 @@ function SupplementaryBillFlowNode({
       help: supplementaryBillMetricHelp.resubmittedPending,
     },
   ];
+  const historical = useContext(Status1HistoricalContext);
+  const visibleMetrics = historical
+    ? metrics.filter((metric) => metric.statusKind !== "live")
+    : metrics;
+  if (!visibleMetrics.length) return null;
 
   return (
     <div className="relative min-w-0">
@@ -26273,8 +26249,8 @@ function SupplementaryBillFlowNode({
               <span className="block truncate text-sm font-semibold">Supplementary Bill</span>
             </span>
           </span>
-          <div className="grid min-w-0 grid-cols-2 gap-1.5 sm:grid-cols-3">
-            {metrics.map((metric) => (
+          <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleMetrics.length)}>
+            {visibleMetrics.map((metric) => (
               <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
             ))}
           </div>
@@ -26292,11 +26268,9 @@ function SupplementaryBillFlowNode({
 function GroupedStatusMetricGrid({
   metrics,
   tone,
-  fallbackClassName,
 }: {
   metrics: StatusMetric[];
   tone: ReturnType<typeof getMilestoneTone>;
-  fallbackClassName: string;
 }) {
   const historical = useContext(Status1HistoricalContext);
   const visibleMetrics = historical ? metrics.filter((metric) => metric.statusKind !== "live") : metrics;
@@ -26309,7 +26283,7 @@ function GroupedStatusMetricGrid({
 
   if (!active || !reviewed || !pending) {
     return (
-      <div className={fallbackClassName + " min-w-0"}>
+      <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleMetrics.length)}>
         {visibleMetrics.map((metric) => (
           <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
         ))}
@@ -26320,7 +26294,11 @@ function GroupedStatusMetricGrid({
   return (
     <div className="grid min-w-0 gap-1.5">
       {remainingMetrics.length ? (
-        <div className="grid min-w-0 grid-cols-2 gap-1.5">
+        <div
+          className={
+            "grid min-w-0 gap-1.5 " + getStatusMetricGridClass(remainingMetrics.length)
+          }
+        >
           {remainingMetrics.map((metric) => (
             <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
           ))}
@@ -27552,6 +27530,11 @@ function DeliveryFlowNode({
       ],
     },
   ];
+  const historical = useContext(Status1HistoricalContext);
+  const visibleMetrics = historical
+    ? metrics.filter((metric) => metric.statusKind !== "live")
+    : metrics;
+  if (!visibleMetrics.length) return null;
 
   return (
     <div className="relative min-w-0">
@@ -27578,8 +27561,8 @@ function DeliveryFlowNode({
             </span>
           </span>
           <div className="flex min-w-0 flex-col gap-1.5">
-            <div className="grid min-w-0 grid-cols-3 gap-1.5">
-              {metrics.map((metric) => (
+            <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleMetrics.length)}>
+              {visibleMetrics.map((metric) => (
                 <StatusMetricBox
                   key={metric.label}
                   metric={{
@@ -27645,6 +27628,11 @@ function JobCompletionFlowNode({
       ],
     },
   ];
+  const historical = useContext(Status1HistoricalContext);
+  const visibleMetrics = historical
+    ? metrics.filter((metric) => metric.statusKind !== "live")
+    : metrics;
+  if (!visibleMetrics.length) return null;
 
   return (
     <div className="relative min-w-0">
@@ -27670,8 +27658,8 @@ function JobCompletionFlowNode({
               </span>
             </span>
           </span>
-          <div className="grid min-w-0 grid-cols-2 gap-1.5">
-            {metrics.map((metric) => (
+          <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleMetrics.length)}>
+            {visibleMetrics.map((metric) => (
               <StatusMetricBox
                 key={metric.label}
                 metric={{
@@ -27777,6 +27765,14 @@ function JobCompletionIrFlowNode({
       ],
     },
   ];
+  const historical = useContext(Status1HistoricalContext);
+  const visibleJobMetrics = historical
+    ? jobMetrics.filter((metric) => metric.statusKind !== "live")
+    : jobMetrics;
+  const visibleIrMetrics = historical
+    ? irMetrics.filter((metric) => metric.statusKind !== "live")
+    : irMetrics;
+  if (!visibleJobMetrics.length && !visibleIrMetrics.length) return null;
 
   return (
     <div className="relative min-w-0">
@@ -27801,13 +27797,13 @@ function JobCompletionIrFlowNode({
             </span>
           </span>
           <div className="grid min-w-0 gap-1.5">
-            <div className="grid min-w-0 grid-cols-2 gap-1.5">
-              {jobMetrics.map((metric) => (
+            <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleJobMetrics.length)}>
+              {visibleJobMetrics.map((metric) => (
                 <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
               ))}
             </div>
-            <div className="grid min-w-0 grid-cols-1 gap-1.5 sm:grid-cols-3">
-              {irMetrics.map((metric) => (
+            <div className={"grid min-w-0 gap-1.5 " + getStatusMetricGridClass(visibleIrMetrics.length)}>
+              {visibleIrMetrics.map((metric) => (
                 <StatusMetricBox key={metric.label} metric={metric} tone={tone} />
               ))}
             </div>
@@ -31874,7 +31870,7 @@ function countHistoricalCancelledBgToBeReturnedOrders(
       : new Map<number, SupplyOrderDetail>();
     return (
       total +
-      eligibleSupplyOrderEntries(file).filter(({ orderIndex, order }) => {
+      normalizedEligibleSupplyOrderEntries(file).filter(({ orderIndex, order }) => {
         const sourceOrder = sourceOrders.get(orderIndex);
         const liabilityOrder = sourceOrder && isYes(sourceOrder.soCancelled)
           ? { ...order, soCancelled: "Yes" }
@@ -34715,8 +34711,12 @@ function getDashboardTabDrillLabel(tab: DashboardTab) {
   return "Dashboard";
 }
 
-function getDashboardTabHref(tab: DashboardTab) {
-  if (tab === "status") return "/dashboard?tab=status";
+function getDashboardTabHref(tab: DashboardTab, status1View: Status1View = "live") {
+  if (tab === "status") {
+    return status1View === "live"
+      ? "/dashboard?tab=status"
+      : `/dashboard?tab=status&status1View=${encodeURIComponent(status1View)}`;
+  }
   if (tab === "liveStatus") return "/dashboard?tab=liveStatus";
   if (tab === "status3") return "/dashboard?tab=status3";
   if (tab === "status4") return "/dashboard?tab=status4";
@@ -34742,15 +34742,23 @@ function getDashboardDrillPath(
   tab: DashboardTab,
   dashboardFilter: string,
   status3DisplayStage?: string,
+  status1View: Status1View = "live",
 ) {
-  const tabHref = getDashboardTabHref(tab);
+  const tabHref = getDashboardTabHref(tab, status1View);
   const titleParts = splitDashboardFilterTitle(getDashboardFilterTitle(dashboardFilter));
   if (tab === "status3" && status3DisplayStage && titleParts.length) {
     titleParts[titleParts.length - 1] = status3DisplayStage;
   }
+  const status1ViewLabel =
+    tab === "status" && status1View === "cancelled"
+      ? "Cancelled S.O."
+      : tab === "status" && status1View === "closed"
+        ? "File Closed"
+        : undefined;
   return [
     drillItem("Dashboard", "/dashboard"),
     drillItem(getDashboardTabDrillLabel(tab), tabHref),
+    ...(status1ViewLabel ? [drillItem(status1ViewLabel, tabHref)] : []),
     ...titleParts.map((part) => drillItem(part, tabHref)),
   ];
 }
@@ -36642,11 +36650,28 @@ async function downloadAnalyticsPanel(
     format,
   );
   const rows = panel.rows.map((row, index) => {
-    const values = exportColumns.map((column) =>
-      getAnalyticsCellValue(row, column).replace(/\n/g, " "),
-    );
+    const values = exportColumns.map((column) => {
+      const displayValue = getAnalyticsCellValue(row, column).replace(/\n/g, " ");
+      if (format !== "excel") return displayValue;
+      return getAnalyticsExcelCellValue(row, column, displayValue);
+    });
     return includeSerialColumn ? [index + 1, ...values] : values;
   });
+  const numericColumns =
+    format === "excel"
+      ? exportColumns.flatMap((column, index) => {
+          const values = panel.rows.map((row) =>
+            getAnalyticsExcelCellValue(row, column, getAnalyticsCellValue(row, column)),
+          );
+          return values.some((value) => typeof value === "number") &&
+            values.every(
+              (value) =>
+                typeof value === "number" || value === "" || value === "-" || value === "—",
+            )
+            ? [index + (includeSerialColumn ? 1 : 0)]
+            : [];
+        })
+      : [];
   const scopeTables = additionalTables.filter((table) => table.title === "Scope summary");
   const detailTables = additionalTables.filter((table) => table.title !== "Scope summary");
   await downloadBackendExport({
@@ -36668,11 +36693,7 @@ async function downloadAnalyticsPanel(
         headers: includeSerialColumn ? ["S.No.", ...headers] : headers,
         numericColumns: [
           ...(includeSerialColumn ? [0] : []),
-          ...exportColumns.flatMap((column, index) =>
-            panel.rows.some((row) => typeof getAnalyticsRawCellValue(row, column) === "number")
-              ? [index + (includeSerialColumn ? 1 : 0)]
-              : [],
-          ),
+          ...numericColumns,
         ],
         rows,
         ...(columnWidths ? { columnWidths } : {}),
@@ -36680,6 +36701,31 @@ async function downloadAnalyticsPanel(
       ...detailTables,
     ],
   });
+}
+
+function getAnalyticsExcelCellValue(
+  row: Record<string, number | string>,
+  column: AnalyticsTableColumn,
+  displayValue: string,
+) {
+  const rawValue = getAnalyticsRawCellValue(row, column);
+  if (typeof rawValue !== "number" || !Number.isFinite(rawValue)) return displayValue;
+  // Combined displays such as "10\n(25%)" and percentage-only displays contain
+  // more than one semantic value. Keep those as text rather than silently
+  // choosing one part for the Excel cell.
+  if (/[\n/%]/.test(displayValue)) return displayValue;
+  return isAnalyticsMoneyColumn(column) ? toNumericLakhsValue(rawValue) : rawValue;
+}
+
+function isAnalyticsMoneyColumn(column: AnalyticsTableColumn) {
+  const key = column.key.toLowerCase();
+  const label = column.label.toLowerCase();
+  if (/count|contribution|percent|percentage|share/.test(key) || /count|percent|percentage|share/.test(label)) {
+    return false;
+  }
+  return /capital|revenue|amount|value|payment|cash|outgo|mer|allocation|expenditure|total/.test(
+    `${key} ${label}`,
+  );
 }
 
 function getAnalyticsExportColumnWidths(

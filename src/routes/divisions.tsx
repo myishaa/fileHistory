@@ -4,6 +4,7 @@ import { fetchFilesForYear, store, type FileRecord, useDivisions, useSettings } 
 import { Building2, Pencil, Trash2, Plus, X, Check } from "lucide-react";
 import { requestDeletionPassword } from "@/lib/delete-password";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
+import { ClearableInput } from "@/components/clearable-input";
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
 
 export const Route = createFileRoute("/divisions")({
@@ -58,15 +59,17 @@ function DivisionsPage() {
         <h2 className="text-sm font-semibold mb-1">Add a division</h2>
         <p className="text-xs text-muted-foreground mb-4">Create departments to categorise office files.</p>
         <div className="grid grid-cols-1 md:grid-cols-[1fr_2fr_auto] gap-3">
-          <input
+          <ClearableInput
             value={name}
             onChange={(e) => setName(e.target.value)}
+            onClear={() => setName("")}
             placeholder="Division name"
             className="h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
-          <input
+          <ClearableInput
             value={code}
             onChange={(e) => setCode(e.target.value)}
+            onClear={() => setCode("")}
             placeholder="Division code"
             className="h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
@@ -91,9 +94,10 @@ function DivisionsPage() {
                     <Building2 className="size-5" />
                   </div>
                   {isEditing ? (
-                    <input
+                    <ClearableInput
                       value={editName}
                       onChange={(e) => setEditName(e.target.value)}
+                      onClear={() => setEditName("")}
                       className="h-8 px-2 rounded-md border border-input bg-background text-sm"
                     />
                   ) : (
@@ -152,9 +156,10 @@ function DivisionsPage() {
               </div>
               <div className="mt-4">
                 {isEditing ? (
-                  <input
+                  <ClearableInput
                     value={editCode}
                     onChange={(e) => setEditCode(e.target.value)}
+                    onClear={() => setEditCode("")}
                     placeholder="Division code"
                     className="w-full h-9 px-2 rounded-md border border-input bg-background text-sm"
                   />

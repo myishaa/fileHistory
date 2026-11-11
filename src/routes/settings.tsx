@@ -22,6 +22,8 @@ import {
 import { CompactTableText } from "@/components/compact-table-text";
 import { showAppAlert, showAppConfirm, showAppPrompt } from "@/components/app-dialog";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
+import { PasswordInput } from "@/components/password-input";
+import { ClearableInput } from "@/components/clearable-input";
 import { QuickAccessSettings } from "@/components/quick-access";
 import { QuickEntryExcelSettings } from "@/components/quick-entry-excel";
 import { chartColorOptions } from "@/lib/chart-colors";
@@ -648,8 +650,9 @@ const settingsSectionHelpers = {
     "Creates an encrypted database backup (.rbk) for emergency recovery.",
     "Only Administrators can create or restore protected backups; backup files cannot be deleted from this application.",
     "Restoring requires both the database backup's encryption password and the separately configured Upload password.",
-    "To change an existing Upload password, verify the current password first. The replacement fields remain disabled until verification succeeds, and a wrong current password cannot save the replacement.",
-    "If the Upload password is forgotten, use Forgot Upload password? and enter the separately configured six-digit Recovery PIN. If both are forgotten, a server/database administrator must recover the account.",
+    "Upload Settings has separate workflows: first-time setup, change Upload password, change Recovery PIN, and forgotten-password recovery.",
+    "To change the Upload password or Recovery PIN, complete Step 1 by verifying the current Upload password. Changing the Upload password does not change the Recovery PIN.",
+    "If the Upload password is forgotten, use Step 2C with the separately configured six-digit Recovery PIN. If both are forgotten, a server/database administrator must recover the account.",
     "The full recovery package also captures PostgreSQL database data, PostgreSQL roles/globals, configured external storage, and explicitly configured deployment files.",
     "Deployment secrets are included only when the server administrator explicitly configures RECORDKEEPER_BACKUP_SECRETS_FILE; otherwise transfer them through the organisation's secure secret-management process.",
     "Scheduled server backups run only when the On switch is enabled and the server-side encryption password and destination directory are configured.",
@@ -1218,13 +1221,15 @@ function ProtectedBackupSettings() {
   const [currentRestoreAuthorizationStatus, setCurrentRestoreAuthorizationStatus] = useState<
     "idle" | "checking" | "verified" | "invalid"
   >("idle");
-  const [restoreAuthorizationRecoveryOpen, setRestoreAuthorizationRecoveryOpen] = useState(false);
   const [restoreAuthorizationRecoveryPin, setRestoreAuthorizationRecoveryPin] = useState("");
   const [
     restoreAuthorizationRecoveryPinConfirmation,
     setRestoreAuthorizationRecoveryPinConfirmation,
   ] = useState("");
   const [recoveryPinInput, setRecoveryPinInput] = useState("");
+  const [recoveryPinStatus, setRecoveryPinStatus] = useState<
+    "idle" | "checking" | "verified" | "invalid"
+  >("idle");
   const [recoveryPassword, setRecoveryPassword] = useState("");
   const [recoveryConfirmation, setRecoveryConfirmation] = useState("");
   const [restoreAuthorizationPassword, setRestoreAuthorizationPassword] = useState("");
@@ -1244,6 +1249,8 @@ function ProtectedBackupSettings() {
     | "restore"
     | "fullRestore"
     | "restoreAuthorization"
+    | "changeRestoreAuthorizationPassword"
+    | "changeRestoreAuthorizationRecoveryPin"
     | "verifyCurrentRestoreAuthorization"
     | "recoverRestoreAuthorization"
     | "authorizeRestore"
@@ -1256,6 +1263,7 @@ function ProtectedBackupSettings() {
   const [scheduleDraft, setScheduleDraft] = useState<BackupScheduleSettings | null>(null);
   const scheduleRef = useRef<BackupScheduleSettings | null>(null);
   const scheduleDraftRef = useRef<BackupScheduleSettings | null>(null);
+  const [activeBackupTab, setActiveBackupTab] = useState("backup");
   const [backupStatus, setBackupStatus] = useState<BackupStatusPayload | null>(null);
   const [scheduleMessage, setScheduleMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
@@ -1270,20 +1278,26 @@ function ProtectedBackupSettings() {
   const restoreAuthorizationPasswordsMismatch =
     restoreAuthorizationConfirmation.length > 0 &&
     restoreAuthorizationPassword !== restoreAuthorizationConfirmation;
-  const restoreAuthorizationPasswordChangeRequested =
-    restoreAuthorizationPassword.length > 0 || restoreAuthorizationConfirmation.length > 0;
-  const restoreAuthorizationPasswordReady = backupStatus?.restoreAuthorizationConfigured
-    ? !restoreAuthorizationPasswordChangeRequested ||
-      (restoreAuthorizationPassword.length >= 8 && restoreAuthorizationPasswordsMatch)
-    : restoreAuthorizationPassword.length >= 8 && restoreAuthorizationPasswordsMatch;
   const backupPasswordReady = password.length >= 8 && backupPasswordsMatch;
-  const restoreAuthorizationReady =
-    restoreAuthorizationPasswordReady &&
-    restoreAuthorizationRecoveryPin.length === 6 &&
-    /^\d{6}$/.test(restoreAuthorizationRecoveryPin) &&
-    restoreAuthorizationRecoveryPin === restoreAuthorizationRecoveryPinConfirmation &&
-    (!backupStatus?.restoreAuthorizationConfigured ||
-      currentRestoreAuthorizationStatus === "verified");
+  const restoreAuthorizationRecoveryPinReady = /^\d{6}$/.test(restoreAuthorizationRecoveryPin);
+  const restoreAuthorizationRecoveryPinMatch =
+    restoreAuthorizationRecoveryPinReady &&
+    /^\d{6}$/.test(restoreAuthorizationRecoveryPinConfirmation) &&
+    restoreAuthorizationRecoveryPin === restoreAuthorizationRecoveryPinConfirmation;
+  const initialRestoreAuthorizationReady =
+    !backupStatus?.restoreAuthorizationConfigured &&
+    restoreAuthorizationPassword.length >= 8 &&
+    restoreAuthorizationPasswordsMatch &&
+    restoreAuthorizationRecoveryPinMatch;
+  const changeRestoreAuthorizationPasswordReady =
+    Boolean(backupStatus?.restoreAuthorizationConfigured) &&
+    currentRestoreAuthorizationStatus === "verified" &&
+    restoreAuthorizationPassword.length >= 8 &&
+    restoreAuthorizationPasswordsMatch;
+  const changeRestoreAuthorizationRecoveryPinReady =
+    Boolean(backupStatus?.restoreAuthorizationConfigured) &&
+    currentRestoreAuthorizationStatus === "verified" &&
+    restoreAuthorizationRecoveryPinMatch;
   const hasRestoreAuthorizationDraft =
     restoreAuthorizationCurrentPassword.length > 0 ||
     restoreAuthorizationPassword.length > 0 ||
@@ -1300,6 +1314,26 @@ function ProtectedBackupSettings() {
     restoreAuthorizationRecoveryPinConfirmation.length > 0 &&
     restoreAuthorizationRecoveryPin !== restoreAuthorizationRecoveryPinConfirmation;
   const recoveryPinReady = /^\d{6}$/.test(recoveryPinInput);
+  const recoveryPinVerified = recoveryPinStatus === "verified";
+  const hasBackupSensitiveDraft = Boolean(
+    password ||
+      confirmPassword ||
+      restoreAuthorizationCurrentPassword ||
+      restoreAuthorizationPassword ||
+      restoreAuthorizationConfirmation ||
+      restoreAuthorizationRecoveryPin ||
+      restoreAuthorizationRecoveryPinConfirmation ||
+      recoveryPinInput ||
+      recoveryPassword ||
+      recoveryConfirmation ||
+      restoreAuthorizationInput ||
+      backupFilePassword ||
+      fullRestoreFilePassword ||
+      restoreFile ||
+      fullRestoreFile ||
+      restoreAuthorized ||
+      restoreDeploymentFiles,
+  );
 
   const passwordFieldClass = (invalid: boolean, valid: boolean) =>
     `h-9 w-full rounded-md border bg-background px-3 text-sm ${
@@ -1318,6 +1352,45 @@ function ProtectedBackupSettings() {
       return fallback;
     }
   };
+
+  useEffect(() => {
+    if (!recoveryPinReady) {
+      setRecoveryPinStatus("idle");
+      return;
+    }
+
+    let cancelled = false;
+    setRecoveryPinStatus("checking");
+    void (async () => {
+      try {
+        const response = await fetch(
+          `${apiBase}/api/settings/protected-backup/restore-authorization/recovery-pin/verify`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ recoveryPin: recoveryPinInput }),
+          },
+        );
+        if (!response.ok) {
+          throw new Error(await readError(response, "Recovery PIN verification failed."));
+        }
+        if (!cancelled) {
+          setRecoveryPinStatus("verified");
+          setMessage("Recovery PIN verified. You can create a replacement Upload password.");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setRecoveryPinStatus("invalid");
+          setMessage(error instanceof Error ? error.message : "Recovery PIN verification failed.");
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiBase, recoveryPinInput, recoveryPinReady]);
 
   const loadBackupStatus = useCallback(async () => {
     try {
@@ -1387,13 +1460,57 @@ function ProtectedBackupSettings() {
     window.location.reload();
   };
 
+  const resetRestoreAuthorizationPasswordDraft = () => {
+    setRestoreAuthorizationPassword("");
+    setRestoreAuthorizationConfirmation("");
+  };
+
+  const resetRestoreAuthorizationRecoveryPinDraft = () => {
+    setRestoreAuthorizationRecoveryPin("");
+    setRestoreAuthorizationRecoveryPinConfirmation("");
+  };
+
   const resetRestoreAuthorizationDraft = () => {
     setRestoreAuthorizationCurrentPassword("");
     setCurrentRestoreAuthorizationStatus("idle");
-    setRestoreAuthorizationPassword("");
-    setRestoreAuthorizationConfirmation("");
-    setRestoreAuthorizationRecoveryPin("");
-    setRestoreAuthorizationRecoveryPinConfirmation("");
+    resetRestoreAuthorizationPasswordDraft();
+    resetRestoreAuthorizationRecoveryPinDraft();
+  };
+
+  const clearBackupSensitiveState = () => {
+    setPassword("");
+    setConfirmPassword("");
+    resetRestoreAuthorizationDraft();
+    setRecoveryPinInput("");
+    setRecoveryPinStatus("idle");
+    setRecoveryPassword("");
+    setRecoveryConfirmation("");
+    setRestoreAuthorizationInput("");
+    setBackupFilePassword("");
+    setFullRestoreFilePassword("");
+    setRestoreFile(null);
+    setFullRestoreFile(null);
+    setRestoreAuthorized(false);
+    setRestoreDeploymentFiles(false);
+    if (backupFileInputRef.current) backupFileInputRef.current.value = "";
+    if (fullRestoreFileInputRef.current) fullRestoreFileInputRef.current.value = "";
+  };
+
+  const handleBackupTabChange = async (value: string) => {
+    if (value === activeBackupTab) return;
+    if (hasAnyUnsavedChanges() || hasBackupSensitiveDraft) {
+      const confirmed = await showAppConfirm(
+        "You have unsaved changes. Leave this Protected Backup tab without saving?",
+      );
+      if (!confirmed) return;
+      cancelScheduleDraftRef.current();
+      draft?.setLocalDirty?.(false);
+    }
+    clearBackupSensitiveState();
+    setMessage("");
+    setScheduleMessage("");
+    setStatusMessage("");
+    setActiveBackupTab(value);
   };
 
   const verifyCurrentRestoreAuthorization = async () => {
@@ -1419,7 +1536,7 @@ function ProtectedBackupSettings() {
         throw new Error(await readError(response, "Current Upload password is incorrect."));
       }
       setCurrentRestoreAuthorizationStatus("verified");
-      setMessage("Current Upload password verified. You may enter a replacement.");
+      setMessage("Current Upload password verified. Choose the activity you want to complete below.");
     } catch (error) {
       setCurrentRestoreAuthorizationStatus("invalid");
       setMessage(error instanceof Error ? error.message : "Current Upload password is incorrect.");
@@ -1429,8 +1546,12 @@ function ProtectedBackupSettings() {
   };
 
   const recoverRestoreAuthorization = async () => {
-    if (!recoveryPinReady) {
-      setMessage("Enter the six-digit numeric Recovery PIN first.");
+    if (!recoveryPinVerified) {
+      setMessage(
+        recoveryPinReady
+          ? "Verify the Recovery PIN before creating a replacement password."
+          : "Enter the six-digit numeric Recovery PIN first.",
+      );
       return;
     }
     if (recoveryPassword.length < 8) {
@@ -1438,7 +1559,7 @@ function ProtectedBackupSettings() {
       return;
     }
     if (!recoveryPasswordsMatch) {
-      setMessage("Recovery PINs do not match.");
+      setMessage("Upload passwords do not match.");
       return;
     }
     if (
@@ -1471,7 +1592,6 @@ function ProtectedBackupSettings() {
       setRecoveryPinInput("");
       setRecoveryPassword("");
       setRecoveryConfirmation("");
-      setRestoreAuthorizationRecoveryOpen(false);
       setRestoreAuthorized(false);
       setMessage("Upload password reset successfully. Use the new password for future restores.");
       await loadBackupStatus();
@@ -1482,32 +1602,24 @@ function ProtectedBackupSettings() {
     }
   };
 
-  const saveRestoreAuthorization = async () => {
-    if (
-      backupStatus?.restoreAuthorizationConfigured &&
-      currentRestoreAuthorizationStatus !== "verified"
-    ) {
-      setMessage("Verify the current Upload password before changing it.");
+  const initializeRestoreAuthorization = async () => {
+    if (backupStatus?.restoreAuthorizationConfigured) {
+      setMessage("The Upload password is already set. Use the change workflows below.");
       return;
     }
-    if (
-      !backupStatus?.restoreAuthorizationConfigured ||
-      restoreAuthorizationPasswordChangeRequested
-    ) {
-      if (restoreAuthorizationPassword.length < 8) {
-        setMessage("Use an Upload password with at least 8 characters.");
-        return;
-      }
-      if (restoreAuthorizationPassword !== restoreAuthorizationConfirmation) {
-        setMessage("Upload passwords do not match.");
-        return;
-      }
+    if (restoreAuthorizationPassword.length < 8) {
+      setMessage("Use an Upload password with at least 8 characters.");
+      return;
     }
-    if (!/^\d{6}$/.test(restoreAuthorizationRecoveryPin)) {
+    if (!restoreAuthorizationPasswordsMatch) {
+      setMessage("Upload passwords do not match.");
+      return;
+    }
+    if (!restoreAuthorizationRecoveryPinReady) {
       setMessage("Use exactly six numeric digits for the Recovery PIN.");
       return;
     }
-    if (restoreAuthorizationRecoveryPin !== restoreAuthorizationRecoveryPinConfirmation) {
+    if (!restoreAuthorizationRecoveryPinMatch) {
       setMessage("Recovery PINs do not match.");
       return;
     }
@@ -1515,41 +1627,137 @@ function ProtectedBackupSettings() {
     setRestoreAuthorized(false);
     setMessage("");
     try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore-authorization`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          password: restoreAuthorizationPassword,
+          confirmation: restoreAuthorizationConfirmation,
+          recoveryPin: restoreAuthorizationRecoveryPin,
+          recoveryPinConfirmation: restoreAuthorizationRecoveryPinConfirmation,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Upload password setup could not be saved."));
+      }
+      resetRestoreAuthorizationDraft();
+      setMessage("Upload password and Recovery PIN configured. You can now create or restore backups.");
+      await loadBackupStatus();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload password setup could not be saved.");
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const changeRestoreAuthorizationPassword = async () => {
+    if (!backupStatus?.restoreAuthorizationConfigured) {
+      setMessage("Set up the Upload password first.");
+      return;
+    }
+    if (currentRestoreAuthorizationStatus !== "verified") {
+      setMessage("Complete Step 1 by verifying the current Upload password.");
+      return;
+    }
+    if (restoreAuthorizationPassword.length < 8) {
+      setMessage("Use an Upload password with at least 8 characters.");
+      return;
+    }
+    if (!restoreAuthorizationPasswordsMatch) {
+      setMessage("Upload passwords do not match.");
+      return;
+    }
+    if (
+      !(await showAppConfirm("Change the Upload password? The old password will stop working.", {
+        destructive: true,
+      }))
+    ) {
+      return;
+    }
+    setBusy("changeRestoreAuthorizationPassword");
+    setRestoreAuthorized(false);
+    setMessage("");
+    try {
       const response = await fetch(
-        `${apiBase}/api/settings/protected-backup/restore-authorization`,
+        `${apiBase}/api/settings/protected-backup/restore-authorization/password`,
         {
           method: "PUT",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            currentPassword: backupStatus?.restoreAuthorizationConfigured
-              ? restoreAuthorizationCurrentPassword
-              : undefined,
-            password: restoreAuthorizationPassword || undefined,
-            confirmation: restoreAuthorizationConfirmation || undefined,
-            recoveryPin: restoreAuthorizationRecoveryPin,
-            recoveryPinConfirmation: restoreAuthorizationRecoveryPinConfirmation,
+            currentPassword: restoreAuthorizationCurrentPassword,
+            password: restoreAuthorizationPassword,
+            confirmation: restoreAuthorizationConfirmation,
           }),
         },
       );
       if (!response.ok) {
-        throw new Error(await readError(response, "Upload password could not be saved."));
+        throw new Error(await readError(response, "Upload password could not be changed."));
       }
       setRestoreAuthorizationCurrentPassword("");
       setCurrentRestoreAuthorizationStatus("idle");
       setRestoreAuthorizationPassword("");
       setRestoreAuthorizationConfirmation("");
-      setRestoreAuthorizationRecoveryPin("");
-      setRestoreAuthorizationRecoveryPinConfirmation("");
-      setMessage(
-        restoreAuthorizationPasswordChangeRequested
-          ? "Upload password and Recovery PIN saved securely."
-          : "Recovery PIN saved securely.",
-      );
+      setMessage("Upload password changed successfully. Use the new password for future restores.");
       await loadBackupStatus();
     } catch (error) {
       const errorMessage =
-        error instanceof Error ? error.message : "Upload password could not be saved.";
+        error instanceof Error ? error.message : "Upload password could not be changed.";
+      if (/current (?:restore authorization|upload) password is incorrect/i.test(errorMessage)) {
+        setCurrentRestoreAuthorizationStatus("invalid");
+      }
+      setMessage(errorMessage);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const changeRestoreAuthorizationRecoveryPin = async () => {
+    if (!backupStatus?.restoreAuthorizationConfigured) {
+      setMessage("Set up the Upload password first.");
+      return;
+    }
+    if (currentRestoreAuthorizationStatus !== "verified") {
+      setMessage("Complete Step 1 by verifying the current Upload password.");
+      return;
+    }
+    if (!restoreAuthorizationRecoveryPinReady) {
+      setMessage("Use exactly six numeric digits for the Recovery PIN.");
+      return;
+    }
+    if (!restoreAuthorizationRecoveryPinMatch) {
+      setMessage("Recovery PINs do not match.");
+      return;
+    }
+    if (!(await showAppConfirm("Change the Recovery PIN? The old PIN will stop working."))) {
+      return;
+    }
+    setBusy("changeRestoreAuthorizationRecoveryPin");
+    setMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/settings/protected-backup/restore-authorization`, {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          currentPassword: restoreAuthorizationCurrentPassword,
+          recoveryPin: restoreAuthorizationRecoveryPin,
+          recoveryPinConfirmation: restoreAuthorizationRecoveryPinConfirmation,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await readError(response, "Recovery PIN could not be changed."));
+      }
+      setRestoreAuthorizationCurrentPassword("");
+      setCurrentRestoreAuthorizationStatus("idle");
+      setRestoreAuthorizationRecoveryPin("");
+      setRestoreAuthorizationRecoveryPinConfirmation("");
+      setMessage("Recovery PIN changed successfully.");
+      await loadBackupStatus();
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Recovery PIN could not be changed.";
       if (/current (?:restore authorization|upload) password is incorrect/i.test(errorMessage)) {
         setCurrentRestoreAuthorizationStatus("invalid");
       }
@@ -1838,20 +2046,7 @@ function ProtectedBackupSettings() {
   };
 
   const closeProtectedBackupEditor = () => {
-    resetRestoreAuthorizationDraft();
-    setRestoreAuthorizationRecoveryOpen(false);
-    setRecoveryPinInput("");
-    setRecoveryPassword("");
-    setRecoveryConfirmation("");
-    setPassword("");
-    setConfirmPassword("");
-    setRestoreFile(null);
-    setBackupFilePassword("");
-    setRestoreAuthorizationInput("");
-    setRestoreAuthorized(false);
-    setFullRestoreFile(null);
-    setFullRestoreFilePassword("");
-    setRestoreDeploymentFiles(false);
+    clearBackupSensitiveState();
     scheduleDraftRef.current = schedule;
     setScheduleDraft(schedule);
     setMessage("");
@@ -1956,7 +2151,11 @@ function ProtectedBackupSettings() {
 
   return (
     <section className="protected-backup-settings min-w-0 w-full max-w-full rounded-md border border-border bg-secondary/20 p-4 text-[0.9375rem] shadow-sm [&_.text-xs]:text-sm">
-      <Tabs defaultValue="backup" className="mt-0">
+      <Tabs
+        value={activeBackupTab}
+        onValueChange={(value) => void handleBackupTabChange(value)}
+        className="mt-0"
+      >
         <div className="flex flex-col items-stretch gap-3 border-b border-border pb-4">
           <TabsList className="flex h-auto min-w-0 w-full flex-wrap justify-start gap-1 rounded-md border border-primary/30 bg-primary/5 p-1 shadow-sm">
             <TabsTrigger
@@ -2035,8 +2234,7 @@ function ProtectedBackupSettings() {
               <div className="protected-backup-action-grid grid min-w-0 w-full max-w-full grid-cols-1 items-end gap-x-4 gap-y-4 sm:grid-cols-2 2xl:grid-cols-4">
                 <label className="block min-w-0">
                   <span className="mb-1 block text-xs font-medium">Backup encryption password</span>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={password}
                     onChange={(event) => setPassword(event.target.value)}
                     placeholder="At least 8 characters"
@@ -2047,8 +2245,7 @@ function ProtectedBackupSettings() {
                   <span className="mb-1 block text-xs font-medium">
                     Confirm encryption password
                   </span>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={confirmPassword}
                     onChange={(event) => setConfirmPassword(event.target.value)}
                     placeholder="Re-enter password"
@@ -2090,341 +2287,523 @@ function ProtectedBackupSettings() {
             </div>
           </TabsContent>
           <TabsContent value="password" className="mt-5 space-y-5">
-            <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-5 shadow-sm">
-              <div className="mb-4">
-                <h3 className="text-sm font-semibold text-foreground">
-                  Upload password and Recovery PIN
-                </h3>
+            {!backupStatus ? (
+              <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-5 text-sm text-muted-foreground">
+                Loading Upload Settings...
               </div>
-              <div className="col-span-full grid grid-cols-1 items-start gap-x-4 gap-y-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.2fr)_auto_minmax(0,1.2fr)_minmax(0,1.2fr)]">
-                {backupStatus?.restoreAuthorizationConfigured ? (
-                  <label className="block min-w-0">
-                    <span className="mb-1 block min-h-[1.25em] text-xs font-medium">
-                      Current Upload password
-                    </span>
-                    <input
-                      type="password"
-                      value={restoreAuthorizationCurrentPassword}
-                      onChange={(event) => {
-                        setRestoreAuthorizationCurrentPassword(event.target.value);
-                        setCurrentRestoreAuthorizationStatus("idle");
-                        setMessage("");
-                      }}
-                      placeholder="Enter the saved password"
-                      aria-invalid={currentRestoreAuthorizationStatus === "invalid"}
-                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setRestoreAuthorizationRecoveryOpen((open) => !open);
-                        setMessage("");
-                      }}
-                      disabled={Boolean(busy)}
-                      className="mt-2 block whitespace-nowrap text-xs font-medium text-primary underline-offset-2 hover:underline disabled:opacity-50"
-                    >
-                      {restoreAuthorizationRecoveryOpen
-                        ? "Hide forgotten-password recovery"
-                        : "Forgot Upload password?"}
-                    </button>
-                  </label>
-                ) : null}
-                {backupStatus?.restoreAuthorizationConfigured ? (
-                  <div className="min-w-0">
+            ) : backupStatus.restoreAuthorizationConfigured ? (
+              <>
+                <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-5 shadow-sm">
+                  <div className="flex flex-wrap items-start justify-between gap-4">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                        Step 1
+                      </p>
+                      <h3 className="mt-1 text-base font-semibold text-foreground">
+                        Verify your current Upload password
+                      </h3>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Required before changing the Upload password or Recovery PIN.
+                      </p>
+                    </div>
                     <span
-                      aria-hidden="true"
-                      className="invisible mb-1 hidden min-h-[1.25em] text-xs sm:block"
+                      className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 text-sm font-medium ${
+                        currentRestoreAuthorizationStatus === "verified"
+                          ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
+                          : "border-amber-500/30 bg-amber-500/10 text-foreground"
+                      }`}
+                      role="status"
                     >
-                      Current Upload password
+                      Current password: {currentRestoreAuthorizationStatus === "verified" ? "Verified" : "Required"}
                     </span>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 items-end gap-4 sm:grid-cols-[minmax(0,28rem)_auto]">
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">Current Upload password</span>
+                      <PasswordInput
+                        value={restoreAuthorizationCurrentPassword}
+                        onChange={(event) => {
+                          setRestoreAuthorizationCurrentPassword(event.target.value);
+                          setCurrentRestoreAuthorizationStatus("idle");
+                          setMessage("");
+                        }}
+                        placeholder="Enter the saved password"
+                        aria-invalid={currentRestoreAuthorizationStatus === "invalid"}
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      />
+                    </label>
                     <button
                       type="button"
                       onClick={() => void verifyCurrentRestoreAuthorization()}
-                      disabled={Boolean(busy) || restoreAuthorizationCurrentPassword.length < 8}
-                      className="inline-flex min-h-9 items-center justify-center whitespace-nowrap rounded-md border border-primary/30 bg-primary/10 px-3 text-xs font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                      disabled={
+                        Boolean(busy) || restoreAuthorizationCurrentPassword.length < 8
+                      }
+                      className="inline-flex h-10 items-center justify-center whitespace-nowrap rounded-md border border-primary/30 bg-primary/10 px-4 text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
                     >
                       {busy === "verifyCurrentRestoreAuthorization"
                         ? "Verifying..."
                         : "Verify current password"}
                     </button>
                   </div>
-                ) : null}
-                {currentRestoreAuthorizationStatus === "verified" ? (
-                  <span
-                    className="col-span-full text-xs text-emerald-700 dark:text-emerald-300"
-                    role="status"
-                  >
-                    Current password verified.
-                  </span>
-                ) : currentRestoreAuthorizationStatus === "invalid" ? (
-                  <span className="col-span-full text-xs text-destructive" role="alert">
-                    Current password did not match.
-                  </span>
-                ) : null}
-                <label className="block min-w-0">
-                  <span className="mb-1 block min-h-[1.25em] text-xs font-medium">
-                    New upload password
-                  </span>
-                  <input
-                    type="password"
-                    value={restoreAuthorizationPassword}
-                    onChange={(event) => setRestoreAuthorizationPassword(event.target.value)}
-                    placeholder="At least 8 characters"
-                    disabled={
-                      Boolean(backupStatus?.restoreAuthorizationConfigured) &&
-                      currentRestoreAuthorizationStatus !== "verified"
-                    }
-                    className={passwordFieldClass(
-                      restoreAuthorizationPasswordsMismatch,
-                      restoreAuthorizationPasswordsMatch,
-                    )}
-                  />
-                </label>
-                <label className="block min-w-0">
-                  <span className="mb-1 block min-h-[1.25em] text-xs font-medium">
-                    Confirm upload password
-                  </span>
-                  <input
-                    type="password"
-                    value={restoreAuthorizationConfirmation}
-                    onChange={(event) => setRestoreAuthorizationConfirmation(event.target.value)}
-                    placeholder="Re-enter authorization"
-                    aria-invalid={restoreAuthorizationPasswordsMismatch}
-                    disabled={
-                      Boolean(backupStatus?.restoreAuthorizationConfigured) &&
-                      currentRestoreAuthorizationStatus !== "verified"
-                    }
-                    className={passwordFieldClass(
-                      restoreAuthorizationPasswordsMismatch,
-                      restoreAuthorizationPasswordsMatch,
-                    )}
-                  />
-                  {restoreAuthorizationPasswordsMismatch ? (
-                    <p className="mt-1 text-xs text-destructive" role="alert">
-                      Upload passwords do not match.
+                  {currentRestoreAuthorizationStatus === "verified" ? (
+                    <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                      Verified. You can now choose either change workflow below.
                     </p>
-                  ) : restoreAuthorizationPasswordsMatch ? (
-                    <p
-                      className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
-                      role="status"
-                    >
-                      Upload passwords match.
+                  ) : currentRestoreAuthorizationStatus === "invalid" ? (
+                    <p className="mt-3 text-sm text-destructive" role="alert">
+                      Current password did not match.
                     </p>
                   ) : null}
-                </label>
-                {restoreAuthorizationRecoveryOpen ? (
-                  <div className="col-span-full rounded-md border border-amber-600/30 bg-amber-500/5 p-4">
-                    <h5 className="text-sm font-semibold">Recover a forgotten Upload password</h5>
-                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      Enter the configured Recovery PIN to set a new Upload password.
+                </div>
+
+                <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-5 shadow-sm">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                      Step 2A
                     </p>
-                    <div className="mt-3 grid grid-cols-1 items-start gap-4 sm:grid-cols-3">
-                      <label className="block min-w-0">
-                        <span className="mb-1 block text-xs font-medium">Recovery PIN</span>
-                        <input
-                          type="password"
-                          value={recoveryPinInput}
-                          onChange={(event) =>
-                            setRecoveryPinInput(event.target.value.replace(/\D/g, "").slice(0, 6))
-                          }
-                          placeholder="Enter PIN"
-                          inputMode="numeric"
-                          pattern="[0-9]{6}"
-                          maxLength={6}
-                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                        />
-                      </label>
-                      <label className="block min-w-0">
-                        <span className="mb-1 block text-xs font-medium">New Upload password</span>
-                        <input
-                          type="password"
-                          value={recoveryPassword}
-                          onChange={(event) => setRecoveryPassword(event.target.value)}
-                          placeholder="At least 8 characters"
-                          className={passwordFieldClass(
-                            recoveryPasswordsMismatch,
-                            recoveryPasswordsMatch,
-                          )}
-                        />
-                      </label>
-                      <label className="block min-w-0">
-                        <span className="mb-1 block text-xs font-medium">
-                          Confirm new Upload password
-                        </span>
-                        <input
-                          type="password"
-                          value={recoveryConfirmation}
-                          onChange={(event) => setRecoveryConfirmation(event.target.value)}
-                          placeholder="Re-enter new password"
-                          aria-invalid={recoveryPasswordsMismatch}
-                          className={passwordFieldClass(
-                            recoveryPasswordsMismatch,
-                            recoveryPasswordsMatch,
-                          )}
-                        />
-                        {recoveryPasswordsMismatch ? (
-                          <p className="mt-1 text-xs text-destructive" role="alert">
-                            Recovery PINs do not match.
-                          </p>
-                        ) : recoveryPasswordsMatch ? (
-                          <p
-                            className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
-                            role="status"
-                          >
-                            Recovery PINs match.
-                          </p>
-                        ) : null}
-                      </label>
-                    </div>
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void recoverRestoreAuthorization()}
-                        disabled={Boolean(busy) || !recoveryPinReady || !recoveryPasswordsMatch}
-                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-amber-700/40 bg-amber-600 px-3 text-sm font-medium text-white disabled:opacity-50"
-                      >
-                        {busy === "recoverRestoreAuthorization"
-                          ? "Resetting..."
-                          : "Reset Upload password"}
-                      </button>
-                      <span className="text-xs text-muted-foreground">
-                        This invalidates the old Upload password immediately.
+                    <h3 className="mt-1 text-base font-semibold text-foreground">
+                      Change Upload password
+                    </h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Changes only the password used to authorize database restores. Your Recovery PIN stays the same.
+                    </p>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">New Upload password</span>
+                      <PasswordInput
+                        value={restoreAuthorizationPassword}
+                        onChange={(event) => setRestoreAuthorizationPassword(event.target.value)}
+                        placeholder="At least 8 characters"
+                        disabled={currentRestoreAuthorizationStatus !== "verified"}
+                        className={passwordFieldClass(
+                          restoreAuthorizationPasswordsMismatch,
+                          restoreAuthorizationPasswordsMatch,
+                        )}
+                      />
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">
+                        Confirm new Upload password
                       </span>
-                    </div>
+                      <PasswordInput
+                        value={restoreAuthorizationConfirmation}
+                        onChange={(event) => setRestoreAuthorizationConfirmation(event.target.value)}
+                        placeholder="Re-enter new password"
+                        aria-invalid={restoreAuthorizationPasswordsMismatch}
+                        disabled={currentRestoreAuthorizationStatus !== "verified"}
+                        className={passwordFieldClass(
+                          restoreAuthorizationPasswordsMismatch,
+                          restoreAuthorizationPasswordsMatch,
+                        )}
+                      />
+                      {restoreAuthorizationPasswordsMismatch ? (
+                        <p className="mt-1 text-sm text-destructive" role="alert">
+                          Upload passwords do not match.
+                        </p>
+                      ) : restoreAuthorizationPasswordsMatch ? (
+                        <p className="mt-1 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                          Upload passwords match.
+                        </p>
+                      ) : null}
+                    </label>
                   </div>
-                ) : null}
-                <div className="col-span-full grid grid-cols-1 items-start gap-4 border-t border-border pt-4 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
-                  <div className="col-span-full">
-                    <h5 className="text-sm font-semibold">Recovery PIN</h5>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Recovery PIN is used to reset forgotten Upload password.
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void changeRestoreAuthorizationPassword()}
+                      disabled={Boolean(busy) || !changeRestoreAuthorizationPasswordReady}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                    >
+                      <Save className="size-4" />
+                      {busy === "changeRestoreAuthorizationPassword"
+                        ? "Changing..."
+                        : "Change Upload password"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetRestoreAuthorizationPasswordDraft}
+                      disabled={Boolean(busy) || (!restoreAuthorizationPassword && !restoreAuthorizationConfirmation)}
+                      className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      Clear
+                    </button>
+                    {currentRestoreAuthorizationStatus !== "verified" ? (
+                      <span className="text-sm text-muted-foreground">
+                        Verify the current password in Step 1 first.
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-5 shadow-sm">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                      Step 2B
+                    </p>
+                    <h3 className="mt-1 text-base font-semibold text-foreground">
+                      Set or change Recovery PIN
+                    </h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      The Recovery PIN is used only when the Upload password is forgotten. Changing it does not change the Upload password.
                     </p>
                   </div>
-                  <label className="block min-w-0">
-                    <span className="sr-only">Recovery PIN</span>
-                    <input
-                      type="password"
-                      value={restoreAuthorizationRecoveryPin}
-                      onChange={(event) =>
-                        setRestoreAuthorizationRecoveryPin(
-                          event.target.value.replace(/\D/g, "").slice(0, 6),
-                        )
-                      }
-                      placeholder="Enter a six-digit numeric PIN"
-                      inputMode="numeric"
-                      pattern="[0-9]{6}"
-                      maxLength={6}
-                      aria-invalid={restoreAuthorizationRecoveryPinMismatch}
-                      className={passwordFieldClass(
-                        restoreAuthorizationRecoveryPinMismatch ||
-                          (restoreAuthorizationRecoveryPin.length > 0 &&
-                            !/^\d{6}$/.test(restoreAuthorizationRecoveryPin)),
-                        restoreAuthorizationRecoveryPin.length === 6 &&
-                          /^\d{6}$/.test(restoreAuthorizationRecoveryPin),
-                      )}
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">New Recovery PIN</span>
+                      <PasswordInput
+                        value={restoreAuthorizationRecoveryPin}
+                        onChange={(event) =>
+                          setRestoreAuthorizationRecoveryPin(
+                            event.target.value.replace(/\D/g, "").slice(0, 6),
+                          )
+                        }
+                        placeholder="Six numeric digits"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        disabled={currentRestoreAuthorizationStatus !== "verified"}
+                        className={passwordFieldClass(
+                          restoreAuthorizationRecoveryPinMismatch ||
+                            (restoreAuthorizationRecoveryPin.length > 0 &&
+                              !restoreAuthorizationRecoveryPinReady),
+                          restoreAuthorizationRecoveryPinReady,
+                        )}
+                      />
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">Confirm Recovery PIN</span>
+                      <PasswordInput
+                        value={restoreAuthorizationRecoveryPinConfirmation}
+                        onChange={(event) =>
+                          setRestoreAuthorizationRecoveryPinConfirmation(
+                            event.target.value.replace(/\D/g, "").slice(0, 6),
+                          )
+                        }
+                        placeholder="Re-enter PIN"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        aria-invalid={restoreAuthorizationRecoveryPinMismatch}
+                        disabled={currentRestoreAuthorizationStatus !== "verified"}
+                        className={passwordFieldClass(
+                          restoreAuthorizationRecoveryPinMismatch,
+                          restoreAuthorizationRecoveryPinMatch,
+                        )}
+                      />
+                      {restoreAuthorizationRecoveryPinMismatch ? (
+                        <p className="mt-1 text-sm text-destructive" role="alert">
+                          Recovery PINs do not match.
+                        </p>
+                      ) : restoreAuthorizationRecoveryPinMatch ? (
+                        <p className="mt-1 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                          Recovery PINs match.
+                        </p>
+                      ) : null}
+                    </label>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void changeRestoreAuthorizationRecoveryPin()}
+                      disabled={Boolean(busy) || !changeRestoreAuthorizationRecoveryPinReady}
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                    >
+                      <Save className="size-4" />
+                      {busy === "changeRestoreAuthorizationRecoveryPin"
+                        ? "Changing..."
+                        : backupStatus.restoreAuthorizationRecoveryConfigured
+                          ? "Change Recovery PIN"
+                          : "Save Recovery PIN"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={resetRestoreAuthorizationRecoveryPinDraft}
+                      disabled={Boolean(busy) || !restoreAuthorizationRecoveryPin}
+                      className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      Clear
+                    </button>
+                    {currentRestoreAuthorizationStatus !== "verified" ? (
+                      <span className="text-sm text-muted-foreground">
+                        Verify the current password in Step 1 first.
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-5 shadow-sm">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300">
+                      Step 2C
+                    </p>
+                    <h3 className="mt-1 text-base font-semibold text-foreground">
+                      Forgot Upload password?
+                    </h3>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Use the Recovery PIN to create a replacement password without the old password.
+                    </p>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">Recovery PIN</span>
+                      <PasswordInput
+                        value={recoveryPinInput}
+                        onChange={(event) => {
+                          const nextPin = event.target.value.replace(/\D/g, "").slice(0, 6);
+                          setRecoveryPinInput(nextPin);
+                          setRecoveryPinStatus("idle");
+                          setRecoveryPassword("");
+                          setRecoveryConfirmation("");
+                          setMessage("");
+                        }}
+                        placeholder="Six numeric digits"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        aria-invalid={recoveryPinStatus === "invalid"}
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      />
+                      {recoveryPinStatus === "checking" ? (
+                        <p className="mt-1 text-sm text-muted-foreground" role="status">
+                          Verifying Recovery PIN...
+                        </p>
+                      ) : recoveryPinStatus === "verified" ? (
+                        <p className="mt-1 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                          Recovery PIN verified.
+                        </p>
+                      ) : recoveryPinStatus === "invalid" ? (
+                        <p className="mt-1 text-sm text-destructive" role="alert">
+                          Recovery PIN is incorrect.
+                        </p>
+                      ) : null}
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">New Upload password</span>
+                      <PasswordInput
+                        value={recoveryPassword}
+                        onChange={(event) => setRecoveryPassword(event.target.value)}
+                        placeholder="At least 8 characters"
+                        disabled={!recoveryPinVerified}
+                        className={passwordFieldClass(
+                          recoveryPasswordsMismatch,
+                          recoveryPasswordsMatch,
+                        )}
+                      />
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">
+                        Confirm new Upload password
+                      </span>
+                      <PasswordInput
+                        value={recoveryConfirmation}
+                        onChange={(event) => setRecoveryConfirmation(event.target.value)}
+                        placeholder="Re-enter new password"
+                        disabled={!recoveryPinVerified}
+                        aria-invalid={recoveryPasswordsMismatch}
+                        className={passwordFieldClass(
+                          recoveryPasswordsMismatch,
+                          recoveryPasswordsMatch,
+                        )}
+                      />
+                      {recoveryPasswordsMismatch ? (
+                        <p className="mt-1 text-sm text-destructive" role="alert">
+                          Upload passwords do not match.
+                        </p>
+                      ) : recoveryPasswordsMatch ? (
+                        <p className="mt-1 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                          Upload passwords match.
+                        </p>
+                      ) : null}
+                    </label>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void recoverRestoreAuthorization()}
                       disabled={
-                        Boolean(backupStatus?.restoreAuthorizationConfigured) &&
-                        currentRestoreAuthorizationStatus !== "verified"
+                        Boolean(busy) ||
+                        !backupStatus.restoreAuthorizationRecoveryConfigured ||
+                        !recoveryPinVerified ||
+                        !recoveryPasswordsMatch
                       }
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-amber-700/40 bg-amber-600 px-4 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      {busy === "recoverRestoreAuthorization"
+                        ? "Resetting..."
+                        : "Reset Upload password"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecoveryPinInput("");
+                        setRecoveryPinStatus("idle");
+                        setRecoveryPassword("");
+                        setRecoveryConfirmation("");
+                      }}
+                      disabled={Boolean(busy) || (!recoveryPinInput && !recoveryPassword && !recoveryConfirmation)}
+                      className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                    >
+                      Clear
+                    </button>
+                    {!backupStatus.restoreAuthorizationRecoveryConfigured ? (
+                      <span className="text-sm text-muted-foreground">
+                        Set a Recovery PIN in Step 2B before using this workflow.
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="rounded-lg border border-violet-500/30 bg-violet-500/5 p-5 shadow-sm">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                    First-time setup
+                  </p>
+                  <h3 className="mt-1 text-base font-semibold text-foreground">
+                    Set up Upload password and Recovery PIN
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    This is required before anyone can authorize a database restore. Create both credentials together.
+                  </p>
+                </div>
+                <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <label className="block min-w-0">
+                    <span className="mb-1 block text-sm font-medium">Upload password</span>
+                    <PasswordInput
+                      value={restoreAuthorizationPassword}
+                      onChange={(event) => setRestoreAuthorizationPassword(event.target.value)}
+                      placeholder="At least 8 characters"
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                     />
                   </label>
                   <label className="block min-w-0">
-                    <span className="sr-only">Confirm Recovery PIN</span>
-                    <input
-                      type="password"
-                      value={restoreAuthorizationRecoveryPinConfirmation}
-                      onChange={(event) =>
-                        setRestoreAuthorizationRecoveryPinConfirmation(
-                          event.target.value.replace(/\D/g, "").slice(0, 6),
-                        )
-                      }
-                      placeholder="Re-enter PIN"
-                      inputMode="numeric"
-                      pattern="[0-9]{6}"
-                      maxLength={6}
-                      aria-invalid={restoreAuthorizationRecoveryPinMismatch}
+                    <span className="mb-1 block text-sm font-medium">Confirm Upload password</span>
+                    <PasswordInput
+                      value={restoreAuthorizationConfirmation}
+                      onChange={(event) => setRestoreAuthorizationConfirmation(event.target.value)}
+                      placeholder="Re-enter password"
+                      aria-invalid={restoreAuthorizationPasswordsMismatch}
                       className={passwordFieldClass(
-                        restoreAuthorizationRecoveryPinMismatch,
-                        restoreAuthorizationRecoveryPin.length === 6 &&
-                          restoreAuthorizationRecoveryPinConfirmation.length === 6 &&
-                          restoreAuthorizationRecoveryPin ===
-                            restoreAuthorizationRecoveryPinConfirmation,
+                        restoreAuthorizationPasswordsMismatch,
+                        restoreAuthorizationPasswordsMatch,
                       )}
-                      disabled={
-                        Boolean(backupStatus?.restoreAuthorizationConfigured) &&
-                        currentRestoreAuthorizationStatus !== "verified"
-                      }
                     />
-                    {restoreAuthorizationRecoveryPinMismatch ? (
-                      <p className="mt-1 text-xs text-destructive" role="alert">
-                        Recovery PINs do not match.
+                    {restoreAuthorizationPasswordsMismatch ? (
+                      <p className="mt-1 text-sm text-destructive" role="alert">
+                        Upload passwords do not match.
                       </p>
-                    ) : restoreAuthorizationRecoveryPin.length === 6 &&
-                      restoreAuthorizationRecoveryPinConfirmation.length === 6 &&
-                      restoreAuthorizationRecoveryPin ===
-                        restoreAuthorizationRecoveryPinConfirmation ? (
-                      <p
-                        className="mt-1 text-xs text-emerald-700 dark:text-emerald-300"
-                        role="status"
-                      >
-                        Recovery PINs match.
+                    ) : restoreAuthorizationPasswordsMatch ? (
+                      <p className="mt-1 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                        Upload passwords match.
                       </p>
                     ) : null}
                   </label>
-                  <div className="min-w-0 self-end">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void saveRestoreAuthorization()}
-                        disabled={Boolean(busy) || !restoreAuthorizationReady}
-                        className="inline-flex h-10 w-64 max-w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-primary/30 bg-primary px-3 text-sm font-medium text-primary-foreground disabled:opacity-50"
-                      >
-                        <Save className="size-4" />
-                        {busy === "restoreAuthorization"
-                          ? "Saving..."
-                          : backupStatus?.restoreAuthorizationConfigured
-                            ? restoreAuthorizationPasswordChangeRequested
-                              ? "Change Upload password"
-                              : "Save Recovery PIN"
-                            : "Save Upload password"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={resetRestoreAuthorizationDraft}
-                        disabled={Boolean(busy) || !hasRestoreAuthorizationDraft}
-                        className="h-10 rounded-md border border-border bg-background px-3 text-sm font-medium hover:bg-accent disabled:opacity-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
+                </div>
+                <div className="mt-5 border-t border-border pt-4">
+                  <h4 className="text-base font-semibold text-foreground">Recovery PIN</h4>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Keep this six-digit PIN somewhere safe. It is the backup way to reset a forgotten Upload password.
+                  </p>
+                  <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">Recovery PIN</span>
+                      <PasswordInput
+                        value={restoreAuthorizationRecoveryPin}
+                        onChange={(event) =>
+                          setRestoreAuthorizationRecoveryPin(
+                            event.target.value.replace(/\D/g, "").slice(0, 6),
+                          )
+                        }
+                        placeholder="Six numeric digits"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        className={passwordFieldClass(
+                          restoreAuthorizationRecoveryPin.length > 0 &&
+                            !restoreAuthorizationRecoveryPinReady,
+                          restoreAuthorizationRecoveryPinReady,
+                        )}
+                      />
+                    </label>
+                    <label className="block min-w-0">
+                      <span className="mb-1 block text-sm font-medium">Confirm Recovery PIN</span>
+                      <PasswordInput
+                        value={restoreAuthorizationRecoveryPinConfirmation}
+                        onChange={(event) =>
+                          setRestoreAuthorizationRecoveryPinConfirmation(
+                            event.target.value.replace(/\D/g, "").slice(0, 6),
+                          )
+                        }
+                        placeholder="Re-enter PIN"
+                        inputMode="numeric"
+                        pattern="[0-9]{6}"
+                        maxLength={6}
+                        aria-invalid={restoreAuthorizationRecoveryPinMismatch}
+                        className={passwordFieldClass(
+                          restoreAuthorizationRecoveryPinMismatch,
+                          restoreAuthorizationRecoveryPinMatch,
+                        )}
+                      />
+                      {restoreAuthorizationRecoveryPinMismatch ? (
+                        <p className="mt-1 text-sm text-destructive" role="alert">
+                          Recovery PINs do not match.
+                        </p>
+                      ) : restoreAuthorizationRecoveryPinMatch ? (
+                        <p className="mt-1 text-sm text-emerald-700 dark:text-emerald-300" role="status">
+                          Recovery PINs match.
+                        </p>
+                      ) : null}
+                    </label>
                   </div>
                 </div>
-                <span className="col-span-full flex min-h-10 flex-wrap items-center gap-2 text-xs">
-                  <span
-                    className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 font-medium ${
-                      backupStatus?.restoreAuthorizationConfigured
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
-                        : "border-amber-500/30 bg-amber-500/10 text-foreground"
-                    }`}
-                    role="status"
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void initializeRestoreAuthorization()}
+                    disabled={Boolean(busy) || !initialRestoreAuthorizationReady}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-4 text-sm font-medium text-primary-foreground disabled:opacity-50"
                   >
-                    Upload password:{" "}
-                    {backupStatus?.restoreAuthorizationConfigured ? "Set" : "Not set"}
-                  </span>
-                  <span
-                    className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 font-medium ${
-                      backupStatus?.restoreAuthorizationRecoveryConfigured
-                        ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
-                        : "border-amber-500/30 bg-amber-500/10 text-foreground"
-                    }`}
-                    role="status"
+                    <Save className="size-4" />
+                    {busy === "restoreAuthorization"
+                      ? "Saving..."
+                      : "Set Upload password and Recovery PIN"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resetRestoreAuthorizationDraft}
+                    disabled={Boolean(busy) || !hasRestoreAuthorizationDraft}
+                    className="h-10 rounded-md border border-border bg-background px-4 text-sm font-medium hover:bg-accent disabled:opacity-50"
                   >
-                    Recovery PIN:{" "}
-                    {backupStatus?.restoreAuthorizationRecoveryConfigured ? "Set" : "Not set"}
-                  </span>
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
+            {backupStatus ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span
+                  className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 font-medium ${
+                    backupStatus.restoreAuthorizationConfigured
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
+                      : "border-amber-500/30 bg-amber-500/10 text-foreground"
+                  }`}
+                  role="status"
+                >
+                  Upload password: {backupStatus.restoreAuthorizationConfigured ? "Set" : "Not set"}
+                </span>
+                <span
+                  className={`inline-flex min-h-8 items-center rounded-md border px-3 py-1 font-medium ${
+                    backupStatus.restoreAuthorizationRecoveryConfigured
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-foreground"
+                      : "border-amber-500/30 bg-amber-500/10 text-foreground"
+                  }`}
+                  role="status"
+                >
+                  Recovery PIN: {backupStatus.restoreAuthorizationRecoveryConfigured ? "Set" : "Not set"}
                 </span>
               </div>
-            </div>
+            ) : null}
           </TabsContent>
           <TabsContent value="backup" className="mt-5 space-y-5">
             {backupStatus ? (
@@ -2453,104 +2832,15 @@ function ProtectedBackupSettings() {
                 <h3 className="text-sm font-semibold text-foreground">
                   Upload &amp; restore database backup (.rbk)
                 </h3>
-              </div>
-              <div className="grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-3">
-                <input
-                  ref={backupFileInputRef}
-                  type="file"
-                  accept=".rbk,application/json"
-                  onChange={(event) => setRestoreFile(event.target.files?.[0] ?? null)}
-                  className="sr-only"
-                />
-                <div className="flex min-w-0 flex-wrap items-end gap-3">
-                  <label className="block min-w-0 flex-1">
-                    <span className="mb-1 block text-xs font-medium">Upload password</span>
-                    <input
-                      type="password"
-                      value={restoreAuthorizationInput}
-                      onChange={(event) => {
-                        setRestoreAuthorizationInput(event.target.value);
-                        setRestoreAuthorized(false);
-                      }}
-                      placeholder="Enter the configured Upload password"
-                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => void authorizeRestore()}
-                    disabled={Boolean(busy) || restoreAuthorizationInput.length < 8}
-                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
-                  >
-                    <Lock className="size-4" />
-                    {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
-                  </button>
-                </div>
-                <div className="flex min-w-0 flex-[1.2_1_20rem] flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => backupFileInputRef.current?.click()}
-                    disabled={Boolean(busy) || !restoreAuthorized}
-                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-center text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
-                  >
-                    <Upload className="size-4" />
-                    Select database backup (.rbk)
-                  </button>
-                  <span className="min-w-0 flex-1 break-words text-xs leading-5 text-muted-foreground">
-                    {restoreFile?.name ?? "No database backup selected"}
-                  </span>
-                </div>
-                <div className="flex min-w-0 items-end gap-3">
-                  <label className="block min-w-0 flex-1">
-                    <span className="mb-1 block text-xs font-medium">
-                      Database backup encryption password
-                    </span>
-                    <input
-                      type="password"
-                      value={backupFilePassword}
-                      onChange={(event) => setBackupFilePassword(event.target.value)}
-                      placeholder="Password used to encrypt this .rbk file"
-                      className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => void restoreBackup()}
-                    disabled={Boolean(busy) || !restoreFile || !restoreAuthorized}
-                    className="inline-flex h-9 min-w-0 max-w-full items-center gap-2 rounded-md border border-border bg-background px-3 text-center text-sm font-medium disabled:opacity-50"
-                  >
-                    <Upload className="size-4" />
-                    {busy === "restore" ? "Restoring..." : "Restore database backup"}
-                  </button>
-                </div>
-              </div>
-              <p className="mt-2 text-xs leading-5 text-muted-foreground">
-                The database restore does not require a secret file. If secret files are not
-                restored, the server keeps its existing files; on a newly rebuilt server, the
-                administrator must provide whatever environment secrets are needed before starting
-                the application.
-              </p>
-            </div>
-          </TabsContent>
-          <TabsContent value="full" className="mt-5 space-y-5">
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-5 shadow-sm">
-              <div className="mb-4">
-                <h3 className="text-sm font-semibold text-foreground">
-                  Upload &amp; restore full recovery package (.rkdr)
-                </h3>
                 <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  Select an encrypted .rkdr package on this PC. It will be uploaded over the LAN and
-                  restored on the server. Secret files are optional when the server already has its
-                  working configuration.
+                  Step 1: authorize with the Upload password. Step 2: select the encrypted .rbk
+                  file, enter its encryption password, and restore it.
                 </p>
               </div>
               <div className="mb-4 grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-[minmax(0,1fr)_auto]">
                 <label className="block min-w-0">
-                  <span className="mb-1 block text-xs font-medium">
-                    Upload password (same password used for database restore)
-                  </span>
-                  <input
-                    type="password"
+                  <span className="mb-1 block text-xs font-medium">Upload password</span>
+                  <PasswordInput
                     value={restoreAuthorizationInput}
                     onChange={(event) => {
                       setRestoreAuthorizationInput(event.target.value);
@@ -2570,7 +2860,92 @@ function ProtectedBackupSettings() {
                   {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
                 </button>
               </div>
-              <div className="grid min-w-0 grid-cols-1 items-end gap-x-4 gap-y-4 2xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_auto]">
+              <div className="grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                <input
+                  ref={backupFileInputRef}
+                  type="file"
+                  accept=".rbk,application/json"
+                  onChange={(event) => setRestoreFile(event.target.files?.[0] ?? null)}
+                  className="sr-only"
+                />
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => backupFileInputRef.current?.click()}
+                    disabled={Boolean(busy) || !restoreAuthorized}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-center text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                  >
+                    <Upload className="size-4" />
+                    Select database backup (.rbk)
+                  </button>
+                  <span className="min-w-0 flex-1 break-words text-xs leading-5 text-muted-foreground">
+                    {restoreFile?.name ?? "No database backup selected"}
+                  </span>
+                </div>
+                <label className="block min-w-0">
+                  <span className="mb-1 block text-xs font-medium">
+                    Database backup encryption password
+                  </span>
+                  <PasswordInput
+                    value={backupFilePassword}
+                    onChange={(event) => setBackupFilePassword(event.target.value)}
+                    placeholder="Password used to encrypt this .rbk file"
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void restoreBackup()}
+                  disabled={Boolean(busy) || !restoreFile || !restoreAuthorized}
+                  className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  <Upload className="size-4" />
+                  {busy === "restore" ? "Restoring..." : "Restore database backup"}
+                </button>
+              </div>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                The database restore does not require a secret file. If secret files are not
+                restored, the server keeps its existing files; on a newly rebuilt server, the
+                administrator must provide whatever environment secrets are needed before starting
+                the application.
+              </p>
+            </div>
+          </TabsContent>
+          <TabsContent value="full" className="mt-5 space-y-5">
+            <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-5 shadow-sm">
+              <div className="mb-4">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Upload &amp; restore full recovery package (.rkdr)
+                </h3>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Step 1: authorize with the Upload password. Step 2: select the encrypted .rkdr
+                  file, enter its encryption password, and restore it.
+                </p>
+              </div>
+              <div className="mb-4 grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-[minmax(0,1fr)_auto]">
+                <label className="block min-w-0">
+                  <span className="mb-1 block text-xs font-medium">Upload password</span>
+                  <PasswordInput
+                    value={restoreAuthorizationInput}
+                    onChange={(event) => {
+                      setRestoreAuthorizationInput(event.target.value);
+                      setRestoreAuthorized(false);
+                    }}
+                    placeholder="Enter the configured Upload password"
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => void authorizeRestore()}
+                  disabled={Boolean(busy) || restoreAuthorizationInput.length < 8}
+                  className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  <Lock className="size-4" />
+                  {busy === "authorizeRestore" ? "Checking..." : "Authorize restore"}
+                </button>
+              </div>
+              <div className="grid min-w-0 grid-cols-1 items-end gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
                 <input
                   ref={fullRestoreFileInputRef}
                   type="file"
@@ -2578,34 +2953,36 @@ function ProtectedBackupSettings() {
                   onChange={(event) => setFullRestoreFile(event.target.files?.[0] ?? null)}
                   className="sr-only"
                 />
+                <div className="flex min-w-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fullRestoreFileInputRef.current?.click()}
+                    disabled={Boolean(busy) || !restoreAuthorized}
+                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-center text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
+                  >
+                    <Upload className="size-4" />
+                    Select full recovery package (.rkdr)
+                  </button>
+                  <span className="min-w-0 flex-1 break-words text-xs leading-5 text-muted-foreground">
+                    {fullRestoreFile?.name ?? "No full recovery package selected"}
+                  </span>
+                </div>
                 <label className="block min-w-0">
                   <span className="mb-1 block text-xs font-medium">
                     Full recovery package encryption password
                   </span>
-                  <input
-                    type="password"
+                  <PasswordInput
                     value={fullRestoreFilePassword}
                     onChange={(event) => setFullRestoreFilePassword(event.target.value)}
                     placeholder="Password used for the .rkdr file"
                     className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
                   />
                 </label>
-                <div className="flex min-w-0 items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fullRestoreFileInputRef.current?.click()}
-                    disabled={Boolean(busy) || !restoreAuthorized}
-                    className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/40 bg-primary/10 px-3 text-center whitespace-normal text-sm font-medium text-primary hover:bg-primary/15 disabled:opacity-50"
-                  >
-                    <Upload className="size-4" />
-                    Select Full recovery package (.rkdr)
-                  </button>
-                </div>
                 <button
                   type="button"
                   onClick={() => void restoreFullRecoveryPackage()}
                   disabled={Boolean(busy) || !fullRestoreFile || !restoreAuthorized}
-                  className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-amber-700/40 bg-amber-600 px-3 text-center whitespace-normal text-sm font-medium text-white disabled:opacity-50"
+                  className="inline-flex h-9 min-w-0 max-w-full items-center justify-center gap-2 rounded-md border border-primary/30 bg-primary px-3 text-center text-sm font-medium text-primary-foreground disabled:opacity-50"
                 >
                   <Upload className="size-4" />
                   {busy === "fullRestore" ? "Restoring..." : "Restore full recovery package"}
@@ -2719,12 +3096,17 @@ function ProtectedBackupSettings() {
                       ) : null}
                       <label className="block text-xs font-medium">
                         Time ({scheduleDraft.timezone})
-                        <input
+                        <ClearableInput
                           type="time"
                           value={scheduleDraft.timeOfDay}
                           onChange={(event) =>
                             updateScheduleDraft((current) =>
                               current ? { ...current, timeOfDay: event.target.value } : current,
+                            )
+                          }
+                          onClear={() =>
+                            updateScheduleDraft((current) =>
+                              current ? { ...current, timeOfDay: "" } : current,
                             )
                           }
                           className="mt-1 h-9 w-full rounded-md border border-input bg-background px-2 text-sm font-normal"
@@ -2766,7 +3148,7 @@ function ProtectedBackupSettings() {
                       </label>
                       <label className="block text-xs font-medium sm:col-span-2 lg:col-span-1">
                         Server destination directory
-                        <input
+                        <ClearableInput
                           type="text"
                           value={scheduleDraft.destinationDir}
                           onChange={(event) =>
@@ -2774,6 +3156,11 @@ function ProtectedBackupSettings() {
                               current
                                 ? { ...current, destinationDir: event.target.value }
                                 : current,
+                            )
+                          }
+                          onClear={() =>
+                            updateScheduleDraft((current) =>
+                              current ? { ...current, destinationDir: "" } : current,
                             )
                           }
                           placeholder="/opt/recordkeeper/backups"
@@ -5558,9 +5945,10 @@ function FirmTypeSettings() {
               return (
                 <li key={`${row.value}-${index}`} className="flex items-center gap-3 px-4 py-3">
                   <div className="min-w-0 flex-1">
-                    <input
+                    <ClearableInput
                       value={row.value}
                       onChange={(event) => rename(index, event.target.value)}
+                      onClear={() => rename(index, "")}
                       disabled={usedFirmType}
                       title={
                         usedFirmType
@@ -5686,9 +6074,10 @@ function ModeSettings() {
               return (
                 <li key={`${row.value}-${index}`} className="flex items-center gap-3 px-4 py-3">
                   <div className="min-w-0 flex-1">
-                    <input
+                    <ClearableInput
                       value={row.value}
                       onChange={(event) => rename(index, event.target.value)}
+                      onClear={() => rename(index, "")}
                       disabled={lockedModeName}
                       title={
                         usedMode
@@ -5974,9 +6363,10 @@ function FileTypeSettings() {
                   className="grid grid-cols-1 gap-3 px-4 py-3 md:grid-cols-[minmax(0,1fr)_260px_auto]"
                 >
                   <div>
-                    <input
+                    <ClearableInput
                       value={fileType}
                       onChange={(event) => rename(index, event.target.value)}
+                      onClear={() => rename(index, "")}
                       disabled={lockedFileTypeName}
                       className={
                         "h-9 w-full min-w-0 flex-1 rounded-md border border-input px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40 " +
@@ -6162,9 +6552,10 @@ function SpecialFileMarkerSettings() {
                   className="grid gap-3 px-4 py-3 md:grid-cols-[12rem_1fr_auto]"
                 >
                   <div>
-                    <input
+                    <ClearableInput
                       value={row.marker.code}
                       onChange={(event) => rename(index, event.target.value)}
+                      onClear={() => rename(index, "")}
                       disabled={usedMarker}
                       title={
                         usedMarker
@@ -6178,9 +6569,10 @@ function SpecialFileMarkerSettings() {
                     />
                     <MasterValueMeta row={row} />
                   </div>
-                  <input
+                  <ClearableInput
                     value={row.marker.description}
                     onChange={(event) => updateDescription(index, event.target.value)}
+                    onClear={() => updateDescription(index, "")}
                     className="h-9 min-w-0 rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                   />
                   <MasterValueActions
@@ -6780,9 +7172,10 @@ function ValueThresholdSettings() {
                 <tr key={index}>
                   <td className="px-3 py-2 font-medium">{index + 1}</td>
                   <td className="px-3 py-2">
-                    <input
+                    <ClearableInput
                       value={level.label}
                       onChange={(event) => updateLevel(index, { label: event.target.value })}
+                      onClear={() => updateLevel(index, { label: "" })}
                       className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                     />
                   </td>
@@ -6802,26 +7195,28 @@ function ValueThresholdSettings() {
                     </select>
                   </td>
                   <td className="px-3 py-2">
-                    <input
+                    <ClearableInput
                       value={level.minValue ?? ""}
                       onChange={(event) =>
                         updateLevel(index, {
                           minValue: formatThresholdAmountInput(event.target.value),
                         })
                       }
+                      onClear={() => updateLevel(index, { minValue: "" })}
                       inputMode="decimal"
                       placeholder="No minimum"
                       className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
                     />
                   </td>
                   <td className="px-3 py-2">
-                    <input
+                    <ClearableInput
                       value={level.maxValue ?? ""}
                       onChange={(event) =>
                         updateLevel(index, {
                           maxValue: formatThresholdAmountInput(event.target.value),
                         })
                       }
+                      onClear={() => updateLevel(index, { maxValue: "" })}
                       inputMode="decimal"
                       placeholder="No maximum"
                       className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -6962,7 +7357,7 @@ function BgReceiptDelaySettings() {
         {days.map((value, index) => (
           <label key={index} className="flex flex-col gap-1 text-xs text-muted-foreground">
             <span>Threshold {index + 1} (days)</span>
-            <input
+            <ClearableInput
               type="number"
               min={0}
               step={1}
@@ -6971,6 +7366,10 @@ function BgReceiptDelaySettings() {
                 setDays((current) =>
                   current.map((day, dayIndex) => (dayIndex === index ? event.target.value : day)),
                 );
+                setMessage("");
+              }}
+              onClear={() => {
+                setDays((current) => current.map((day, dayIndex) => (dayIndex === index ? "" : day)));
                 setMessage("");
               }}
               className="h-9 rounded-md border border-input bg-background px-2.5 text-sm text-foreground"
@@ -7877,9 +8276,10 @@ function TableFieldPresetSettings() {
               <div className="flex flex-wrap items-end gap-3">
                 <label className="min-w-[220px] flex-1">
                   <div className="text-xs font-medium mb-1.5">Preset name</div>
-                  <input
+                  <ClearableInput
                     value={selectedPreset.name}
                     onChange={(event) => updateSelectedPreset({ name: event.target.value })}
+                    onClear={() => updateSelectedPreset({ name: "" })}
                     disabled={!selectedPresetEditable}
                     className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 disabled:opacity-60"
                   />
@@ -8228,9 +8628,10 @@ function DemandProcessingPresetSettings() {
                 <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1fr)_auto_auto]">
                   <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                     <span>Preset name</span>
-                    <input
+                    <ClearableInput
                       value={selectedPreset.name}
                       onChange={(event) => updateSelectedPreset({ name: event.target.value })}
+                      onClear={() => updateSelectedPreset({ name: "" })}
                       className="h-10 rounded-md border border-input bg-background px-3 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
                     />
                   </label>
@@ -8526,27 +8927,30 @@ function DemandProcessingDayRangeSettings({
           >
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               <span>Label</span>
-              <input
+              <ClearableInput
                 value={range.label}
                 onChange={(event) => onUpdate(range.id ?? "", { label: event.target.value })}
+                onClear={() => onUpdate(range.id ?? "", { label: "" })}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               <span>Min days</span>
-              <input
+              <ClearableInput
                 type="number"
                 value={range.minDays ?? ""}
                 onChange={(event) => onUpdate(range.id ?? "", { minDays: event.target.value })}
+                onClear={() => onUpdate(range.id ?? "", { minDays: "" })}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <label className="flex flex-col gap-1 text-xs text-muted-foreground">
               <span>Max days</span>
-              <input
+              <ClearableInput
                 type="number"
                 value={range.maxDays ?? ""}
                 onChange={(event) => onUpdate(range.id ?? "", { maxDays: event.target.value })}
+                onClear={() => onUpdate(range.id ?? "", { maxDays: "" })}
                 className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
@@ -8676,11 +9080,12 @@ function MmgSummarySettings() {
                       </label>
                       <label className="text-xs text-muted-foreground">
                         <span className="mb-1 block">Display and export label</span>
-                        <input
+                        <ClearableInput
                           value={field.label}
                           onChange={(event) =>
                             updateField(option.key, { label: event.target.value })
                           }
+                          onClear={() => updateField(option.key, { label: "" })}
                           className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
                         />
                       </label>
@@ -8862,8 +9267,7 @@ function DivisionSettings() {
                   </td>
                   <td className="px-4 py-3 text-muted-foreground">
                     {isEditing ? (
-                      <input
-                        type="password"
+                      <PasswordInput
                         value={editViewerPassword}
                         onChange={(event) => setEditViewerPassword(event.target.value)}
                         placeholder="New viewer password"
@@ -9171,39 +9575,43 @@ function FirmRatingSettings() {
           >
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Field label</span>
-              <input
+              <ClearableInput
                 value={field.label}
                 onChange={(event) => updateField(index, { label: event.target.value })}
+                onClear={() => updateField(index, { label: "" })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Weight</span>
-              <input
+              <ClearableInput
                 type="text"
                 inputMode="decimal"
                 value={field.weight ?? ""}
                 onChange={(event) => updateField(index, { weight: event.target.value })}
+                onClear={() => updateField(index, { weight: "" })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Minimum value</span>
-              <input
+              <ClearableInput
                 type="text"
                 inputMode="decimal"
                 value={field.minValue ?? ""}
                 onChange={(event) => updateField(index, { minValue: event.target.value })}
+                onClear={() => updateField(index, { minValue: "" })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <label className="text-xs text-muted-foreground">
               <span className="mb-1 block">Maximum value</span>
-              <input
+              <ClearableInput
                 type="text"
                 inputMode="decimal"
                 value={field.maxValue ?? ""}
                 onChange={(event) => updateField(index, { maxValue: event.target.value })}
+                onClear={() => updateField(index, { maxValue: "" })}
                 className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
@@ -9477,9 +9885,10 @@ function FirmDatabaseSettings() {
             Firm name is required. Firm Unique No. and all other firm details are optional.
           </p>
         </div>
-        <input
+        <ClearableInput
           value={search}
           onChange={(event) => setSearch(event.target.value)}
+          onClear={() => setSearch("")}
           placeholder={`Search firm, email, ${firmUniqueNoLabel}`}
           className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40 sm:max-w-md"
         />
@@ -9887,10 +10296,11 @@ function FirmTypeSelect({
       {onAddType ? (
         adding ? (
           <div className="flex items-center gap-1.5">
-            <input
+            <ClearableInput
               autoFocus
               value={newType}
               onChange={(event) => setNewType(event.target.value)}
+              onClear={() => setNewType("")}
               onKeyDown={(event) => {
                 if (event.key === "Enter") {
                   event.preventDefault();
@@ -9953,7 +10363,7 @@ function FirmInput({
   invalid?: boolean;
 }) {
   return (
-    <input
+    <ClearableInput
       value={value}
       type={type}
       inputMode={type === "tel" ? "numeric" : undefined}
@@ -9962,6 +10372,7 @@ function FirmInput({
       }
       aria-invalid={invalid || undefined}
       onChange={(event) => onChange(event.target.value)}
+      onClear={() => onChange("")}
       placeholder={placeholder}
       className={
         "w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40" +
@@ -10362,9 +10773,10 @@ function IndentorSettings() {
             containerClassName="min-w-0 w-full"
             className="h-10 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
-          <input
+          <ClearableInput
             value={search}
             onChange={(event) => setSearch(event.target.value)}
+            onClear={() => setSearch("")}
             placeholder="Search name, SF ID, designation, email"
             className="h-10 min-w-0 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
           />
@@ -11025,9 +11437,10 @@ function TrustedIpTable({
                 <tr key={row.id} className="border-t border-border">
                   <td className="px-3 py-2 font-mono">{row.ipAddress}</td>
                   <td className="px-3 py-2">
-                    <input
+                    <ClearableInput
                       value={row.remarks}
                       onChange={(event) => void onUpdate(row.id, { remarks: event.target.value })}
+                      onClear={() => void onUpdate(row.id, { remarks: "" })}
                       className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm"
                     />
                   </td>
@@ -11384,8 +11797,7 @@ function UserSettings() {
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[1fr_1fr_1fr_0.8fr_auto] gap-3">
         <DivisionInput value={name} onChange={setName} placeholder="User name" />
         <DivisionInput value={username} onChange={setUsername} placeholder="Username" />
-        <input
-          type="password"
+        <PasswordInput
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           placeholder="Password"
@@ -11547,8 +11959,7 @@ function UserSettings() {
                                 onChange={setEditUsername}
                                 placeholder="Username"
                               />
-                              <input
-                                type="password"
+                              <PasswordInput
                                 value={editPassword}
                                 onChange={(event) => setEditPassword(event.target.value)}
                                 placeholder="New password"
@@ -12742,8 +13153,7 @@ function PasswordField({
         {label}
         {helper?.length ? <SettingsHelper items={helper} label={`${label} help`} /> : null}
       </div>
-      <input
-        type="password"
+      <PasswordInput
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder="Required for delete actions"
@@ -12764,9 +13174,10 @@ function DivisionInput({
   placeholder: string;
 }) {
   return (
-    <input
+    <ClearableInput
       value={value}
       onChange={(event) => onChange(event.target.value)}
+      onClear={() => onChange("")}
       placeholder={placeholder}
       className="w-full h-10 px-3 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-2 focus:ring-ring/40"
     />

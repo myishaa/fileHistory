@@ -19,6 +19,7 @@ import {
   parseAmount,
 } from "@/lib/money";
 import { DateInput } from "@/components/date-input";
+import { ClearableInput, ClearableTextarea } from "@/components/clearable-input";
 import { SearchableDropdown } from "@/components/searchable-dropdown";
 import { formatIndiaDate } from "@/lib/india-date";
 import { useSettingsDraftContext } from "@/lib/settings-draft";
@@ -787,9 +788,10 @@ export function YearSetupPanel({
                 </label>
               </div>
 
-              <textarea
+              <ClearableTextarea
                 value={mergeNotes}
                 onChange={(event) => setMergeNotes(event.target.value)}
+                onClear={() => setMergeNotes("")}
                 placeholder="Notes"
                 rows={3}
                 className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -887,10 +889,14 @@ export function YearSetupPanel({
                   <div className="text-xs font-medium text-muted-foreground">
                     Indentors to transfer
                   </div>
-                  <input
+                  <ClearableInput
                     value={splitIndentorSearch}
                     onChange={(event) => {
                       setSplitIndentorSearch(event.target.value);
+                      setSplitIndentorPage(1);
+                    }}
+                    onClear={() => {
+                      setSplitIndentorSearch("");
                       setSplitIndentorPage(1);
                     }}
                     disabled={!splitSourceDivisionId}
@@ -1102,9 +1108,10 @@ export function YearSetupPanel({
                 />
               </div>
 
-              <textarea
+              <ClearableTextarea
                 value={splitNotes}
                 onChange={(event) => setSplitNotes(event.target.value)}
+                onClear={() => setSplitNotes("")}
                 placeholder="Notes"
                 rows={3}
                 className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -1165,7 +1172,7 @@ function AllocationInput({
   amount?: boolean;
 }) {
   return (
-    <input
+    <ClearableInput
       value={amount ? formatAmountInput(value) : value}
       onChange={(event) =>
         amount
@@ -1173,6 +1180,7 @@ function AllocationInput({
           : onChange(event.currentTarget.value)
       }
       placeholder={placeholder}
+      onClear={() => onChange("")}
       inputMode={amount ? "decimal" : undefined}
       className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring/40"
     />

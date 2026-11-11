@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileSpreadsheet, Pencil, Plus, RotateCcw, Trash2 } from "lucide-react";
 import { showAppConfirm } from "@/components/app-dialog";
 import { DeleteConfirmation } from "@/components/delete-confirmation";
+import { ClearableInput, ClearableTextarea } from "@/components/clearable-input";
 import { downloadQuickEntryExcelExport } from "@/lib/export-download";
 import {
   useAccessibleDivisions,
@@ -10,7 +11,6 @@ import {
   useStoreStatus,
   store,
 } from "@/lib/files-store";
-import { Textarea } from "@/components/ui/textarea";
 import { useSettingsDraftContext } from "@/lib/settings-draft";
 import { useUnsavedChanges } from "@/lib/unsaved-changes";
 import {
@@ -554,10 +554,14 @@ export function QuickEntryExcelSettings() {
         <div className="space-y-3">
           <label className="block max-w-xl">
             <span className="mb-1.5 block text-sm font-medium">Excel file name</span>
-            <input
+            <ClearableInput
               value={name}
               onChange={(event) => {
                 setName(event.target.value);
+                setEditorDirty(true);
+              }}
+              onClear={() => {
+                setName("");
                 setEditorDirty(true);
               }}
               placeholder="For example, Monthly review"
@@ -733,10 +737,14 @@ export function QuickEntryExcelSettings() {
                   </p>
                   {editingNoteId === preset.id ? (
                     <div className="mt-2 space-y-2">
-                      <Textarea
+                      <ClearableTextarea
                         value={noteDraft}
                         onChange={(event) => {
                           setNoteDraft(event.target.value);
+                          setNoteDirty(true);
+                        }}
+                        onClear={() => {
+                          setNoteDraft("");
                           setNoteDirty(true);
                         }}
                         maxLength={300}

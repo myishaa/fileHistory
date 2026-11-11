@@ -36,6 +36,7 @@ import {
   normalizeFinancialYearLabel,
 } from "@/lib/year-filter";
 import { filterControlClass, filterLabelClass } from "@/lib/active-filter-style";
+import { getDashboardRecommendedFilterScope } from "@/lib/dashboard-filter-recommendations";
 import {
   appFontScaleOptions,
   defaultAppFontScale,
@@ -201,6 +202,7 @@ export function TopBar() {
     analyticsPanel,
     reportMode,
     settings.financialYear,
+    status1View,
   );
   const recommendedGlobalFilterValue = getRecommendedGlobalFilterValue(
     pathname,
@@ -209,6 +211,7 @@ export function TopBar() {
     reportMode,
     settings.financialYear,
     effectiveSelectedYear,
+    status1View,
   );
   const selectedGlobalFilterLabel = getGlobalFilterDisplayLabel(effectiveSelectedYear);
   const selectedFileYearLabel = useMemo(
@@ -238,6 +241,7 @@ export function TopBar() {
         reportMode,
         effectiveSelectedYear,
         settings.financialYear,
+        status1View,
       );
   const filterCombinationActive =
     globalFilterActive ||
@@ -249,6 +253,7 @@ export function TopBar() {
       settings.financialYear,
       effectiveSelectedYear,
       activeUser?.id,
+      status1View,
     );
   void filterScopeRevision;
 
@@ -2734,6 +2739,7 @@ function getRecommendedFilterLabel(
   analyticsPanel: string | undefined,
   reportMode: string | undefined,
   currentFinancialYear: string,
+  status1View?: string,
 ) {
   const currentFyLabel = `Current FY ${displayFinancialYearLabel(currentFinancialYear)}`;
   if (pathname === "/quick-entry") {
@@ -2761,39 +2767,20 @@ function getRecommendedFilterLabel(
     };
   }
   if (pathname === "/dashboard") {
-    if (dashboardTab === "analytics") {
-      return {
-        activityYear: usesAllFilesAnalyticsScope(analyticsPanel) ? "All files" : currentFyLabel,
-        fileYear: getRecommendedAnalyticsSubfilter(analyticsPanel),
-      };
-    }
-    if (dashboardTab === "finance") {
-      return {
-        activityYear: currentFyLabel,
-        fileYear: "All file years",
-      };
-    }
-    if (dashboardTab === "finance1") {
-      return {
-        activityYear: currentFyLabel,
-        fileYear: currentFyLabel,
-      };
-    }
-    if (dashboardTab === "snapshot") {
-      return {
-        activityYear: currentFyLabel,
-        fileYear: currentFyLabel,
-      };
-    }
-    if (dashboardTab === "fyActivity") {
-      return {
-        activityYear: currentFyLabel,
-        fileYear: "All file years",
-      };
-    }
+    const scope = getDashboardRecommendedFilterScope(
+      dashboardTab,
+      analyticsPanel,
+      currentFinancialYear,
+      status1View,
+    );
     return {
-      activityYear: "Active + current FY closed",
-      fileYear: "All file years",
+      activityYear:
+        scope.globalYear === ALL_FILES_YEAR
+          ? "All files"
+          : scope.globalYear === ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR
+            ? "Active + current FY closed"
+            : currentFyLabel,
+      fileYear: scope.fileYear === "all" ? "All file years" : currentFyLabel,
     };
   }
   return {
@@ -2888,25 +2875,19 @@ function getRecommendedGlobalFilterValue(
   reportMode: string | undefined,
   currentFinancialYear: string,
   currentSelectedYear: string,
+  status1View?: string,
 ) {
   if (pathname === "/search") return ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
   if (pathname === "/reports") {
     return reportMode === "preSoExpectedCashOutgo" ? ALL_ACTIVE_FILES_YEAR : currentFinancialYear;
   }
   if (pathname === "/dashboard") {
-    if (dashboardTab === "analytics" && usesAllFilesAnalyticsScope(analyticsPanel)) {
-      return ALL_FILES_YEAR;
-    }
-    if (
-      dashboardTab === "snapshot" ||
-      dashboardTab === "finance1" ||
-      dashboardTab === "finance" ||
-      dashboardTab === "fyActivity" ||
-      dashboardTab === "analytics"
-    ) {
-      return currentFinancialYear;
-    }
-    return ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
+    return getDashboardRecommendedFilterScope(
+      dashboardTab,
+      analyticsPanel,
+      currentFinancialYear,
+      status1View,
+    ).globalYear;
   }
   return currentSelectedYear || ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
 }
@@ -2918,6 +2899,7 @@ function isGlobalFilterNonSuggested(
   reportMode: string | undefined,
   selectedYear: string | undefined,
   currentFinancialYear: string,
+  status1View?: string,
 ) {
   if (pathname === "/search") return selectedYear !== ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
   if (pathname === "/reports") {
@@ -2925,17 +2907,15 @@ function isGlobalFilterNonSuggested(
     return selectedYear !== currentFinancialYear;
   }
   if (pathname !== "/dashboard") return false;
-  if (dashboardTab === "finance1" || dashboardTab === "fyActivity") {
-    return selectedYear !== currentFinancialYear;
-  }
-  if (dashboardTab === "snapshot") return selectedYear !== currentFinancialYear;
-  if (dashboardTab === "analytics" && usesAllFilesAnalyticsScope(analyticsPanel)) {
-    return selectedYear !== ALL_FILES_YEAR;
-  }
-  if (dashboardTab === "finance" || dashboardTab === "analytics") {
-    return selectedYear !== currentFinancialYear;
-  }
-  return selectedYear !== ACTIVE_PLUS_CURRENT_FY_CLOSED_YEAR;
+  return (
+    selectedYear !==
+    getDashboardRecommendedFilterScope(
+      dashboardTab,
+      analyticsPanel,
+      currentFinancialYear,
+      status1View,
+    ).globalYear
+  );
 }
 
 function isSubfilterNonSuggested(
@@ -2946,6 +2926,7 @@ function isSubfilterNonSuggested(
   currentFinancialYear: string,
   selectedGlobalYear: string,
   userId: string | undefined,
+  status1View?: string,
 ) {
   if (pathname === "/search" || pathname === "/quick-entry" || pathname === "/add") {
     return false;
@@ -2973,39 +2954,16 @@ function isSubfilterNonSuggested(
   }
 
   const recommendedFileYear =
-    dashboardTab === "snapshot" || dashboardTab === "finance1"
-      ? normalizeFinancialYearLabel(currentFinancialYear) || currentFinancialYear
-      : dashboardTab === "analytics"
-        ? getRecommendedAnalyticsSubfilter(analyticsPanel) === "All file years"
-          ? "all"
-          : normalizeFinancialYearLabel(currentFinancialYear) || currentFinancialYear
-        : "all";
+    pathname === "/dashboard"
+      ? getDashboardRecommendedFilterScope(
+          dashboardTab,
+          analyticsPanel,
+          currentFinancialYear,
+          status1View,
+        ).fileYear
+      : "all";
   const normalizedSelectedFileYear = normalizeFinancialYearLabel(selectedFileYear);
   return normalizedSelectedFileYear !== normalizeFinancialYearLabel(recommendedFileYear);
-}
-
-function getRecommendedAnalyticsSubfilter(analyticsPanel: string | undefined) {
-  const allFileYearsPanels = new Set([
-    "paymentPending",
-    "delayStatus",
-    "suspectedAnomaly",
-    "preBidMeetings",
-    "bidOpeningSchedule",
-    "tcecStatus",
-    "cncSummary",
-    "topFirms",
-    "firmAnalysis",
-    "firmPerformance",
-    "indentorFirmLinkage",
-    "demandProcessingAnalysis",
-  ]);
-  return allFileYearsPanels.has(analyticsPanel ?? "") ? "All file years" : "Current FY";
-}
-
-function usesAllFilesAnalyticsScope(analyticsPanel: string | undefined) {
-  return new Set(["topFirms", "firmAnalysis", "indentorFirmLinkage", "firmPerformance"]).has(
-    analyticsPanel ?? "",
-  );
 }
 
 function getGlobalFilterHelp(selectedYear: string | undefined, currentFinancialYear: string) {

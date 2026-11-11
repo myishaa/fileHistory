@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import {
   Fragment,
   type KeyboardEvent,
@@ -83,6 +83,7 @@ import {
 import { ALL_FILES_YEAR, displayFinancialYearLabel } from "@/lib/year-filter";
 import { clearUnsavedChanges, useUnsavedChanges } from "@/lib/unsaved-changes";
 import { DateInput } from "@/components/date-input";
+import { ClearableInput, ClearableTextarea } from "@/components/clearable-input";
 import { showAppAlert, showAppConfirm } from "@/components/app-dialog";
 import { DeleteConfirmation, useDeleteConfirmation } from "@/components/delete-confirmation";
 import { HelperContent } from "@/components/helper-content";
@@ -372,9 +373,9 @@ function DrillPathTrail({
           <span key={`${item.label}-${index}`} className="inline-flex items-center gap-1">
             {index > 0 ? <ChevronRight className="size-3" aria-hidden="true" /> : null}
             {href ? (
-              <a href={href} className={labelClassName}>
+              <Link to={href as never} className={labelClassName}>
                 {item.label}
-              </a>
+              </Link>
             ) : (
               <span className={labelClassName}>{item.label}</span>
             )}
@@ -1807,6 +1808,8 @@ type TimelineGroup = {
   items: TimelineItem[];
 };
 
+type GuardedViewChange = (change: () => void) => void;
+
 function AddFilePage() {
   const activeUser = useActiveUser();
   const { fileId } = Route.useSearch();
@@ -1851,6 +1854,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const [fileLoadStatus, setFileLoadStatus] = useState<"idle" | "loading" | "loaded" | "error">(
     fileId ? "loading" : "idle",
   );
+  const editorDraftKey = `${fileId ?? "new"}|${effectiveFinancialYear}|${settings.yearSelectionLocked ? "locked" : "unlocked"}`;
+  const [hydratedEditorDraftKey, setHydratedEditorDraftKey] = useState<string>();
   const [serverUniqueCode, setServerUniqueCode] = useState("");
   const editingFile = loadedFile;
   const isEditing = Boolean(fileId && editingFile);
@@ -2013,18 +2018,15 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     if (!allowed) return;
     setPaidAdvanceUnfreezeKeys((current) => new Set(current).add(orderIndex));
   };
-  const savedFormForLocks = useMemo(
-    () => {
-      const baseline = editingFile
-        ? createFormFromFile(editingFile, effectiveFinancialYear)
-        : createEmptyForm(effectiveFinancialYear);
-      return applyConditionalRules({
-        ...baseline,
-        fileTypeGroup: getConfiguredFileTypeGroup(baseline.fileType, settings.fileTypeGroups),
-      });
-    },
-    [editingFile, effectiveFinancialYear, settings.fileTypeGroups],
-  );
+  const savedFormForLocks = useMemo(() => {
+    const baseline = editingFile
+      ? createFormFromFile(editingFile, effectiveFinancialYear)
+      : createEmptyForm(effectiveFinancialYear);
+    return applyConditionalRules({
+      ...baseline,
+      fileTypeGroup: getConfiguredFileTypeGroup(baseline.fileType, settings.fileTypeGroups),
+    });
+  }, [editingFile, effectiveFinancialYear, settings.fileTypeGroups]);
   const savedFirmDetailsForLocks = useMemo(
     () => createFirmDetailsFromFile(editingFile),
     [editingFile],
@@ -2081,9 +2083,14 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     );
     setUnlockedSections(new Set());
     setDemandCancelledUnlocked(false);
+    setHydratedEditorDraftKey(
+      !fileId || (fileLoadStatus === "loaded" && editingFile?.id === fileId)
+        ? editorDraftKey
+        : undefined,
+    );
     // Reset after changing files.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editingFile?.id, effectiveFinancialYear, settings.yearSelectionLocked]);
+  }, [editingFile?.id, editorDraftKey, fileId, fileLoadStatus]);
 
   useEffect(() => {
     setActiveBoardSection(section ?? "File details");
@@ -2241,6 +2248,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       ),
     [milestoneOptions],
   );
+  const savedCompletedMilestonesForDirty = useMemo(
+    () =>
+      savedCompletedMilestonesForLocks.filter((milestone) =>
+        fileLevelMilestoneOptions.includes(milestone),
+      ),
+    [fileLevelMilestoneOptions, savedCompletedMilestonesForLocks],
+  );
   const applicableMilestones = getApplicableMilestones(
     milestoneOptions,
     formWithLockedYear,
@@ -2269,7 +2283,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         useSupplyOrderMilestones,
         currentMilestone,
       ),
-    [currentMilestone, formWithLockedYear, milestoneOptions, supplyOrders, useSupplyOrderMilestones],
+    [
+      currentMilestone,
+      formWithLockedYear,
+      milestoneOptions,
+      supplyOrders,
+      useSupplyOrderMilestones,
+    ],
   );
   const supplyOrderMilestoneProgressByOrder = useMemo(
     () =>
@@ -2312,7 +2332,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const configuredFileTypeOptions = useMemo(
     () =>
       filterFileTypeOptionsForUser(
-        getConfiguredFileTypes(settings.fileTypes, isEditing ? formWithLockedYear.fileType : undefined),
+        getConfiguredFileTypes(
+          settings.fileTypes,
+          isEditing ? formWithLockedYear.fileType : undefined,
+        ),
         activeUser?.role === "editor" ? activeUser.allowedFileCategories : undefined,
       ),
     [
@@ -2483,8 +2506,8 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     const savedOrderIds = new Set(
       savedSupplyOrdersForLocks.flatMap((order) => (order.id?.trim() ? [order.id] : [])),
     );
-    const hasSavedSelectedOrder = removedOrders.some(
-      ({ order }) => Boolean(order.id?.trim() && savedOrderIds.has(order.id)),
+    const hasSavedSelectedOrder = removedOrders.some(({ order }) =>
+      Boolean(order.id?.trim() && savedOrderIds.has(order.id)),
     );
     const persistsImmediately = Boolean(
       editingFile && (targetCount < savedSupplyOrderCount || hasSavedSelectedOrder),
@@ -2881,12 +2904,10 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       deletionPasswordVerified = true;
       immediateDraftOrder = candidate;
       if (
-        !(await persistImmediateSupplyOrderChange(
-          index,
-          candidate,
-          orderBeforeUpdate,
-          { action: "disable", deletionPassword },
-        ))
+        !(await persistImmediateSupplyOrderChange(index, candidate, orderBeforeUpdate, {
+          action: "disable",
+          deletionPassword,
+        }))
       ) {
         return;
       }
@@ -3518,7 +3539,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         ) ||
         !isDirtyValueEqual(
           normalizeDirtyValue("completedMilestones", completedMilestones),
-          normalizeDirtyValue("completedMilestones", savedCompletedMilestonesForLocks),
+          normalizeDirtyValue("completedMilestones", savedCompletedMilestonesForDirty),
         ) ||
         formWithLockedYear.fileClosureDate !== savedFormForLocks.fileClosureDate
       );
@@ -3557,36 +3578,85 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
   const formForUnsavedCheck = isEditing
     ? formWithLockedYear
     : { ...formWithLockedYear, uniqueCode: savedFormForLocks.uniqueCode };
+  const editorHydrating = Boolean(
+    fileId &&
+    (fileLoadStatus !== "loaded" ||
+      editingFile?.id !== fileId ||
+      hydratedEditorDraftKey !== editorDraftKey),
+  );
+  const addPageDirtyReasons = {
+    form: !isDirtyValueEqual(formForUnsavedCheck, savedFormForLocks),
+    firms: !isDirtyValueEqual(firmDetails, savedFirmDetailsForLocks),
+    supplyOrders: !isDirtyValueEqual(
+      cleanSupplyOrderRows(supplyOrders, formWithLockedYear).map((order) =>
+        normalizeDirtyObject(order as Record<string, unknown>),
+      ),
+      cleanSupplyOrderRows(savedSupplyOrdersForLocks, formWithLockedYear).map((order) =>
+        normalizeDirtyObject(order as Record<string, unknown>),
+      ),
+    ),
+    remarks: !isDirtyValueEqual(
+      cleanFileRemarks(fileRemarks) ?? [],
+      cleanFileRemarks(createRemarksFromFile(editingFile)) ?? [],
+    ),
+    markers: !isDirtyValueEqual(
+      cleanFileMarkers(fileMarkers) ?? [],
+      cleanFileMarkers(createMarkersFromFile(editingFile)) ?? [],
+    ),
+    currentMilestone: !isDirtyValueEqual(
+      normalizeDirtyValue("currentMilestone", currentMilestone),
+      normalizeDirtyValue("currentMilestone", editingFile?.currentMilestone),
+    ),
+    completedMilestones: !isDirtyValueEqual(
+      normalizeDirtyValue("completedMilestones", completedMilestones),
+      normalizeDirtyValue("completedMilestones", savedCompletedMilestonesForDirty),
+    ),
+    activeYears: !isDirtyValueEqual(activeYears, savedActiveYearsForDirty),
+  };
   const addPageDirty =
     !readOnlyMode &&
+    !editorHydrating &&
     (isEditing || !saved) &&
-    (!isDirtyValueEqual(formForUnsavedCheck, savedFormForLocks) ||
-      !isDirtyValueEqual(firmDetails, savedFirmDetailsForLocks) ||
-      !isDirtyValueEqual(
-        cleanSupplyOrderRows(supplyOrders, formWithLockedYear).map((order) =>
-          normalizeDirtyObject(order as Record<string, unknown>),
-        ),
-        cleanSupplyOrderRows(savedSupplyOrdersForLocks, formWithLockedYear).map((order) =>
-          normalizeDirtyObject(order as Record<string, unknown>),
-        ),
-      ) ||
-      !isDirtyValueEqual(
-        cleanFileRemarks(fileRemarks) ?? [],
-        cleanFileRemarks(createRemarksFromFile(editingFile)) ?? [],
-      ) ||
-      !isDirtyValueEqual(
-        cleanFileMarkers(fileMarkers) ?? [],
-        cleanFileMarkers(createMarkersFromFile(editingFile)) ?? [],
-      ) ||
-      !isDirtyValueEqual(
-        normalizeDirtyValue("currentMilestone", currentMilestone),
-        normalizeDirtyValue("currentMilestone", editingFile?.currentMilestone),
-      ) ||
-      !isDirtyValueEqual(
-        normalizeDirtyValue("completedMilestones", completedMilestones),
-        normalizeDirtyValue("completedMilestones", savedCompletedMilestonesForLocks),
-      ) ||
-      !isDirtyValueEqual(activeYears, savedActiveYearsForDirty));
+    Object.values(addPageDirtyReasons).some(Boolean);
+
+  const resetAddPageDraft = () => {
+    setForm(savedFormForLocks);
+    setFirmDetails(createFirmDetailsFromFile(editingFile));
+    setSupplyOrders(createSupplyOrdersFromFile(editingFile));
+    setFileRemarks(createRemarksFromFile(editingFile));
+    setFileMarkers(createMarkersFromFile(editingFile));
+    setCurrentMilestone(editingFile?.currentMilestone ?? "");
+    setCompletedMilestones(savedCompletedMilestonesForDirty);
+    setActiveYears(savedActiveYearsForDirty);
+    setUnlockedSections(new Set());
+    setDemandCancelledUnlocked(false);
+    setPaidStageUnfreezeKeys(new Set());
+    setPaidAdvanceUnfreezeKeys(new Set());
+    setPendingSupplyOrderRemovals([]);
+    setSaveError(undefined);
+    setSaved(false);
+    setSavedSupplyOrderIndex(undefined);
+  };
+
+  const guardedAddViewChange: GuardedViewChange = (change) => {
+    if (!addPageDirty) {
+      change();
+      return;
+    }
+    void showAppConfirm("You have unsaved changes. Leave this view without saving?").then(
+      (confirmed) => {
+        if (!confirmed) return;
+        resetAddPageDraft();
+        change();
+      },
+    );
+  };
+
+  const handleBoardSectionChange = (nextSection: string) => {
+    if (nextSection === activeBoardSection) return;
+    guardedAddViewChange(() => setActiveBoardSection(nextSection));
+  };
+
   useUnsavedChanges("add-file-editor", addPageDirty);
   useEffect(() => {
     if (!fileId) return;
@@ -4120,7 +4190,9 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
       } catch (error) {
         console.error(error);
         setSaving(false);
-        await showAppAlert("Unique code could not be generated. Please check connection and try again.");
+        await showAppAlert(
+          "Unique code could not be generated. Please check connection and try again.",
+        );
         return;
       }
     }
@@ -4415,11 +4487,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
     try {
       if (editingFile) {
         const updatedFile = isScopedSupplyOrderSave
-          ? await store.updateSupplyOrder(
-              editingFile.id,
-              scopedSupplyOrderIndex,
-              scopedSupplyOrder,
-            )
+          ? await store.updateSupplyOrder(editingFile.id, scopedSupplyOrderIndex, scopedSupplyOrder)
           : await store.updateFile(editingFile.id, payload as Partial<FileRecord>);
         confirmedBgCleanupOrdersRef.current.clear();
         setLoadedFile(updatedFile);
@@ -4759,7 +4827,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
         <SectionBoard
           active={activeBoardSection}
           sections={visibleExtraSections}
-          onOpen={setActiveBoardSection}
+          onOpen={handleBoardSectionChange}
         />
 
         <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -4774,7 +4842,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
             </div>
           ) : null}
           {activeBoardSection === "Timeline" && (
-            <TimelineBlock form={formWithLockedYear} supplyOrders={supplyOrders} />
+            <TimelineBlock
+              form={formWithLockedYear}
+              supplyOrders={supplyOrders}
+              onViewChange={guardedAddViewChange}
+            />
           )}
           {activeBoardSection === "Remarks Summary" && (
             <RemarksSummaryBlock form={formWithLockedYear} remarks={fileRemarks} />
@@ -4828,6 +4900,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               }}
               onSupplyOrderCompletedChange={updateSupplyOrderCompletedMilestones}
               onFileClosureDateChange={(value) => update("fileClosureDate", value)}
+              onViewChange={guardedAddViewChange}
             />
           )}
 
@@ -4856,6 +4929,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   bqBasis={form.bqBasis}
                   quickFocus={Boolean(quickFocus && activeSection.title === "Firm details")}
                   renderUpdateButton={renderLocalUpdateButton}
+                  onViewChange={guardedAddViewChange}
                   onBqBasisChange={(value) => update("bqBasis", value)}
                   onAdd={addFirmDetail}
                   onChange={updateFirmDetail}
@@ -4920,6 +4994,7 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                   onStageDeliveryBillReturnsChange={updateStageDeliveryBillReturns}
                   onPaidStageUnfreeze={unlockPaidStage}
                   onPaidAdvanceUnfreeze={unlockPaidAdvance}
+                  onViewChange={guardedAddViewChange}
                 />
               ) : (
                 <>
@@ -4951,7 +5026,11 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
                             role="tab"
                             aria-selected={activeBiddingTab === key}
                             data-testid={`add-bidding-tab-${key}`}
-                            onClick={() => setActiveBiddingTab(key)}
+                            onClick={() => {
+                              if (activeBiddingTab !== key) {
+                                guardedAddViewChange(() => setActiveBiddingTab(key));
+                              }
+                            }}
                             className={
                               "inline-flex h-9 items-center rounded-lg border px-3 text-sm font-semibold transition-colors " +
                               (activeBiddingTab === key
@@ -5008,11 +5087,13 @@ function AddFileEditor({ readOnlyMode = false }: { readOnlyMode?: boolean }) {
               onChange={updateRemark}
               onDateChange={updateRemarkDate}
               onDelete={deleteRemark}
-              savedRemarkIds={new Set(
-                (editingFile?.remarks ?? [])
-                  .filter((remark) => remark.section === activeSection.title)
-                  .map((remark) => remark.id),
-              )}
+              savedRemarkIds={
+                new Set(
+                  (editingFile?.remarks ?? [])
+                    .filter((remark) => remark.section === activeSection.title)
+                    .map((remark) => remark.id),
+                )
+              }
               disabled={readOnlyMode || uniqueCodeGateLocked || activeSectionCfaApprovalLocked}
               saveControl={
                 activeSection.title !== "Supply order and payment" &&
@@ -5404,9 +5485,10 @@ function SectionRemarks({
                   </DeleteConfirmation>
                 ) : null}
               </div>
-              <textarea
+              <ClearableTextarea
                 value={remark.text}
                 onChange={(event) => onChange(remark.id, event.target.value)}
+                onClear={() => onChange(remark.id, "")}
                 placeholder="Type remark"
                 disabled={disabled}
                 className={textareaCls + disabledCls(disabled)}
@@ -5600,9 +5682,10 @@ function SectionMessages({
               ))}
             </select>
           ) : null}
-          <textarea
+          <ClearableTextarea
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            onClear={() => setDraft("")}
             disabled={!messagesEnabled}
             placeholder="Add message"
             className={textareaCls + disabledCls(!messagesEnabled)}
@@ -5668,13 +5751,16 @@ function SectionMessages({
 
                 {canReplyTo(message) ? (
                   <div className="mt-2 border-t border-border pt-2">
-                    <textarea
+                    <ClearableTextarea
                       value={replyDraft}
                       onChange={(event) =>
                         setReplyDrafts((current) => ({
                           ...current,
                           [message.id]: event.target.value,
                         }))
+                      }
+                      onClear={() =>
+                        setReplyDrafts((current) => ({ ...current, [message.id]: "" }))
                       }
                       placeholder="Reply"
                       className="min-h-16 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/40"
@@ -5714,15 +5800,15 @@ function SectionMessages({
 
                 {canDeleteMessage(message) ? (
                   <div className="mt-2 flex justify-end">
-                  <DeleteConfirmation onConfirm={() => deleteMessage(message.id)}>
-                    <button
-                      type="button"
-                      title="Delete your message"
-                      className="inline-flex h-8 items-center rounded-md border border-destructive/30 bg-background px-3 text-xs font-medium text-destructive hover:bg-destructive/10"
-                    >
-                      Delete
-                    </button>
-                  </DeleteConfirmation>
+                    <DeleteConfirmation onConfirm={() => deleteMessage(message.id)}>
+                      <button
+                        type="button"
+                        title="Delete your message"
+                        className="inline-flex h-8 items-center rounded-md border border-destructive/30 bg-background px-3 text-xs font-medium text-destructive hover:bg-destructive/10"
+                      >
+                        Delete
+                      </button>
+                    </DeleteConfirmation>
                   </div>
                 ) : null}
               </div>
@@ -5962,6 +6048,7 @@ function FirmDetailsBlock({
   bqBasis,
   quickFocus,
   renderUpdateButton,
+  onViewChange,
   onBqBasisChange,
   onAdd,
   onChange,
@@ -5976,6 +6063,7 @@ function FirmDetailsBlock({
   bqBasis: string;
   quickFocus?: boolean;
   renderUpdateButton?: (dirty?: boolean) => ReactNode;
+  onViewChange: GuardedViewChange;
   onBqBasisChange: (value: string) => void;
   onAdd: (group: keyof FirmDetailsState) => void;
   onChange: (
@@ -6195,7 +6283,9 @@ function FirmDetailsBlock({
             <button
               key={tab.key}
               type="button"
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => {
+                if (activeTab !== tab.key) onViewChange(() => setActiveTab(tab.key));
+              }}
               className={
                 "h-9 rounded-lg px-4 text-sm font-semibold transition-colors " +
                 (activeTab === tab.key
@@ -6240,7 +6330,9 @@ function FirmDetailsBlock({
             className="flex min-h-20 items-center justify-between rounded-xl border border-border/75 bg-gradient-to-br from-primary/[0.07] to-card px-4 py-3 shadow-sm"
           >
             <span className="text-sm font-medium text-muted-foreground">{item.label}</span>
-            <span className="text-2xl font-semibold tabular-nums text-foreground">{item.value}</span>
+            <span className="text-2xl font-semibold tabular-nums text-foreground">
+              {item.value}
+            </span>
           </div>
         ))}
       </div>
@@ -6297,9 +6389,7 @@ function FirmDetailsBlock({
             const rowActionDisabled = disabled || (lockFilledFields && rowHasValue);
             const existingMasterFirm = findExistingMasterFirm(knownMasterFirms, row);
             const addFirmDisabled =
-              disabled ||
-              !hasFilledValue(row.firmName) ||
-              Boolean(existingMasterFirm);
+              disabled || !hasFilledValue(row.firmName) || Boolean(existingMasterFirm);
             return (
               <div
                 key={index}
@@ -6359,13 +6449,14 @@ function FirmDetailsBlock({
                 </label>
                 <label className="block">
                   <div className="mb-1.5 text-xs font-semibold text-muted-foreground">Email id</div>
-                  <input
+                  <ClearableInput
                     ref={(element) => {
                       firmInputRefs.current[`${index}:emailId`] = element;
                     }}
                     type="email"
                     value={row.emailId ?? ""}
                     onChange={(event) => onChange(activeTab, index, "emailId", event.target.value)}
+                    onClear={() => onChange(activeTab, index, "emailId", "")}
                     pattern="[^\s@]+@[^\s@]+\.[^\s@]+"
                     aria-invalid={!isValidEmailFormat(row.emailId)}
                     disabled={emailDisabled}
@@ -6378,31 +6469,35 @@ function FirmDetailsBlock({
                 </label>
                 <label className="block">
                   <div className="mb-1.5 text-xs font-semibold text-muted-foreground">Address</div>
-                  <input
+                  <ClearableInput
                     ref={(element) => {
                       firmInputRefs.current[`${index}:address`] = element;
                     }}
                     value={row.address ?? ""}
                     onChange={(event) => onChange(activeTab, index, "address", event.target.value)}
+                    onClear={() => onChange(activeTab, index, "address", "")}
                     disabled={addressDisabled}
                     className={inputCls + disabledCls(addressDisabled)}
                   />
                 </label>
                 <label className="block">
                   <div className="mb-1.5 text-xs font-semibold text-muted-foreground">City</div>
-                  <input
+                  <ClearableInput
                     ref={(element) => {
                       firmInputRefs.current[`${index}:city`] = element;
                     }}
                     value={row.city ?? ""}
                     onChange={(event) => onChange(activeTab, index, "city", event.target.value)}
+                    onClear={() => onChange(activeTab, index, "city", "")}
                     disabled={cityDisabled}
                     className={inputCls + disabledCls(cityDisabled)}
                   />
                 </label>
                 <label className="block">
-                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">Contact No.</div>
-                  <input
+                  <div className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                    Contact No.
+                  </div>
+                  <ClearableInput
                     ref={(element) => {
                       firmInputRefs.current[`${index}:contactNo`] = element;
                     }}
@@ -6413,6 +6508,7 @@ function FirmDetailsBlock({
                     onChange={(event) =>
                       onChange(activeTab, index, "contactNo", numericOnly(event.target.value))
                     }
+                    onClear={() => onChange(activeTab, index, "contactNo", "")}
                     disabled={contactNoDisabled}
                     className={inputCls + disabledCls(contactNoDisabled)}
                   />
@@ -6435,9 +6531,11 @@ function FirmDetailsBlock({
                     <Plus className="size-3.5" /> Add
                   </button>
                   <DeleteConfirmation
-                    mode={lockedDetails[activeTab].some((saved) => saved.id && saved.id === row.id)
-                      ? "delete"
-                      : "draft"}
+                    mode={
+                      lockedDetails[activeTab].some((saved) => saved.id && saved.id === row.id)
+                        ? "delete"
+                        : "draft"
+                    }
                     onConfirm={() => deleteFirm(index)}
                   >
                     <button
@@ -6556,6 +6654,7 @@ function SupplyOrdersBlock({
   onStageDeliveryBillReturnsChange,
   onPaidStageUnfreeze,
   onPaidAdvanceUnfreeze,
+  onViewChange,
 }: {
   form: FormState;
   lockedForm: FormState;
@@ -6623,6 +6722,7 @@ function SupplyOrdersBlock({
   ) => void;
   onPaidStageUnfreeze: (orderIndex: number, stageIndex: number) => void;
   onPaidAdvanceUnfreeze: (orderIndex: number) => void;
+  onViewChange: GuardedViewChange;
 }) {
   const orderFieldRefs = useRef<Record<string, HTMLElement | null>>({});
   const focusBlockRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -6828,12 +6928,11 @@ function SupplyOrdersBlock({
       );
       const selectedOrderKey = `order:${selectedOrderIndex}`;
       const selectedNestedKey = selectedSupplyOrderNestedKeyRef.current;
-      setOpenCardKeys((current) =>
-        new Set(
-          [...current].filter(
-            (key) => key === selectedOrderKey || key === selectedNestedKey,
+      setOpenCardKeys(
+        (current) =>
+          new Set(
+            [...current].filter((key) => key === selectedOrderKey || key === selectedNestedKey),
           ),
-        ),
       );
     }
     setSupplyOrderPanelsExpanded((current) => !current);
@@ -7043,7 +7142,7 @@ function SupplyOrdersBlock({
                 key={tab.key}
                 type="button"
                 onClick={() => {
-                  setActiveSubview(tab.key);
+                  if (activeSubview !== tab.key) onViewChange(() => setActiveSubview(tab.key));
                 }}
                 data-testid={`add-so-tab-${tab.key}`}
                 className={
@@ -7111,9 +7210,7 @@ function SupplyOrdersBlock({
         </div>
       ) : null}
 
-      {activeSubview === "bg" ? (
-        <SecurityWarrantyBgRulesHelper />
-      ) : null}
+      {activeSubview === "bg" ? <SecurityWarrantyBgRulesHelper /> : null}
       {activeSubview === "dp" ? <StageDeliveryAutofillHelper /> : null}
 
       {activeSubviewFields.length ||
@@ -7518,7 +7615,8 @@ function SupplyOrdersBlock({
                                   !(await confirmDeletion(
                                     "This will clear the saved parent-level delivery data for this S.O. Stage records will be kept.",
                                   ))
-                                ) return;
+                                )
+                                  return;
                                 onOrderPatch(index, clearParentDeliveryData(order));
                               }}
                             >
@@ -7597,8 +7695,7 @@ function SupplyOrdersBlock({
                           lockedOrder?.stageDeliveries?.[stageIndex],
                           paidStageUnfreezeKeys,
                         );
-                        const stageControlDisabled =
-                          disabled || paidStageFrozen;
+                        const stageControlDisabled = disabled || paidStageFrozen;
                         const stageOpen =
                           supplyOrderPanelsExpanded ||
                           openCardKeys.has(stageFocusKey) ||
@@ -8613,7 +8710,7 @@ function FirmRatingFieldsBlock({
           return (
             <label key={field.id} className="block">
               <div className="mb-1.5 text-xs font-medium">{field.label}</div>
-              <input
+              <ClearableInput
                 type="number"
                 min={field.minValue ?? "0"}
                 max={field.maxValue ?? "5"}
@@ -8637,6 +8734,7 @@ function FirmRatingFieldsBlock({
                     onChange(field.id, nextValue);
                   }
                 }}
+                onClear={() => onChange(field.id, "")}
                 disabled={fieldDisabled}
                 className={inputCls + disabledCls(fieldDisabled)}
               />
@@ -9433,12 +9531,7 @@ function getSecurityWarrantyMissingKeys(order: SupplyOrderDetail, form: FormStat
     return ["psbApplicable"];
   }
   if (psbApplies) {
-    requiredKeys.push(
-      "psbBgNo",
-      "psbBgAmount",
-      "psbBgReceivedDate",
-      "psbBgValidityDate",
-    );
+    requiredKeys.push("psbBgNo", "psbBgAmount", "psbBgReceivedDate", "psbBgValidityDate");
   }
   if (pwbApplies) {
     requiredKeys.push(
@@ -9666,10 +9759,7 @@ function getSingleStageCompletion({
     activeSubview === "delivery" &&
     isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
   ) {
-    const counts = addSingleCompletion(
-      { filled: 0, total: 0 },
-      isActualJobCompletionDone(stage),
-    );
+    const counts = addSingleCompletion({ filled: 0, total: 0 }, isActualJobCompletionDone(stage));
     const status = getCompletionStatus(counts);
     return {
       ...counts,
@@ -10487,9 +10577,11 @@ function BillReturnCyclesBlock({
                   Return {index + 1}
                 </div>
                 <DeleteConfirmation
-                  mode={rows[index]?.id && lockedRows.some((saved) => saved.id === rows[index]?.id)
-                    ? "delete"
-                    : "draft"}
+                  mode={
+                    rows[index]?.id && lockedRows.some((saved) => saved.id === rows[index]?.id)
+                      ? "delete"
+                      : "draft"
+                  }
                   onConfirm={() => deleteCycle(index)}
                 >
                   <button
@@ -10519,9 +10611,10 @@ function BillReturnCyclesBlock({
                   <span className="mb-1.5 block text-xs font-medium text-muted-foreground">
                     Reason
                   </span>
-                  <input
+                  <ClearableInput
                     value={cycle.reason ?? ""}
                     onChange={(event) => updateCycle(index, { reason: event.target.value })}
+                    onClear={() => updateCycle(index, { reason: "" })}
                     disabled={rowDisabled}
                     data-testid={`${testIdPrefix}-${index}-reason`}
                     placeholder="Recommended to enter"
@@ -10544,9 +10637,10 @@ function BillReturnCyclesBlock({
                   <span className="mb-1.5 block text-xs font-medium text-muted-foreground">
                     Remarks
                   </span>
-                  <input
+                  <ClearableInput
                     value={cycle.remarks ?? ""}
                     onChange={(event) => updateCycle(index, { remarks: event.target.value })}
+                    onClear={() => updateCycle(index, { remarks: "" })}
                     disabled={rowDisabled}
                     data-testid={`${testIdPrefix}-${index}-remarks`}
                     className={inputCls + disabledCls(rowDisabled)}
@@ -10671,9 +10765,11 @@ function RemarksSummaryBlock({ form, remarks }: { form: FormState; remarks: File
 function TimelineBlock({
   form,
   supplyOrders,
+  onViewChange,
 }: {
   form: FormState;
   supplyOrders: SupplyOrderDetail[];
+  onViewChange: GuardedViewChange;
 }) {
   const [showAllDates, setShowAllDates] = useState(false);
   const [activeTimelineOrderIndex, setActiveTimelineOrderIndex] = useState<number | null>(null);
@@ -10715,9 +10811,10 @@ function TimelineBlock({
     activeTimelineStageIndex < activeOrderScope.stageGroups.length
       ? activeTimelineStageIndex
       : null;
-  const activeTimelineGroup = selectedStageIndex === null
-    ? activeOrderScope?.group ?? fileTimelineGroup
-    : activeOrderScope?.stageGroups[selectedStageIndex] ?? fileTimelineGroup;
+  const activeTimelineGroup =
+    selectedStageIndex === null
+      ? (activeOrderScope?.group ?? fileTimelineGroup)
+      : (activeOrderScope?.stageGroups[selectedStageIndex] ?? fileTimelineGroup);
   const visibleGroup = {
     ...activeTimelineGroup,
     items: showAllDates
@@ -10791,8 +10888,12 @@ function TimelineBlock({
           role="tab"
           aria-selected={selectedTimelineOrderIndex === null}
           onClick={() => {
-            setActiveTimelineOrderIndex(null);
-            setActiveTimelineStageIndex(null);
+            if (selectedTimelineOrderIndex !== null) {
+              onViewChange(() => {
+                setActiveTimelineOrderIndex(null);
+                setActiveTimelineStageIndex(null);
+              });
+            }
           }}
           className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedTimelineOrderIndex === null ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
         >
@@ -10805,8 +10906,12 @@ function TimelineBlock({
             role="tab"
             aria-selected={selectedTimelineOrderIndex === orderIndex}
             onClick={() => {
-              setActiveTimelineOrderIndex(orderIndex);
-              setActiveTimelineStageIndex(null);
+              if (selectedTimelineOrderIndex !== orderIndex) {
+                onViewChange(() => {
+                  setActiveTimelineOrderIndex(orderIndex);
+                  setActiveTimelineStageIndex(null);
+                });
+              }
             }}
             className={`rounded-md border px-3 py-2 text-sm font-medium ${selectedTimelineOrderIndex === orderIndex ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
           >
@@ -10822,29 +10927,44 @@ function TimelineBlock({
             <span
               className={`font-medium ${activeOrderScope.progress.completed === activeOrderScope.progress.total ? "text-success" : "text-foreground"}`}
             >
-              {activeOrderScope.progress.completed} of {activeOrderScope.progress.total} stages complete
+              {activeOrderScope.progress.completed} of {activeOrderScope.progress.total} stages
+              complete
             </span>
             {activeOrderScope.progress.overdue ? (
-              <span className="font-medium text-warning">{activeOrderScope.progress.overdue} overdue</span>
+              <span className="font-medium text-warning">
+                {activeOrderScope.progress.overdue} overdue
+              </span>
             ) : null}
             {activeOrderScope.progress.dueToday ? (
-              <span className="font-medium text-warning">{activeOrderScope.progress.dueToday} due today</span>
+              <span className="font-medium text-warning">
+                {activeOrderScope.progress.dueToday} due today
+              </span>
             ) : null}
             {activeOrderScope.progress.upcoming ? (
-              <span className="font-medium text-destructive">{activeOrderScope.progress.upcoming} upcoming</span>
+              <span className="font-medium text-destructive">
+                {activeOrderScope.progress.upcoming} upcoming
+              </span>
             ) : null}
             {activeOrderScope.progress.unscheduled ? (
-              <span className="text-muted-foreground">{activeOrderScope.progress.unscheduled} without D.P.</span>
+              <span className="text-muted-foreground">
+                {activeOrderScope.progress.unscheduled} without D.P.
+              </span>
             ) : null}
             {activeOrderScope.progress.stopped ? (
-              <span className="text-muted-foreground">{activeOrderScope.progress.stopped} stopped</span>
+              <span className="text-muted-foreground">
+                {activeOrderScope.progress.stopped} stopped
+              </span>
             ) : null}
           </div>
           <div className="mb-4">
             <TimelineStageSelect
               value={selectedStageIndex === null ? "order" : String(selectedStageIndex)}
               onValueChange={(value) =>
-                setActiveTimelineStageIndex(value === "order" ? null : Number(value))
+                value === (selectedStageIndex === null ? "order" : String(selectedStageIndex))
+                  ? undefined
+                  : onViewChange(() =>
+                      setActiveTimelineStageIndex(value === "order" ? null : Number(value)),
+                    )
               }
               ariaLabel={`Supply Order ${selectedTimelineOrderIndex! + 1} timeline stage`}
               options={[
@@ -10977,6 +11097,7 @@ function MilestonesBlock({
   onSupplyOrderCurrentChange,
   onSupplyOrderCompletedChange,
   onFileClosureDateChange,
+  onViewChange,
 }: {
   milestones: string[];
   applicableMilestones: Set<string>;
@@ -11003,6 +11124,7 @@ function MilestonesBlock({
   onSupplyOrderCurrentChange: (index: number, value: string) => void;
   onSupplyOrderCompletedChange: (index: number, value: string[]) => void;
   onFileClosureDateChange: (value: string) => void;
+  onViewChange: GuardedViewChange;
 }) {
   const [activeMilestoneOrderIndex, setActiveMilestoneOrderIndex] = useState<number | null>(null);
   const completedKeys = new Set(
@@ -11015,8 +11137,9 @@ function MilestonesBlock({
     Array.from(inactiveMilestones ?? []).map(normalizeMilestoneName),
   );
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const applicableMilestoneList = milestones.filter((milestone) =>
-    applicableMilestones.has(milestone) &&
+  const applicableMilestoneList = milestones.filter(
+    (milestone) =>
+      applicableMilestones.has(milestone) &&
       (!showSupplyOrderMilestones ||
         !supplyOrderDrivenMilestoneKeys.has(normalizeMilestoneName(milestone))),
   );
@@ -11036,11 +11159,8 @@ function MilestonesBlock({
               (configured) =>
                 normalizeMilestoneName(configured) === normalizeMilestoneName(milestone),
             ) &&
-            getApplicableOrdersForMilestone(
-              [order],
-              milestone,
-              supplyOrderMilestoneForm,
-            ).length > 0,
+            getApplicableOrdersForMilestone([order], milestone, supplyOrderMilestoneForm).length >
+              0,
         );
         const identifier = order.soNo?.trim() || order.gemSoNo?.trim();
         return {
@@ -11120,7 +11240,11 @@ function MilestonesBlock({
           type="button"
           role="tab"
           aria-selected={!activeSupplyOrderGroup}
-          onClick={() => setActiveMilestoneOrderIndex(null)}
+          onClick={() => {
+            if (activeMilestoneOrderIndex !== null) {
+              onViewChange(() => setActiveMilestoneOrderIndex(null));
+            }
+          }}
           className={`rounded-md border px-3 py-2 text-sm font-medium ${!activeSupplyOrderGroup ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
         >
           File Level
@@ -11131,7 +11255,11 @@ function MilestonesBlock({
             type="button"
             role="tab"
             aria-selected={activeSupplyOrderGroup?.index === group.index}
-            onClick={() => setActiveMilestoneOrderIndex(group.index)}
+            onClick={() => {
+              if (activeMilestoneOrderIndex !== group.index) {
+                onViewChange(() => setActiveMilestoneOrderIndex(group.index));
+              }
+            }}
             className={`rounded-md border px-3 py-2 text-sm font-medium ${activeSupplyOrderGroup?.index === group.index ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background text-foreground hover:bg-accent"}`}
           >
             Supply Order {group.index + 1}
@@ -11355,9 +11483,7 @@ function getTimelineMetrics(items: TimelineItem[]) {
 function getTimelineDeliveryStatusText(item: TimelineItem) {
   if (item.deliveryStatus === "upcoming") {
     const dueIn = getTimelineDayGap(formatLocalDate(new Date()), item.date);
-    return dueIn === undefined
-      ? "Future D.P."
-      : `Future D.P. · Due in ${formatDayCount(dueIn)}`;
+    return dueIn === undefined ? "Future D.P." : `Future D.P. · Due in ${formatDayCount(dueIn)}`;
   }
   if (item.deliveryStatus === "due") return "D.P. due today; delivery incomplete";
   if (item.deliveryStatus === "overdue") {
@@ -11391,11 +11517,7 @@ function getDeliveryPeriodTimelineStatus(
     isYes(order.shortclosure ?? "") ||
     isYes(order.noFurtherAction ?? "");
 
-  const isJobCompletion = isJobCompletionWorkflow(
-    form.fileType,
-    form.ir,
-    form.fileTypeGroup,
-  );
+  const isJobCompletion = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup);
   const isDeliveryCompleteByToday = (delivery: {
     materialReceiptDate?: string;
     actualJobCompletionDate?: string;
@@ -11404,9 +11526,7 @@ function getDeliveryPeriodTimelineStatus(
       ? delivery.actualJobCompletionDate
       : delivery.materialReceiptDate;
     return Boolean(
-      completionDate &&
-        isValidTimelineDate(completionDate) &&
-        completionDate <= today,
+      completionDate && isValidTimelineDate(completionDate) && completionDate <= today,
     );
   };
 
@@ -11431,18 +11551,15 @@ function getDeliveryPeriodTimelineStatus(
 
 function isTimelineDeliveryCompleteByToday(
   form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
-  delivery: Pick<StageDeliveryDetail, "materialReceiptDate" | "actualJobCompletionDate"> |
-    Pick<SupplyOrderDetail, "materialReceiptDate" | "actualJobCompletionDate">,
+  delivery:
+    | Pick<StageDeliveryDetail, "materialReceiptDate" | "actualJobCompletionDate">
+    | Pick<SupplyOrderDetail, "materialReceiptDate" | "actualJobCompletionDate">,
 ) {
   const completionDate = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup)
     ? delivery.actualJobCompletionDate
     : delivery.materialReceiptDate;
   const today = formatLocalDate(new Date());
-  return Boolean(
-    completionDate &&
-      isValidTimelineDate(completionDate) &&
-      completionDate <= today,
-  );
+  return Boolean(completionDate && isValidTimelineDate(completionDate) && completionDate <= today);
 }
 
 function isTimelineDeliveryFollowUpStopped(order: SupplyOrderDetail) {
@@ -11574,11 +11691,7 @@ function getSupplyOrderTimelineItemsForOrder(
         order: startOrder + fieldIndex,
         deliveryStatus:
           key === "dpDate" || key === "revisedDp"
-            ? getDeliveryPeriodTimelineStatus(
-                form,
-                order,
-                String(order[key] ?? ""),
-              )
+            ? getDeliveryPeriodTimelineStatus(form, order, String(order[key] ?? ""))
             : undefined,
       };
     });
@@ -11618,12 +11731,7 @@ function getStageTimelineGroups(
         order: stageStartOrder + fieldIndex,
         deliveryStatus:
           key === "dpDate" || key === "revisedDp"
-            ? getDeliveryPeriodTimelineStatus(
-                form,
-                order,
-                String(stage[key] ?? ""),
-                stage,
-              )
+            ? getDeliveryPeriodTimelineStatus(form, order, String(stage[key] ?? ""), stage)
             : undefined,
       };
     });
@@ -11772,9 +11880,7 @@ function exportTimelineReport(
       : getFilledTimelineItems(group.items);
     const filledItems = getFilledTimelineItems(group.items);
     const rows = exportItems.map((item, index) => {
-      const filledIndex = item.date
-        ? filledItems.findIndex((filled) => filled.id === item.id)
-        : -1;
+      const filledIndex = item.date ? filledItems.findIndex((filled) => filled.id === item.id) : -1;
       const firstItem = filledItems[0];
       const previousItem = filledIndex > 0 ? filledItems[filledIndex - 1] : undefined;
       const gapDays = previousItem ? getTimelineDayGap(previousItem.date, item.date) : undefined;
@@ -11810,15 +11916,17 @@ function exportTimelineReport(
       format === "excel" ? "xlsx" : "pdf"
     }`,
     primarySheetName: "File Level",
-    tables: format === "excel"
-      ? [detailTable, timelineTableForGroup(timelineGroups[0])]
-      : [detailTable, ...timelineTables],
-    sheets: format === "excel"
-      ? timelineGroups.slice(1).map((group, index) => ({
-          name: `${index + 1}. ${group.title}`.replace(/[\\/*?:\[\]]/g, " ").slice(0, 31),
-          tables: [detailTable, timelineTableForGroup(group)],
-        }))
-      : undefined,
+    tables:
+      format === "excel"
+        ? [detailTable, timelineTableForGroup(timelineGroups[0])]
+        : [detailTable, ...timelineTables],
+    sheets:
+      format === "excel"
+        ? timelineGroups.slice(1).map((group, index) => ({
+            name: `${index + 1}. ${group.title}`.replace(/[\\/*?:\[\]]/g, " ").slice(0, 31),
+            tables: [detailTable, timelineTableForGroup(group)],
+          }))
+        : undefined,
   });
 }
 
@@ -12353,10 +12461,7 @@ function hasMeaningfulSupplyOrderDataValue(key: string, value: unknown): boolean
   }
   const text = String(value ?? "").trim();
   if (!text) return false;
-  if (
-    key === "bgCoverageType" &&
-    ["none", "pwb"].includes(text.toLowerCase())
-  ) {
+  if (key === "bgCoverageType" && ["none", "pwb"].includes(text.toLowerCase())) {
     return false;
   }
   return !(
@@ -12964,12 +13069,7 @@ function getSupplyOrderSaveWarnings(
   rows: SupplyOrderDetail[],
   form: Pick<
     FormState,
-    | "bg"
-    | "ir"
-    | "fileType"
-    | "fileTypeGroup"
-    | "valueCapitalSelected"
-    | "valueRevenueSelected"
+    "bg" | "ir" | "fileType" | "fileTypeGroup" | "valueCapitalSelected" | "valueRevenueSelected"
   >,
   completedMilestones: string[],
 ) {
@@ -13312,11 +13412,7 @@ function getPaymentChronologyWarnings(
   if (isDateBefore(dates.materialReceiptDate, dates.soDate)) {
     warnings.push(`${label}: Material receipt date is earlier than S.O. date.`);
   }
-  const jobCompletionWorkflow = isJobCompletionWorkflow(
-    form.fileType,
-    form.ir,
-    form.fileTypeGroup,
-  );
+  const jobCompletionWorkflow = isJobCompletionWorkflow(form.fileType, form.ir, form.fileTypeGroup);
   const inspectionWorkflow =
     isYes(form.ir) &&
     isDeliveryInspectionApplicableByGroup({
@@ -13324,28 +13420,16 @@ function getPaymentChronologyWarnings(
       fileTypeGroup: form.fileTypeGroup,
       ir: form.ir,
     });
-  if (
-    jobCompletionWorkflow &&
-    isDateBefore(dates.billPreparationDate, dates.jobCompletionDate)
-  ) {
+  if (jobCompletionWorkflow && isDateBefore(dates.billPreparationDate, dates.jobCompletionDate)) {
     warnings.push(`${label}: Bill Preparation date is earlier than Job Completion Received Date.`);
   }
-  if (
-    inspectionWorkflow &&
-    isDateBefore(dates.irPreparationDate, dates.materialReceiptDate)
-  ) {
+  if (inspectionWorkflow && isDateBefore(dates.irPreparationDate, dates.materialReceiptDate)) {
     warnings.push(`${label}: IR Preparation date is earlier than Material Receipt date.`);
   }
-  if (
-    inspectionWorkflow &&
-    isDateBefore(dates.irReceiptDate, dates.irPreparationDate)
-  ) {
+  if (inspectionWorkflow && isDateBefore(dates.irReceiptDate, dates.irPreparationDate)) {
     warnings.push(`${label}: IR Receipt date is earlier than IR Preparation date.`);
   }
-  if (
-    inspectionWorkflow &&
-    isDateBefore(dates.billPreparationDate, dates.irReceiptDate)
-  ) {
+  if (inspectionWorkflow && isDateBefore(dates.billPreparationDate, dates.irReceiptDate)) {
     warnings.push(`${label}: Bill Preparation date is earlier than IR Receipt date.`);
   }
   if (isDateBefore(dates.billSentForPaymentDate, dates.billPreparationDate)) {
@@ -15582,7 +15666,6 @@ function ValueField({
     >,
   ) => void;
 }) {
-  const [isFocused, setIsFocused] = useState(false);
   const value = capitalSelected ? capitalValue : revenueSelected ? revenueValue : "";
   const selected = capitalSelected || revenueSelected;
   const selectionDisabled = disabled || (lockFilledFields && lockedSelectionFilled);
@@ -15606,14 +15689,17 @@ function ValueField({
     });
   };
 
-  const updateValue = (nextValue: string) => {
-    const cleanedValue = formatDecimalInput(nextValue);
+  const applyValue = (cleanedValue: string) => {
     onChange({
       valueCapital: capitalSelected ? cleanedValue : "",
       valueRevenue: !capitalSelected && revenueSelected ? cleanedValue : "",
       valueCapitalSelected: capitalSelected ? "Yes" : "",
       valueRevenueSelected: !capitalSelected && revenueSelected ? "Yes" : "",
     });
+  };
+
+  const updateValue = (input: HTMLInputElement) => {
+    handleFormattedAmountInput(input, applyValue);
   };
 
   return (
@@ -15643,12 +15729,11 @@ function ValueField({
             Revenue
           </label>
         </div>
-        <input
+        <ClearableInput
           ref={inputRef}
-          value={isFocused ? value : formatAmountForDisplay(value)}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
-          onChange={(event) => updateValue(event.target.value)}
+          value={formatAmountForDisplay(value)}
+          onChange={(event) => updateValue(event.currentTarget)}
+          onClear={() => applyValue("")}
           inputMode="decimal"
           disabled={valueDisabled}
           placeholder="Enter value"
@@ -15773,9 +15858,10 @@ function AmountByValueTypeField({
             Revenue
           </label>
         </div>
-        <input
+        <ClearableInput
           value={formatAmountForDisplay(value)}
           onChange={(event) => updateValue(event.currentTarget)}
+          onClear={() => onChange({ capital: "", revenue: "" })}
           inputMode="decimal"
           disabled={fieldDisabled}
           data-testid={testId}
@@ -15883,10 +15969,11 @@ function DynamicField({
   if (field.type === "textarea") {
     return (
       <Field label={field.label} helper={field.helper}>
-        <textarea
+        <ClearableTextarea
           ref={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onClear={() => onChange("")}
           disabled={disabled}
           placeholder={field.placeholder}
           data-testid={testId}
@@ -15909,7 +15996,7 @@ function DynamicField({
           className={inputCls + disabledCls(disabled)}
         />
       ) : (
-        <input
+        <ClearableInput
           ref={inputRef}
           type={
             field.key === "exchangeRate" || isAmountFieldKey(field.key)
@@ -15926,6 +16013,7 @@ function DynamicField({
               onChange(event.currentTarget.value);
             }
           }}
+          onClear={() => onChange("")}
           disabled={disabled}
           data-testid={testId}
           style={compactWidth ? { width: 160, minWidth: 160, maxWidth: 160 } : undefined}
@@ -15970,16 +16058,22 @@ function SecurityWarrantyBgRulesHelper() {
           >
             <div className="text-xs font-normal leading-relaxed">
               <p>
-                Select the coverage type for each S.O. PSB applicability and the file-level
-                Warranty setting control different guarantee obligations.
+                Select the coverage type for each S.O. PSB applicability and the file-level Warranty
+                setting control different guarantee obligations.
               </p>
               <div className="mt-2 overflow-x-auto rounded-md border border-sky-200">
                 <table className="w-full min-w-[760px] border-collapse text-left">
                   <thead className="bg-sky-100 text-sky-950">
                     <tr>
-                      <th className="border border-sky-200 px-3 py-2 font-semibold">Coverage type</th>
-                      <th className="border border-sky-200 px-3 py-2 font-semibold">Required settings and fields</th>
-                      <th className="border border-sky-200 px-3 py-2 font-semibold">Condition for BG requirement</th>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">
+                        Coverage type
+                      </th>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">
+                        Required settings and fields
+                      </th>
+                      <th className="border border-sky-200 px-3 py-2 font-semibold">
+                        Condition for BG requirement
+                      </th>
                     </tr>
                   </thead>
                   <tbody className="bg-background">
@@ -15988,12 +16082,15 @@ function SecurityWarrantyBgRulesHelper() {
                       <td className="border border-sky-200 px-3 py-2">
                         No PSB, PWB, or combined guarantee details apply.
                       </td>
-                      <td className="border border-sky-200 px-3 py-2">No BG requirement applies.</td>
+                      <td className="border border-sky-200 px-3 py-2">
+                        No BG requirement applies.
+                      </td>
                     </tr>
                     <tr>
                       <td className="border border-sky-200 px-3 py-2 font-medium">PSB</td>
                       <td className="border border-sky-200 px-3 py-2">
-                        PSB Applicable = Yes. Enter the PSB number, amount, received, validity, and return details.
+                        PSB Applicable = Yes. Enter the PSB number, amount, received, validity, and
+                        return details.
                       </td>
                       <td className="border border-sky-200 px-3 py-2">
                         Financial Sanction date is recorded and PSB received date is blank.
@@ -16022,17 +16119,22 @@ function SecurityWarrantyBgRulesHelper() {
                         PSB and PWB separately
                       </td>
                       <td className="border border-sky-200 px-3 py-2">
-                        PSB Applicable = Yes for PSB; Warranty = Yes for PWB. Enter each guarantee and its own dates; Warranty Period applies to PWB.
+                        PSB Applicable = Yes for PSB; Warranty = Yes for PWB. Enter each guarantee
+                        and its own dates; Warranty Period applies to PWB.
                       </td>
                       <td className="border border-sky-200 px-3 py-2">
-                        PSB becomes required after Financial Sanction. PWB uses its applicable trigger (S.O. for contract files, IR Receipt for Goods & Services with IR = Yes, or Job Completion otherwise). Each requirement is cleared when its own received date is recorded.
+                        PSB becomes required after Financial Sanction. PWB uses its applicable
+                        trigger (S.O. for contract files, IR Receipt for Goods & Services with IR =
+                        Yes, or Job Completion otherwise). Each requirement is cleared when its own
+                        received date is recorded.
                       </td>
                     </tr>
                   </tbody>
                 </table>
               </div>
               <p className="mt-2">
-                BG requirements are derived automatically. Each requirement is completed when its corresponding received date is recorded: PSB, PWB, or combined PSB+PWB.
+                BG requirements are derived automatically. Each requirement is completed when its
+                corresponding received date is recorded: PSB, PWB, or combined PSB+PWB.
               </p>
             </div>
           </TooltipContent>
@@ -16196,9 +16298,10 @@ function LdDetailField({
           ))}
         </div>
         <div className="relative">
-          <input
+          <ClearableInput
             value={ldPercentage}
             onChange={(event) => onPercentageChange(event.target.value)}
+            onClear={() => onPercentageChange("")}
             disabled={disabled}
             inputMode="decimal"
             placeholder="Enter LD"
@@ -16246,11 +16349,7 @@ function getTcecMinutesMeetingDateWarning(fieldKey: FieldKey, form: FormState) {
             }
           : undefined;
 
-  if (
-    !datePair ||
-    !hasFilledValue(datePair.minutesDate) ||
-    hasFilledValue(datePair.meetingDate)
-  ) {
+  if (!datePair || !hasFilledValue(datePair.minutesDate) || hasFilledValue(datePair.meetingDate)) {
     return undefined;
   }
 

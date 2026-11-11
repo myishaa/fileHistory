@@ -15,6 +15,7 @@ import { hasUnsavedChangesForSource, useUnsavedChanges } from "@/lib/unsaved-cha
 import { MonthlyCountCalendar, type MonthlyCalendarDay } from "@/components/monthly-count-calendar";
 import { QuickEntryExcelExportList } from "@/components/quick-entry-excel";
 import { UrgentMessageTicker, UrgentMessagesPanel } from "@/components/urgent-messages";
+import { ClearableInput } from "@/components/clearable-input";
 import { showAppConfirm } from "@/components/app-dialog";
 import {
   ArrowDown,
@@ -1668,13 +1669,14 @@ function NoticeBoardEditor({ readOnly = false }: { readOnly?: boolean }) {
             {noticeBoardTransitionFields.map(({ key, label }) => (
               <label key={key} className="text-xs font-medium">
                 {label}
-                <input
+                <ClearableInput
                   type="number"
                   min={0.1}
                   max={30}
                   step={0.1}
                   value={personalTransitionDrafts[key]}
                   onChange={(event) => setTransitionDraft(key, event.target.value)}
+                  onClear={() => setTransitionDraft(key, "")}
                   className="mt-1 block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
                 />
               </label>
@@ -3265,24 +3267,25 @@ function NoticeBoard({
       aria-labelledby="notice-board-dialog-title"
       tabIndex={-1}
     >
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-        <div>
+      <header className="flex min-w-0 flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
+        <div className="min-w-0 flex-1">
           <p className="text-xs font-medium uppercase text-muted-foreground">Notice Board</p>
-          <h2 id="notice-board-dialog-title" className="text-lg font-semibold">
+          <h2 id="notice-board-dialog-title" className="truncate text-lg font-semibold">
             {getDisplayLabel(activeItem) ?? "Notice Board"}
           </h2>
         </div>
-        <div className="flex items-center gap-1">
-          <label className="mr-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+        <div className="flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-1">
+          <label className="mr-2 flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
             <Timer className="size-4" aria-hidden="true" />
             Hold
-            <input
+            <ClearableInput
               type="number"
               min={5}
               max={120}
               step={1}
               value={durationDraft}
               onChange={(event) => setDurationDraft(event.target.value)}
+              onClear={() => setDurationDraft("")}
               onBlur={() => {
                 setDurationDraft((current) => {
                   const next = Math.min(120, Math.max(5, Number(current) || delaySeconds));
@@ -3291,11 +3294,11 @@ function NoticeBoard({
               }}
               aria-label="Slide duration in seconds"
               title="Choose how long each view stays before transitioning"
-              className="h-8 w-16 rounded-md border border-input bg-background px-2 text-sm text-foreground tabular-nums"
+              className="h-8 w-20 rounded-md border border-input bg-background px-2 text-sm text-foreground tabular-nums"
             />
             sec
           </label>
-          <label className="mr-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <label className="mr-2 flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs text-muted-foreground">
             Transition
             <select
               value={transitionEffect}

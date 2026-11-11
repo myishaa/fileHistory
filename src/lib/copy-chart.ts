@@ -148,6 +148,7 @@ function appendDomElement(
   origin: DOMRect,
   skipRechartsLegend = false,
   removePieRectangles = false,
+  forceWhiteBackground = false,
 ) {
   if (source.hasAttribute("data-chart-copy-exclude")) return;
   if (source.classList.contains("recharts-tooltip-wrapper") || source.classList.contains("recharts-tooltip-cursor")) return;
@@ -155,6 +156,7 @@ function appendDomElement(
   if (source instanceof SVGElement) {
     const clone = source.cloneNode(true) as SVGElement;
     inlineTreeStyles(source, clone);
+    if (forceWhiteBackground) clone.style.backgroundColor = "#ffffff";
     const sourceText = Array.from(source.querySelectorAll<SVGTextElement>("text"));
     const cloneText = Array.from(clone.querySelectorAll<SVGTextElement>("text"));
     sourceText.forEach((text, index) => {
@@ -183,7 +185,7 @@ function appendDomElement(
   const bounds = source.getBoundingClientRect();
   const style = window.getComputedStyle(source);
   if (bounds.width > 0 && bounds.height > 0) {
-    const background = style.backgroundColor;
+    const background = forceWhiteBackground ? "#ffffff" : style.backgroundColor;
     const borderWidth = Number.parseFloat(style.borderTopWidth) || 0;
     if ((background !== "rgba(0, 0, 0, 0)" && background !== "transparent") || borderWidth > 0) {
       const box = document.createElementNS("http://www.w3.org/2000/svg", "rect");
@@ -228,7 +230,7 @@ function serializeDomChart(target: Element, width: number, height: number, copie
   )).filter((item) => item.getClientRects().length > 0);
   const includeLegend = legendItems.length > 1;
   const isPieChart = Boolean(target.querySelector(".recharts-pie"));
-  appendDomElement(target, svg, bounds, includeLegend, isPieChart);
+  appendDomElement(target, svg, bounds, includeLegend, isPieChart, true);
   if (includeLegend) {
     legendItems.forEach((item) => {
       Array.from(item.children).forEach((child) => appendDomElement(child, svg, bounds));

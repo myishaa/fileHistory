@@ -9,6 +9,7 @@ import {
   type KeyboardEvent,
   type Ref,
   useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -74,6 +75,7 @@ export function SearchableDropdown({
   const rootRef = useRef<HTMLDivElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const internalInputRef = useRef<HTMLInputElement | null>(null);
+  const listboxId = `searchable-dropdown-${useId().replace(/:/g, "")}`;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState(false);
@@ -156,8 +158,10 @@ export function SearchableDropdown({
   }, [open]);
 
   useEffect(() => {
-    setActiveOptionIndex(-1);
-  }, [open, query, visibleOptions.length]);
+    if (!open || activeOptionIndex < 0) return;
+    const activeOption = document.getElementById(`${listboxId}-option-${activeOptionIndex}`);
+    activeOption?.scrollIntoView({ block: "nearest" });
+  }, [activeOptionIndex, listboxId, open]);
 
   function setInputRef(element: HTMLInputElement | null) {
     internalInputRef.current = element;
@@ -204,6 +208,7 @@ export function SearchableDropdown({
     onSearchChange?.("");
     setEditing(false);
     setOpen(false);
+    setActiveOptionIndex(-1);
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
@@ -215,17 +220,33 @@ export function SearchableDropdown({
     if (event.key === "ArrowDown") {
       event.preventDefault();
       if (!open) {
-        if (typeAheadOnly) setOpen(Boolean(query.trim()));
-        else openFullList();
-        setActiveOptionIndex(0);
+        if (typeAheadOnly) {
+          if (!query.trim() || !visibleOptions.length) return;
+          setOpen(true);
+        } else {
+          openFullList();
+        }
+        setActiveOptionIndex(visibleOptions.length ? 0 : -1);
       } else if (visibleOptions.length) {
-        setActiveOptionIndex((current) => Math.min(current + 1, visibleOptions.length - 1));
+        setActiveOptionIndex((current) =>
+          current < 0 ? 0 : Math.min(current + 1, visibleOptions.length - 1),
+        );
       }
     }
     if (event.key === "ArrowUp") {
       event.preventDefault();
-      if (open && visibleOptions.length) {
-        setActiveOptionIndex((current) => Math.max(current - 1, 0));
+      if (!open) {
+        if (typeAheadOnly) {
+          if (!query.trim() || !visibleOptions.length) return;
+          setOpen(true);
+        } else {
+          openFullList();
+        }
+        setActiveOptionIndex(visibleOptions.length ? visibleOptions.length - 1 : -1);
+      } else if (visibleOptions.length) {
+        setActiveOptionIndex((current) =>
+          current < 0 ? visibleOptions.length - 1 : Math.max(current - 1, 0),
+        );
       }
     }
     if (event.key === "Enter" && open && visibleOptions.length) {
@@ -262,6 +283,7 @@ export function SearchableDropdown({
     onSearchChange?.("");
     setEditing(false);
     setOpen(false);
+    setActiveOptionIndex(-1);
     onChange(option.value);
     internalInputRef.current?.focus();
   }
@@ -304,6 +326,14 @@ export function SearchableDropdown({
         placeholder={placeholder}
         data-testid={testId}
         autoComplete="off"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-controls={open ? listboxId : undefined}
+        aria-activedescendant={
+          open && activeOptionIndex >= 0 ? `${listboxId}-option-${activeOptionIndex}` : undefined
+        }
         className={
           (className ?? "") +
           (typeAheadOnly
@@ -353,6 +383,8 @@ export function SearchableDropdown({
       {open && !disabled && menuPosition ? createPortal(
         <div
           ref={menuRef}
+          id={listboxId}
+          role="listbox"
           className="fixed z-50 overflow-y-auto rounded-md border border-border bg-popover p-1 text-sm text-popover-foreground shadow-md"
           style={{
             left: menuPosition.left,
@@ -381,6 +413,7 @@ export function SearchableDropdown({
               option.helpText ? (
                 <div
                   key={option.value}
+                  id={`${listboxId}-option-${index}`}
                   onMouseDown={(event) => event.preventDefault()}
                   onMouseEnter={() => setActiveOptionIndex(index)}
                   onClick={() => selectOption(option)}
@@ -390,7 +423,7 @@ export function SearchableDropdown({
                     (option.value === value ? "font-semibold text-primary " : "")
                   }
                   role="option"
-                  aria-selected={index === activeOptionIndex}
+                  aria-selected={option.value === value}
                 >
                   <span>{option.label}</span>
                   <TooltipProvider delayDuration={150}>
@@ -423,6 +456,7 @@ export function SearchableDropdown({
                 <button
                   key={option.value}
                   type="button"
+                  id={`${listboxId}-option-${index}`}
                   onMouseDown={(event) => event.preventDefault()}
                   onMouseEnter={() => setActiveOptionIndex(index)}
                   onClick={() => selectOption(option)}
@@ -432,7 +466,7 @@ export function SearchableDropdown({
                     (option.value === value ? "font-semibold text-primary" : "")
                   }
                   role="option"
-                  aria-selected={index === activeOptionIndex}
+                  aria-selected={option.value === value}
                 >
                   {option.label}
                 </button>

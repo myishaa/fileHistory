@@ -656,6 +656,48 @@ async function saveRestoreAuthorizationPassword(
   }
 }
 
+async function changeRestoreAuthorizationPassword(
+  currentPasswordValue: unknown,
+  passwordValue: unknown,
+  confirmationValue: unknown,
+) {
+  const currentPassword = readRestoreAuthorizationPassword(
+    currentPasswordValue,
+    "Current Upload password",
+  );
+  const password = readRestoreAuthorizationPassword(passwordValue, "New Upload password");
+  const confirmation = readRestoreAuthorizationPassword(
+    confirmationValue,
+    "Confirm new Upload password",
+  );
+  if (password !== confirmation) {
+    throw new HttpError(400, "Upload passwords do not match.");
+  }
+  await ensureProtectedBackupAuthorizationSchema();
+  const existing = await pool.query<{ password_hash: string }>(
+    `select restore_authorization_password_hash as password_hash
+     from protected_backup_settings
+     where id = true`,
+  );
+  const currentHash = existing.rows[0]?.password_hash ?? "";
+  if (!currentHash) {
+    throw new HttpError(400, "Set an Upload password before changing it.");
+  }
+  const verification = await pool.query<{ valid: boolean }>(
+    `select $1 = crypt($2, $1) as valid`,
+    [currentHash, currentPassword],
+  );
+  if (!verification.rows[0]?.valid) {
+    throw new HttpError(403, "Current Upload password is incorrect.");
+  }
+  await pool.query(
+    `update protected_backup_settings
+     set restore_authorization_password_hash = crypt($1, gen_salt('bf')), updated_at = now()
+     where id = true`,
+    [password],
+  );
+}
+
 async function setRestoreAuthorizationCredentials(password: string, recoveryPin: string) {
   await pool.query(
     `update protected_backup_settings
@@ -685,6 +727,33 @@ async function restoreAuthorizationRecoveryPinIsConfigured() {
      where id = true`,
   );
   return result.rows[0]?.configured ?? false;
+}
+
+async function verifyRestoreAuthorizationRecoveryPin(value: unknown) {
+  const recoveryPin = readRestoreAuthorizationRecoveryPin(
+    value,
+    "Upload password Recovery PIN",
+  );
+  await ensureProtectedBackupAuthorizationSchema();
+  const result = await pool.query<{ configured: boolean; valid: boolean }>(
+    `select
+       restore_authorization_recovery_pin_hash <> '' as configured,
+       restore_authorization_recovery_pin_hash <> ''
+         and restore_authorization_recovery_pin_hash = crypt($1, restore_authorization_recovery_pin_hash) as valid
+     from protected_backup_settings
+     where id = true`,
+    [recoveryPin],
+  );
+  if (!result.rows[0]?.configured) {
+    throw new HttpError(
+      400,
+      "Configure the six-digit Recovery PIN in Protected Backup settings before using Forgot password.",
+    );
+  }
+  if (!result.rows[0].valid) {
+    throw new HttpError(403, "Incorrect Upload password Recovery PIN.");
+  }
+  return recoveryPin;
 }
 
 async function verifyRestoreAuthorizationPassword(passwordValue: unknown) {
@@ -3282,15 +3351,26 @@ settingsRouter.put(
 );
 
 settingsRouter.put(
+  "/protected-backup/restore-authorization/password",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await changeRestoreAuthorizationPassword(
+      body.currentPassword,
+      body.password,
+      body.confirmation,
+    );
+    response.json({ configured: true });
+  }),
+);
+
+settingsRouter.put(
   "/protected-backup/restore-authorization/recover",
   asyncHandler(async (request, response) => {
     const user = requireAuth(request as AuthRequest);
     if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
     const body = requireObjectBody(request.body);
-    const recoveryPin = readRestoreAuthorizationRecoveryPin(
-      body.recoveryPin,
-      "Upload password Recovery PIN",
-    );
     const password = readRestoreAuthorizationPassword(body.password, "Upload password");
     const confirmation = readRestoreAuthorizationPassword(
       body.confirmation,
@@ -3299,25 +3379,7 @@ settingsRouter.put(
     if (password !== confirmation) {
       throw new HttpError(400, "Upload passwords do not match.");
     }
-    await ensureProtectedBackupAuthorizationSchema();
-    const recoveryPinResult = await pool.query<{ configured: boolean; valid: boolean }>(
-      `select
-         restore_authorization_recovery_pin_hash <> '' as configured,
-         restore_authorization_recovery_pin_hash <> ''
-           and restore_authorization_recovery_pin_hash = crypt($1, restore_authorization_recovery_pin_hash) as valid
-       from protected_backup_settings
-       where id = true`,
-      [recoveryPin],
-    );
-    if (!recoveryPinResult.rows[0]?.configured) {
-      throw new HttpError(
-        400,
-        "Configure the six-digit Recovery PIN in Protected Backup settings before using Forgot password.",
-      );
-    }
-    if (!recoveryPinResult.rows[0].valid) {
-      throw new HttpError(403, "Incorrect Upload password Recovery PIN.");
-    }
+    const recoveryPin = await verifyRestoreAuthorizationRecoveryPin(body.recoveryPin);
     await pool.query(
       `update protected_backup_settings
        set restore_authorization_password_hash = crypt($1, gen_salt('bf')), updated_at = now()
@@ -3325,6 +3387,17 @@ settingsRouter.put(
       [password],
     );
     response.json({ configured: true, recovered: true });
+  }),
+);
+
+settingsRouter.post(
+  "/protected-backup/restore-authorization/recovery-pin/verify",
+  asyncHandler(async (request, response) => {
+    const user = requireAuth(request as AuthRequest);
+    if (user.role !== "admin") throw new HttpError(403, "Admin access required.");
+    const body = requireObjectBody(request.body);
+    await verifyRestoreAuthorizationRecoveryPin(body.recoveryPin);
+    response.json({ authorized: true });
   }),
 );
 

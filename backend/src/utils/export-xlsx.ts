@@ -145,7 +145,7 @@ function worksheetXml(
           return makeNumberCell(reference, value, dateStyle);
         }
         if (numericCells.get(rowIndex)?.has(columnIndex)) {
-          const numericValue = Number(String(value ?? "").replace(/,/g, "").trim());
+          const numericValue = Number(String(value ?? "").replace(/[₹,\s]/g, "").trim());
           if (String(value ?? "").trim() && Number.isFinite(numericValue)) {
             return makeNumberCell(reference, numericValue, style);
           }
