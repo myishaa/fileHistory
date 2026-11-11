@@ -76,6 +76,9 @@ function order(patch = {}) {
     paymentMode: "",
     actualPaymentCapital: "",
     actualPaymentRevenue: "",
+    actualJobCompletionDate: "",
+    noFurtherAction: "No",
+    noFurtherActionDate: "",
     soCancelled: "No",
     soCancelledDate: "",
     shortclosure: "No",
@@ -147,7 +150,7 @@ function file(code, patch = {}) {
     rfpVettingApprovalDate: "",
     preBidMeeting: "No",
     preBidMeetingDate: "",
-    tenderLive: "Yes",
+    tenderLive: "No",
     bidNumber: `${code}-BID`,
     bidDate: "2026-04-20",
     bidOpeningDate: "2026-04-25",
@@ -598,6 +601,120 @@ function supplyOrderEdgeFiles() {
   ];
 }
 
+// Historical-scope fixtures are deliberately complete and internally
+// chronological. They exercise the current Cancelled S.O. and File Closed
+// views without creating anomaly-control records that belong to a separate
+// negative-test batch.
+function historicalScopeFiles() {
+  return [
+    file(`${prefix}-HISTORY-MIXED`, {
+      supplyOrders: [
+        order({
+          soNo: `${prefix}-HISTORY-MIXED-LIVE-SO`,
+          soDate: "2026-05-15",
+          soValueCapital: "60000",
+          completedMilestones: ["Financial Sanction", "Supply Order", "Delivery Period"],
+        }),
+        order({
+          soNo: `${prefix}-HISTORY-MIXED-CANCELLED-SO`,
+          soDate: "2026-05-10",
+          soValueCapital: "40000",
+          soCancelled: "Yes",
+          soCancelledDate: "2026-06-20",
+          completedMilestones: ["Financial Sanction", "Supply Order"],
+        }),
+      ],
+      noOfSo: "2",
+    }),
+    file(`${prefix}-HISTORY-FULL-CANCELLED-CLOSED`, {
+      fileClosureDate: "2026-08-10",
+      completedMilestones: ["Scrutiny", "Controlling", "CFA", "Bidding", "File Closed"],
+      supplyOrders: [
+        order({
+          soNo: `${prefix}-HISTORY-FULL-CANCELLED-CLOSED-SO`,
+          soDate: "2026-05-15",
+          soValueCapital: "75000",
+          soCancelled: "Yes",
+          soCancelledDate: "2026-07-01",
+          completedMilestones: ["Financial Sanction", "Supply Order"],
+        }),
+      ],
+    }),
+    file(`${prefix}-HISTORY-CLOSED-LIVE`, {
+      fileClosureDate: "2026-09-10",
+      completedMilestones: [
+        "Scrutiny",
+        "Controlling",
+        "CFA",
+        "Bidding",
+        "File Closed",
+      ],
+      supplyOrders: [
+        order({
+          soNo: `${prefix}-HISTORY-CLOSED-LIVE-SO`,
+          soDate: "2026-05-15",
+          soValueCapital: "100000",
+          completedMilestones: [
+            "Financial Sanction",
+            "Supply Order",
+            "Delivery Period",
+            "Delivery",
+            "IR Preparation",
+            "IR Receipt",
+            "Bill preparation",
+            "Bill sent for payment",
+            "Payment",
+          ],
+          materialReceiptDate: "2026-06-01",
+          irPreparationDate: "2026-06-03",
+          irReceiptDate: "2026-06-05",
+          billPreparationDate: "2026-06-07",
+          billNo: `${prefix}-HISTORY-CLOSED-LIVE-BILL`,
+          billAmountCapital: "100000",
+          billSentForPaymentDate: "2026-06-08",
+          paymentDate: "2026-06-15",
+          paymentMode: "Online",
+          actualPaymentCapital: "100000",
+        }),
+      ],
+    }),
+    file(`${prefix}-HISTORY-SHORTCLOSED-NFA`, {
+      supplyOrders: [
+        order({
+          soNo: `${prefix}-HISTORY-SHORTCLOSED-NFA-SO`,
+          soDate: "2026-05-15",
+          soValueCapital: "90000",
+          shortclosure: "Yes",
+          shortclosureDate: "2026-08-20",
+          noFurtherAction: "Yes",
+          noFurtherActionDate: "2026-08-20",
+          completedMilestones: [
+            "Financial Sanction",
+            "Supply Order",
+            "Delivery Period",
+            "Delivery",
+            "IR Preparation",
+            "IR Receipt",
+            "Bill preparation",
+            "Bill sent for payment",
+            "Payment",
+          ],
+          materialReceiptDate: "2026-06-01",
+          irPreparationDate: "2026-06-03",
+          irReceiptDate: "2026-06-05",
+          billPreparationDate: "2026-06-07",
+          billNo: `${prefix}-HISTORY-SHORTCLOSED-NFA-BILL`,
+          billAmountCapital: "90000",
+          billSentForPaymentDate: "2026-06-08",
+          paymentDate: "2026-06-15",
+          paymentMode: "Online",
+          actualPaymentCapital: "90000",
+        }),
+      ],
+    }),
+  ];
+}
+
 function customSettingsFiles() {
   return [
     file(`${prefix}-CUSTOM-GS`, {
@@ -683,6 +800,7 @@ const batches = {
   "payment-pending-edge": paymentPendingEdgeFiles,
   "stage-overlap": stageOverlapFiles,
   "supply-order-edge": supplyOrderEdgeFiles,
+  "historical-scope": historicalScopeFiles,
   "custom-settings": customSettingsFiles,
 };
 

@@ -119,7 +119,7 @@ export function expectedSupplyOrderEntries(file: FileRecord) {
     if (!usedOrderIndexes.has(orderIndex)) missingOrderIndexes.push(orderIndex);
   }
   const missingEntries = missingOrderIndexes.map((orderIndex) => ({
-    order: { currentMilestone: "Supply Order" },
+    order: { currentMilestone: "Supply Order" } as SupplyOrderDetail,
     orderIndex,
   }));
   return [

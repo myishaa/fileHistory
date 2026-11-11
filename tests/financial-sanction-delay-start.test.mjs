@@ -172,16 +172,16 @@ test("TCEC refloat GeM undertaking delay uses Post-TCEC approval and the refloat
     files: [file],
     division: "all",
     delayDays: 5,
-    delayMilestone: "gemUndertaking",
+    delayMilestone: "refloatGemUndertaking",
   });
   assert.equal(summary.delayRows.length, 1);
   assert.equal(summary.delayRows[0].stageStartDate, file.postTcecDate);
   assert.equal(summary.delayRows[0].focusTarget, "refloatGemUndertakingDate");
   assert.deepEqual(
-    searchFiles([file], { dashboardFilter: "delayStatus:5:gemUndertaking" }).map(({ id }) => id),
+    searchFiles([file], { dashboardFilter: "delayStatus:5:refloatGemUndertaking" }).map(({ id }) => id),
     [file.id],
   );
-  const sql = dashboardFilterSql("delayStatus:5:gemUndertaking", []);
+  const sql = dashboardFilterSql("delayStatus:5:refloatGemUndertaking", []);
   assert.match(sql, /f\.post_tcec_date/);
   assert.match(sql, /f\.refloat_gem_undertaking_date/);
 
@@ -189,7 +189,7 @@ test("TCEC refloat GeM undertaking delay uses Post-TCEC approval and the refloat
     files: [{ ...file, id: "missing-post-tcec", postTcecDate: "" }],
     division: "all",
     delayDays: 5,
-    delayMilestone: "gemUndertaking",
+    delayMilestone: "refloatGemUndertaking",
   });
   assert.equal(missingStart.delayRows.length, 0);
 
@@ -197,7 +197,7 @@ test("TCEC refloat GeM undertaking delay uses Post-TCEC approval and the refloat
     files: [{ ...file, id: "completed-refloat-gem", refloatGemUndertakingDate: daysAgo(2) }],
     division: "all",
     delayDays: 5,
-    delayMilestone: "gemUndertaking",
+    delayMilestone: "refloatGemUndertaking",
   });
   assert.equal(completed.delayRows.length, 0);
 });
@@ -229,7 +229,7 @@ test("Non-TCEC refloat Bidding and GeM delays restart from Refloat recommendatio
     files: [file],
     division: "all",
     delayDays: 5,
-    delayMilestone: "gemUndertaking",
+    delayMilestone: "refloatGemUndertaking",
   });
   assert.equal(gemSummary.delayRows.length, 1);
   assert.equal(gemSummary.delayRows[0].stageStartDate, file.refloatRecommendationDate);
@@ -245,7 +245,7 @@ test("Non-TCEC refloat Bidding and GeM delays restart from Refloat recommendatio
     0,
   );
   assert.equal(
-    buildReportsSummary({ files: [completed], division: "all", delayDays: 5, delayMilestone: "gemUndertaking" }).delayRows.length,
+    buildReportsSummary({ files: [completed], division: "all", delayDays: 5, delayMilestone: "refloatGemUndertaking" }).delayRows.length,
     0,
   );
 });

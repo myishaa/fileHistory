@@ -111,11 +111,10 @@ test("Snapshot waits for a matching backend result, including a valid empty resu
   );
 });
 
-test("both checkbox changes immediately invalidate the result before the request effect starts", () => {
+test("scope changes immediately invalidate the result before the request effect starts", () => {
   assert.equal(render({ dashboardSummaryState: result }).ready, true);
   for (const scope of [
     { includeArchivedYears: false },
-    { includeAllCancelledSupplyOrderFilesForView: false },
     { settings: { ...settings, selectedYear: "2025-26" } },
     { activeDivision: "ACC" },
     { activeFileYear: "2025-26" },
@@ -200,11 +199,11 @@ test("matching results restore the selected view, authoritative totals, and both
     assert.equal(payload().title, "Snapshot");
     assert.equal(payload().tables[0].rows[0][1], 2);
     assert.ok(payload().description.includes("Active files from archived years: Checked"));
-    assert.ok(payload().description.includes("Files with all S.O.s cancelled: Checked"));
+    assert.ok(!payload().description.includes("Files with all S.O.s cancelled:"));
   }
 });
 
-test("a response from an earlier checkbox scope stays unusable after a later response", () => {
+test("a response from an earlier archive scope stays unusable after a later response", () => {
   const current = render({ includeArchivedYears: false });
   const latest = {
     ...result,

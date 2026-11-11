@@ -12,7 +12,7 @@ import type {
 } from "../types.js";
 import { fromDbJsonArray, fromDbText } from "../utils/db-values.js";
 import { buildDashboardSummary, getFinanceSnapshotDate } from "../utils/dashboard-summary.js";
-import { effectiveSupplyOrderEntries } from "../utils/effective-deliveries.js";
+import { effectiveSupplyOrderEntries, isSupplyOrderEligibleForMetrics } from "../utils/effective-deliveries.js";
 import { getPaymentDateAmountAnomalies } from "../utils/payment-date-amount-anomalies.js";
 import { isPlacedSupplyOrderMissingFirmName } from "../utils/supply-order-anomalies.js";
 import { hasCompletedBillReturn, hasOpenBillReturn } from "../utils/refloat-returned-bill.js";
@@ -2790,6 +2790,66 @@ export function getSuspectedAnomalyRows(
         );
       }
       addWarrantyBufferAnomalies(file, rawOrder, rawContext, addIssue, bgReturnOffsetDays);
+      // An incomplete S.O. can still contain payment or BG dates that need
+      // correction. Complete orders receive these checks in the effective
+      // payment loop below, so only inspect incomplete parents here.
+      if (!isSupplyOrderEligibleForMetrics(file, rawOrder)) {
+        if (hasFilledString(rawOrder.paymentDate) && !hasPaymentAmount(rawOrder)) {
+          addIssue(
+            "Payment",
+            "Payment date is filled without actual payment amount",
+            "Expected",
+            "Actual payment amount filled",
+            "Found",
+            "Payment date filled",
+            rawContext,
+          );
+        }
+        if (!hasFilledString(rawOrder.paymentDate) && hasPaymentAmount(rawOrder)) {
+          addIssue(
+            "Payment",
+            "Actual payment amount is filled without payment date",
+            "Expected",
+            "Payment date filled",
+            "Found",
+            "Actual payment amount filled",
+            rawContext,
+          );
+        }
+        if (hasWrongAmountSide(file, rawOrder)) {
+          addIssue(
+            "Payment",
+            "Required value side mismatch for actual paid amount",
+            "Amount side",
+            getRequiredAmountSide(file),
+            "Actual payment side",
+            getActualAmountSide(rawOrder),
+            rawContext,
+          );
+        }
+        if (isMissingWarrantyPeriodAfterCompletion(file, rawOrder, "pwb")) {
+          addIssue(
+            "Warranty / BG mismatch",
+            "Warranty period is missing for received PWB",
+            "Expected",
+            "Warranty period date filled after delivery / Job Completion Received Date",
+            "Found",
+            "PWB received but Warranty period blank",
+            rawContext,
+          );
+        }
+        if (isMissingWarrantyPeriodAfterCompletion(file, rawOrder, "psbpwb")) {
+          addIssue(
+            "Warranty / BG mismatch",
+            "Warranty period is missing for received PSB+PWB",
+            "Expected",
+            "Warranty period date filled after delivery / Job Completion Received Date",
+            "Found",
+            "PSB+PWB received but Warranty period blank",
+            rawContext,
+          );
+        }
+      }
 
       [rawOrder.psbBgNo, rawOrder.pwbBgNo, rawOrder.combinedBgNo]
         .map((value) => value?.trim())
@@ -6156,7 +6216,7 @@ function getDashboardFileWhereSql({
   if (scopeSql) conditions.push(scopeSql);
 
   const searchableYearCondition = getSearchableFinancialYearSql(
-    activeFilesExpression(),
+    activeFilesExpression(includeAllCancelledSupplyOrderFiles),
     includeArchivedYears,
   );
   if (searchableYearCondition) conditions.push(searchableYearCondition);
@@ -11247,7 +11307,6 @@ async function loadStatusCounts({
       )} or ${effectiveOrderCompletedMilestoneExpression(milestone.label)})`;
       const expired = `${received}
         and not ${hasFilledExpression(`eso.${returnColumn}`)}
-        and not ${isYesExpression("eso.so_cancelled")}
         and (
           ('${normalizedBg}' = 'psb' and not (${psbPurposeComplete}))
           or ('${normalizedBg}' <> 'psb' and not ${hasFilledExpression("eso.payment_date")})
@@ -13093,10 +13152,7 @@ dashboardRouter.get(
       request.query.includeArchivedYears === undefined
         ? true
         : readBoolean(request.query.includeArchivedYears);
-    const includeAllCancelledSupplyOrderFiles =
-      request.query.includeAllCancelledSupplyOrderFiles === undefined
-        ? false
-        : readBoolean(request.query.includeAllCancelledSupplyOrderFiles);
+    const includeAllCancelledSupplyOrderFiles = false;
     const includeAnalytics =
       request.query.includeAnalytics === undefined || readBoolean(request.query.includeAnalytics);
     const activeDivision = requestedDivision;
@@ -13112,6 +13168,22 @@ dashboardRouter.get(
       fileCategories,
       includeArchivedYears,
       includeAllCancelledSupplyOrderFiles,
+    });
+    // BG liability views are historical. Load a second, narrowly-scoped
+    // source that retains fully S.O.-cancelled, not-demand-cancelled files;
+    // the ordinary dashboard source remains unchanged for every other measure.
+    const bgExpiryFileWhere = getDashboardFileWhereSql({
+      scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+      scopeValues: scope.values,
+      selectedYear,
+      fileYear,
+      fileInitiationFrom,
+      fileInitiationTo,
+      currentFinancialYear: settings.financialYear,
+      activeDivision,
+      fileCategories,
+      includeArchivedYears,
+      includeAllCancelledSupplyOrderFiles: true,
     });
     const milestoneClearingFileWhere = getDashboardMilestoneClearingFileWhereSql({
       scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
@@ -13180,7 +13252,7 @@ dashboardRouter.get(
     const liveMilestones = readList(request.query.liveMilestones);
     const finance1AsOfDate = getFinanceSnapshotDate();
     const cacheKey = `dashboard:summary:${JSON.stringify({
-      version: 24,
+      version: 26,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -13215,12 +13287,14 @@ dashboardRouter.get(
       };
       const [
         files,
+        bgExpiryFiles,
         financeFiles,
         firmHistoryFiles,
         milestoneClearingFiles,
         financeAllocationOverride,
       ] = await Promise.all([
         loadSharedFiles(dashboardFileWhere.whereSql, dashboardFileWhere.values),
+        loadSharedFiles(bgExpiryFileWhere.whereSql, bgExpiryFileWhere.values),
         loadSharedFiles(financeFileWhere.whereSql, financeFileWhere.values),
         includeAnalytics
           ? loadSharedFiles(firmHistoryFileWhere.whereSql, firmHistoryFileWhere.values)
@@ -13260,6 +13334,9 @@ dashboardRouter.get(
       const filteredFiles = fileCategories
         ? files.filter((file) => matchesFileCategorySelection(file, fileCategories))
         : files;
+      const filteredBgExpiryFiles = fileCategories
+        ? bgExpiryFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
+        : bgExpiryFiles;
       const filteredFinanceFiles = fileCategories
         ? financeFiles.filter((file) => matchesFileCategorySelection(file, fileCategories))
         : financeFiles;
@@ -13271,6 +13348,7 @@ dashboardRouter.get(
         : milestoneClearingFiles;
       const normalizedSummary = buildDashboardSummary({
         files: filteredFiles,
+        bgExpiryFiles: filteredBgExpiryFiles,
         firmHistoryFiles: filteredFirmHistoryFiles,
         milestoneClearingFiles: filteredMilestoneClearingFiles,
         financeFiles: filteredFinanceFiles,

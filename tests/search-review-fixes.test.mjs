@@ -246,6 +246,53 @@ test("manual workflow history overrides Active; ordinary firm filters retain Act
     assert.match(conditions[1], /fileclosed/);
   }
 });
+test("All Files keeps cancelled S.O. history subject to archived-year visibility", () => {
+  const matchingFiles = [
+    { id: "cancelled", supplyOrders: [{ soCancelled: "Yes" }] },
+    { id: "current", supplyOrders: [{ soCancelled: "No" }] },
+  ];
+  assert.deepEqual(
+    searchFiles(matchingFiles, { selectedYear: "__all_files__" }).map((row) => row.id),
+    ["cancelled", "current"],
+  );
+  for (const includeActiveArchivedYears of [true, false]) {
+    const conditions = [];
+    const params = { selectedYear: "__all_files__", includeActiveArchivedYears };
+    appendSearchGlobalYearScope(conditions, [], "__all_files__", "2026-27", params);
+    assert.equal(conditions.length, 1);
+    assert.match(conditions[0], /financial_years archived_search_year/);
+    if (includeActiveArchivedYears) {
+      assert.match(conditions[0], /so_active\.file_id = f\.id/);
+    } else {
+      assert.doesNotMatch(conditions[0], /so_active\.file_id = f\.id/);
+    }
+    const allFiles = buildSearchSql(conditions, [], params, { selectedYear: "__all_files__" });
+    assert.match(allFiles.whereSql, /archived_search_year/);
+
+    const excluded = buildSearchSql(
+      conditions,
+      [],
+      { ...params, soCancelledPresenceFilter: "exclude" },
+      { selectedYear: "__all_files__" },
+    );
+    assert.match(excluded.whereSql, /so_active\.file_id = f\.id/);
+  }
+});
+
+test("BG liability drilldowns retain fully cancelled S.O. files within the selected status/year scope", () => {
+  for (const dashboardFilter of ["bgExpired:psb", "bgToBeReturned:psb", "bgCustody:psb"]) {
+    const conditions = [];
+    const values = [];
+    appendSearchGlobalYearScope(conditions, values, "__all_active_files__", "2026-27", {
+      dashboardFilter,
+      includeActiveArchivedYears: true,
+      includeAllCancelledSupplyOrderFiles: false,
+    });
+    const scopeSql = conditions.join(" ");
+    assert.match(scopeSql, /lower\(coalesce\(f\.demand_cancelled, ''\)\) <> 'yes'/);
+    assert.doesNotMatch(scopeSql, /not exists \(\s*select 1 from supply_orders so_active/);
+  }
+});
 test("Quick Viewer lookup restricts division and file category even with preexisting SQL arguments", () => {
   const values = ["identifier"];
   const query = quickStatusScopeSql(

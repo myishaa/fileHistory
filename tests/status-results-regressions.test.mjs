@@ -44,6 +44,209 @@ const settings = {
 };
 const summary = (files) => buildDashboardSummary({ files, divisions: [], settings });
 
+test("Status-1 history excludes stage payments after cancellation or file closure", () => {
+  env.fileMatchesInitiationDateRange = () => true;
+  const stagedOrder = {
+    ...order,
+    stageDelivery: "Yes",
+    stageDeliveryCount: "2",
+    stagePayment: "Yes",
+    stageDeliveries: [
+      { stageAmountRevenue: "50000", paymentDate: "2026-06-08" },
+      { stageAmountRevenue: "50000", paymentDate: "2026-06-15" },
+    ],
+  };
+  const cases = [
+    {
+      view: "cancelled",
+      record: {
+        ...file,
+        supplyOrders: [{ ...stagedOrder, soCancelled: "Yes", soCancelledDate: "2026-06-10" }],
+      },
+    },
+    {
+      view: "closed",
+      record: {
+        ...file,
+        completedMilestones: ["File Closed"],
+        fileClosureDate: "2026-06-10",
+        supplyOrders: [stagedOrder],
+      },
+    },
+  ];
+
+  for (const { view, record } of cases) {
+    const { workflowFiles } = env.buildStatus1HistoricalDataset(
+      [record], view, "", "", "all",
+    );
+    assert.equal(workflowFiles.length, 1);
+    assert.equal(env.countPaymentCompletedOrders(workflowFiles), 1);
+    assert.equal(workflowFiles[0].supplyOrders[0].stageDeliveries[0].paymentDate, "2026-06-08");
+    assert.equal(workflowFiles[0].supplyOrders[0].stageDeliveries[1].paymentDate, "");
+    assert.equal(record.supplyOrders[0].stageDeliveries[1].paymentDate, "2026-06-15");
+  }
+});
+
+test("Status-1 history excludes supplementary payments after cancellation or file closure", () => {
+  env.fileMatchesInitiationDateRange = () => true;
+  const orderWithSupplementaryBills = {
+    ...order,
+    supplementaryBills: [
+      { billNo: "SUP-1", paymentDate: "2026-06-08" },
+      { billNo: "SUP-2", paymentDate: "2026-06-15" },
+    ],
+  };
+  const cases = [
+    {
+      view: "cancelled",
+      record: {
+        ...file,
+        supplyOrders: [
+          { ...orderWithSupplementaryBills, soCancelled: "Yes", soCancelledDate: "2026-06-10" },
+        ],
+      },
+    },
+    {
+      view: "closed",
+      record: {
+        ...file,
+        completedMilestones: ["File Closed"],
+        fileClosureDate: "2026-06-10",
+        supplyOrders: [orderWithSupplementaryBills],
+      },
+    },
+  ];
+
+  for (const { view, record } of cases) {
+    const { workflowFiles } = env.buildStatus1HistoricalDataset(
+      [record], view, "", "", "all",
+    );
+    assert.equal(workflowFiles.length, 1);
+    assert.equal(env.countSupplementaryBillPaidOrders(workflowFiles), 1);
+    assert.equal(workflowFiles[0].supplyOrders[0].supplementaryBills[0].paymentDate, "2026-06-08");
+    assert.equal(workflowFiles[0].supplyOrders[0].supplementaryBills[1].paymentDate, "");
+    assert.equal(record.supplyOrders[0].supplementaryBills[1].paymentDate, "2026-06-15");
+  }
+});
+
+test("Status-1 history cuts off nested advance and bill-return events", () => {
+  env.fileMatchesInitiationDateRange = () => true;
+  const record = {
+    ...file,
+    supplyOrders: [{
+      ...order,
+      advancePayment: "Yes",
+      advancePaymentDetail: {
+        paymentDate: "2026-06-15",
+        billReturnCycles: [{ returnedDate: "2026-06-09", resubmittedDate: "2026-06-15" }],
+      },
+      billReturnCycles: [{ returnedDate: "2026-06-09", resubmittedDate: "2026-06-15" }],
+      supplementaryBills: [{
+        billNo: "SUP-1",
+        billReturnCycles: [{ returnedDate: "2026-06-09", resubmittedDate: "2026-06-15" }],
+      }],
+      soCancelled: "Yes",
+      soCancelledDate: "2026-06-10",
+    }],
+  };
+  const { workflowFiles } = env.buildStatus1HistoricalDataset([record], "cancelled", "", "", "all");
+  const historical = workflowFiles[0].supplyOrders[0];
+  assert.equal(historical.advancePaymentDetail.paymentDate, "");
+  assert.equal(historical.advancePaymentDetail.billReturnCycles[0].returnedDate, "2026-06-09");
+  assert.equal(historical.advancePaymentDetail.billReturnCycles[0].resubmittedDate, "");
+  assert.equal(historical.billReturnCycles[0].resubmittedDate, "");
+  assert.equal(historical.supplementaryBills[0].billReturnCycles[0].resubmittedDate, "");
+  assert.equal(record.supplyOrders[0].advancePaymentDetail.paymentDate, "2026-06-15");
+});
+
+test("Cancelled Status-1 history keeps received BGs due for return as of cancellation", () => {
+  env.fileMatchesInitiationDateRange = () => true;
+  for (const { key, coverage, receivedField, returnField } of [
+    { key: "psb", coverage: "PSB", receivedField: "psbBgReceivedDate", returnField: "psbBgReturnDate" },
+    { key: "pwb", coverage: "PWB", receivedField: "pwbBgReceivedDate", returnField: "pwbBgReturnDate" },
+    { key: "psbPwb", coverage: "PSB+PWB", receivedField: "combinedBgReceivedDate", returnField: "combinedBgReturnDate" },
+  ]) {
+    const cancelledFile = {
+      ...file,
+      bg: "Yes",
+      supplyOrders: [{
+        ...order,
+        soCancelled: "Yes",
+        soCancelledDate: "2026-06-10",
+        bgCoverageType: coverage,
+        psbApplicable: "Yes",
+        [receivedField]: "2026-06-08",
+        [returnField]: "2026-06-15",
+      }],
+    };
+    const { workflowFiles } = env.buildStatus1HistoricalDataset(
+      [cancelledFile], "cancelled", "", "", "all",
+    );
+    assert.equal(workflowFiles[0].supplyOrders[0][returnField], "");
+    assert.equal(env.countHistoricalCancelledBgToBeReturnedOrders(workflowFiles, key), 1);
+    assert.equal(
+      env.getHistoricalStatusFlow(workflowFiles, "cancelled").find((item) => item.key === key)
+        ?.bgToBeReturned,
+      1,
+    );
+
+    cancelledFile.supplyOrders[0][returnField] = "2026-06-09";
+    const returned = env.buildStatus1HistoricalDataset(
+      [cancelledFile], "cancelled", "", "", "all",
+    );
+    assert.equal(env.countHistoricalCancelledBgToBeReturnedOrders(returned.workflowFiles, key), 0);
+  }
+});
+
+test("Cancelled-history Search focuses the selected cancelled S.O. indexes", () => {
+  const mixedFile = {
+    ...file,
+    noOfSo: "3",
+    supplyOrders: [
+      { ...order, id: "live", soCancelled: "No" },
+      { ...order, id: "cancelled-june", soCancelled: "Yes", soCancelledDate: "2026-06-10" },
+      { ...order, id: "cancelled-july", soCancelled: "Yes", soCancelledDate: "2026-07-15" },
+    ],
+  };
+  assert.equal(
+    env.serializeStatus1CancelledFocusTargets(
+      [mixedFile], new Set([mixedFile.id]), "2026-06-01", "2026-06-30",
+    ),
+    `${mixedFile.id}=socancelled%3Ayes%3A1`,
+  );
+  assert.equal(
+    env.serializeStatus1CancelledFocusTargets(
+      [mixedFile], new Set([mixedFile.id]), "", "",
+    ),
+    `${mixedFile.id}=socancelled%3Ayes%3A1%7Csocancelled%3Ayes%3A2`,
+  );
+  assert.equal(
+    env.serializeStatus1CancelledFocusTargets([mixedFile], new Set(), "", ""),
+    undefined,
+  );
+});
+
+test("Cancelled-history payment link focuses the order that contributed the payment", () => {
+  env.fileMatchesInitiationDateRange = () => true;
+  const mixedFile = {
+    ...file,
+    noOfSo: "2",
+    supplyOrders: [
+      { ...order, id: "unpaid", soCancelled: "Yes", soCancelledDate: "2026-06-10" },
+      { ...order, id: "paid", paymentDate: "2026-06-08", soCancelled: "Yes", soCancelledDate: "2026-06-10" },
+    ],
+  };
+  const { workflowFiles } = env.buildStatus1HistoricalDataset(
+    [mixedFile], "cancelled", "", "", "all",
+  );
+  assert.equal(
+    env.serializeStatus1CancelledFocusTargets(
+      [mixedFile], new Set([mixedFile.id]), "", "", "milestoneCleared:payment", workflowFiles,
+    ),
+    `${mixedFile.id}=socancelled%3Ayes%3A1`,
+  );
+});
+
 test("a changed Status-4 scope immediately rejects old files, even before the effect starts", () => {
   const scope = {
     userId: "a",
@@ -162,8 +365,9 @@ test("Status-4 exports preserve the selected orientation and stack, with charts 
       const output = payload();
       assert.equal(output.plot.orientation, view === "bar" ? "horizontal" : "vertical");
       assert.equal(output.plot.stackedBars, true);
-      assert.ok(output.tables[0].rows.at(-1).includes("Total"));
-      assert.equal(output.tables[0].rows.at(-1)[output.format === "pdf" ? 2 : 1], 1);
+      const detailTable = output.tables.at(-1);
+      assert.ok(detailTable.rows.at(-1).includes("Total"));
+      assert.equal(detailTable.rows.at(-1)[output.format === "pdf" ? 2 : 1], 1);
     }
   }
   env.useState = (initial) => [initial, () => {}];
@@ -220,6 +424,36 @@ test("Status-4 keeps eligible cancelled S.O. placement history in Cleared", () =
   assert.equal(incompleteMetrics.applicable, 1);
   assert.equal(incompleteMetrics.cleared, 0);
   assert.equal(incompleteMetrics.current, 0);
+});
+
+test("BG Expiry retains an outstanding BG on a cancelled S.O. without broadening other cards", () => {
+  const expiredBgFile = {
+    ...file,
+    bg: "Yes",
+    supplyOrders: [
+      {
+        ...order,
+        soCancelled: "Yes",
+        psbApplicable: "Yes",
+        bgCoverageType: "PSB",
+        psbBgReceivedDate: "2026-05-01",
+        psbBgValidityDate: "2026-06-01",
+        psbBgReturnDate: "",
+        jobCompletionDate: "",
+      },
+    ],
+  };
+  const result = buildDashboardSummary({
+    files: [],
+    bgExpiryFiles: [expiredBgFile],
+    divisions: [],
+    settings,
+  });
+  const psb = result.statusFlow.find((row) => row.key === "psb");
+  assert.equal(psb?.bgExpired, 1);
+  assert.equal(psb?.bgToBeReturned, 1);
+  assert.equal(psb?.total, 0);
+  assert.equal(psb?.cleared, 0);
 });
 
 test("PWB follows all stage completions and counts one BG per S.O.; stopped/partial orders stay out", () => {

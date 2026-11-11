@@ -2,6 +2,12 @@
 
 This backlog is for batch-wise QA. Seed only a small batch, run anomaly checks, stop on new anomalies, discuss/fix/accept, then continue.
 
+The current scenario generator is `scripts/audit-scenario-batch.mjs` (run via
+`npm run qa:scenarios`). Its `historical-scope` batch covers mixed cancellation,
+fully cancelled/closed, ordinary closed, and NFA-complete shortclosure records.
+Older overlapping workflow generators are archived under `scripts/archive/legacy-qa`
+and `backend/scripts/archive/legacy-qa`.
+
 ## Batch 1 — clean baseline workflows
 
 - Goods & Services with IR: complete clean flow from demand to payment.

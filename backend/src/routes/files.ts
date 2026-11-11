@@ -2757,8 +2757,7 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
       readQueryBoolean(query.includeActiveArchivedYears) ??
       readQueryBoolean(query.includeArchivedYears) ??
       true,
-    includeAllCancelledSupplyOrderFiles:
-      readQueryBoolean(query.includeAllCancelledSupplyOrderFiles) ?? false,
+    includeAllCancelledSupplyOrderFiles: false,
     milestoneClearingScope: readQueryBoolean(query.milestoneClearingScope),
     yearFilter: readQueryString(query.yearFilter),
     fileYear: readQueryString(query.fileYear),
@@ -2913,6 +2912,8 @@ function readSearchParams(query: Record<string, unknown>): FileSearchParams {
     dashboardFilter: readQueryString(query.dashboardFilter),
     extraDashboardFilters: readQueryList(query.extraDashboardFilters),
     excludeDashboardFilters: readQueryList(query.excludeDashboardFilters),
+    statusSummaryScope:
+      readQueryString(query.statusSummaryScope) === "live" ? "live" : undefined,
     analyticsType: readAnalyticsType(query.analyticsType),
     analyticsNames: readAnalyticsNameList(query.analyticsNames),
     sortColumnKey: readQueryString(query.sortColumnKey),
@@ -3070,8 +3071,14 @@ function activeFilesSql(includeAllCancelledSupplyOrderFiles = false) {
     ${includeAllCancelledSupplyOrderFiles ? "" : `and not ${allSupplyOrdersCancelledSql()}`})`;
 }
 
-function searchableFinancialYearSql(includeActiveArchivedYears = true) {
-  return getSearchableFinancialYearSql(activeFilesSql(), includeActiveArchivedYears);
+function searchableFinancialYearSql(
+  includeActiveArchivedYears = true,
+  includeAllCancelledSupplyOrderFiles = false,
+) {
+  return getSearchableFinancialYearSql(
+    activeFilesSql(includeAllCancelledSupplyOrderFiles),
+    includeActiveArchivedYears,
+  );
 }
 
 function activePlusCurrentFyClosedSql(
@@ -5899,7 +5906,7 @@ function bgExpiredSql(category: string, today = "current_date") {
     `${bgCategorySql("so", category)}
      and ${bgReceivedOrderSql("so", category)}
      and not ${hasTextSql(`so.${returnColumn}`)}
-     and not ${isYesSql("so.so_cancelled")}
+     and not ${isYesSql("f.demand_cancelled")}
      and (
        ('${normalizeMilestoneName(category)}' = 'psb' and not (${psbPurposeComplete}))
        or ('${normalizeMilestoneName(category)}' <> 'psb' and not ${hasTextSql("so.payment_date")})
@@ -9434,6 +9441,7 @@ function shouldAllowInactiveDashboardFilter(filter: string) {
     filter === "preBidMeeting:completed" ||
     filter === "bgToBeReturned" ||
     filter.startsWith("bgToBeReturned:") ||
+    isBgLiabilityDashboardFilter(filter) ||
     filter.startsWith("valueThreshold:") ||
     filter.startsWith("valueThresholdTotal:") ||
     filter.startsWith("soValueThreshold:") ||
@@ -9449,7 +9457,8 @@ function shouldIncludeCancelledSoHistoryForDashboardFilter(filter: string) {
     isMilestoneClearingDashboardFilter(filter) ||
     filter === "preBidMeeting:completed" ||
     filter === "bgToBeReturned" ||
-    filter.startsWith("bgToBeReturned:")
+    filter.startsWith("bgToBeReturned:") ||
+    isBgLiabilityDashboardFilter(filter)
   );
 }
 
@@ -9484,6 +9493,36 @@ function isBgToBeReturnedDashboardFilter(filter: string) {
     match &&
     ["psb", "pwb", "psbpwb"].includes(normalizeMilestoneName(decodeStatusFilterPart(match[1]))) &&
     normalizeMilestoneName(decodeStatusFilterPart(match[2])) === "tobereturned",
+  );
+}
+
+function isBgExpiredDashboardFilter(filter: string) {
+  if (filter === "bgExpired") return true;
+  if (filter.startsWith("bgExpired:")) {
+    return isBgStatusKey(filter.slice("bgExpired:".length));
+  }
+  const match = filter.match(/^statusSummary:([^:]+):([^:]+)$/);
+  return Boolean(
+    match &&
+      ["psb", "pwb", "psbpwb"].includes(
+        normalizeMilestoneName(decodeStatusFilterPart(match[1])),
+      ) &&
+      normalizeMilestoneName(decodeStatusFilterPart(match[2])) === "expired",
+  );
+}
+
+function isBgCustodyDashboardFilter(filter: string) {
+  return (
+    filter.startsWith("bgCustody:") &&
+    isBgStatusKey(filter.slice("bgCustody:".length))
+  );
+}
+
+function isBgLiabilityDashboardFilter(filter: string) {
+  return (
+    isBgExpiredDashboardFilter(filter) ||
+    isBgToBeReturnedDashboardFilter(filter) ||
+    isBgCustodyDashboardFilter(filter)
   );
 }
 
@@ -9623,6 +9662,7 @@ function shouldShowCancelledSupplyOrderFiles(params: FileSearchParams) {
         isMilestoneClearingDashboardFilter(dashboardFilter) ||
         dashboardFilter === "totalFiles" ||
         dashboardFilter.startsWith("status4:") ||
+        isBgExpiredDashboardFilter(dashboardFilter) ||
         shouldAllowInactiveDashboardFilter(dashboardFilter),
     )
   );
@@ -9735,13 +9775,25 @@ export function appendSearchGlobalYearScope(
   currentFinancialYear: string | undefined,
   searchParams: FileSearchParams,
 ) {
-  conditions.push(searchableFinancialYearSql(searchParams.includeActiveArchivedYears));
   const dashboardFilters = [
     searchParams.dashboardFilter,
     ...(searchParams.extraDashboardFilters ?? []),
   ]
     .map((filter) => filter?.trim())
     .filter((filter): filter is string => Boolean(filter));
+  const includeAllCancelledForBgLiability = dashboardFilters.some(
+    isBgLiabilityDashboardFilter,
+  );
+  const includeAllCancelledSupplyOrderFiles =
+    searchParams.includeAllCancelledSupplyOrderFiles || includeAllCancelledForBgLiability;
+  // All Files removes the selected-year/status restriction, while archived
+  // origin years still follow the archived-year visibility setting.
+  conditions.push(
+    searchableFinancialYearSql(
+      searchParams.includeActiveArchivedYears,
+      includeAllCancelledSupplyOrderFiles,
+    ),
+  );
   const isMilestoneClearingDrilldown =
     searchParams.milestoneClearingScope ||
     dashboardFilters.some(
@@ -9767,7 +9819,7 @@ export function appendSearchGlobalYearScope(
   if (selectedYear === allFilesYear) return;
   if (selectedYear === allActiveFilesYear) {
     if (!bypassActiveStatusYearFilter) {
-      conditions.push(activeFilesSql(searchParams.includeAllCancelledSupplyOrderFiles));
+      conditions.push(activeFilesSql(includeAllCancelledSupplyOrderFiles));
     }
     return;
   }
@@ -9777,7 +9829,7 @@ export function appendSearchGlobalYearScope(
         activePlusCurrentFyClosedSql(
           values,
           currentFinancialYear,
-          searchParams.includeAllCancelledSupplyOrderFiles,
+          includeAllCancelledSupplyOrderFiles,
         ),
       );
     }
@@ -9788,7 +9840,7 @@ export function appendSearchGlobalYearScope(
       specificFinancialYearSql(
         values,
         selectedYear,
-        searchParams.includeAllCancelledSupplyOrderFiles,
+        includeAllCancelledSupplyOrderFiles,
       ),
     );
   }
@@ -10613,7 +10665,8 @@ export function dashboardFilterSql(
         ? ` and ${orderDpDate} < current_date and not ${orderFructified}`
         : ` and ${orderDpDate} >= current_date and not ${orderFructified}`;
     return `not ${isYesSql("f.demand_cancelled")} and ${supplyOrderExists(
-      `not ${isYesSql("so.so_cancelled")} and (
+      `not ${isYesSql("so.so_cancelled")}
+        and not ${isYesSql("so.no_further_action")} and (
         exists (
           select 1
           from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_delivery(stage)
@@ -10666,7 +10719,8 @@ export function dashboardFilterSql(
         ? ` and ${orderDpDate} < current_date and not ${orderFructified}`
         : ` and ${orderDpDate} >= current_date and not ${orderFructified}`;
     return `not ${isYesSql("f.demand_cancelled")} and ${supplyOrderExists(
-      `not ${isYesSql("so.so_cancelled")} and (
+      `not ${isYesSql("so.so_cancelled")}
+        and not ${isYesSql("so.no_further_action")} and (
         exists (
           select 1
           from jsonb_array_elements(coalesce(so.stage_deliveries, '[]'::jsonb)) as stage_delivery(stage)
@@ -11673,11 +11727,18 @@ export function buildSearchSql(
   const excludedDashboardFilters = (params.excludeDashboardFilters ?? [])
     .map((filter) => filter?.trim())
     .filter((filter): filter is string => Boolean(filter));
+  const preserveLiveStatusSummaryScope =
+    params.statusSummaryScope === "live" &&
+    dashboardFilters.some(isHistoricalStatusSummaryDashboardFilter) &&
+    params.soCancelledPresenceFilter !== "include";
   if (!includeCancelledForYearSearch && !shouldShowDemandCancelledFiles(params)) {
     conditions.push(`not ${isYesSql("f.demand_cancelled")}`);
   }
   if (!includeCancelledForYearSearch && !shouldShowCancelledSupplyOrderFiles(params)) {
     conditions.push(`not ${allSupplyOrdersCancelledSql()}`);
+  }
+  if (preserveLiveStatusSummaryScope) {
+    conditions.push(`not ${isCancelledFileSql()}`);
   }
   const firmOriginatedSearch = isFirmOriginatedSearch(params);
   if (dashboardFilters.length) {
@@ -12028,8 +12089,8 @@ export function buildSearchSql(
   }
   if (params.rstFilter) conditions.push(isYesSql("f.rst"));
   applyIncludeExcludeSql(conditions, params.fileClosedPresenceFilter, fileClosedSql());
-  const isBgReturnDrilldown = dashboardFilters.some(isBgToBeReturnedDashboardFilter);
-  if (!isBgReturnDrilldown) {
+  const isBgLiabilityDrilldown = dashboardFilters.some(isBgLiabilityDashboardFilter);
+  if (!isBgLiabilityDrilldown) {
     if (params.soCancelledPresenceFilter === "include") {
       addSearchFilterCondition(supplyOrderExists(isYesSql("so.so_cancelled")));
     } else if (
@@ -12040,7 +12101,7 @@ export function buildSearchSql(
       conditions.push(`not ${allSupplyOrdersCancelledSql()}`);
     }
   }
-  if (!isBgReturnDrilldown) {
+  if (!isBgLiabilityDrilldown) {
     addSearchIncludeExcludeFilter(
       params.shortclosedSoPresenceFilter,
       supplyOrderExists(isYesSql("so.shortclosure")),
@@ -13713,8 +13774,7 @@ filesRouter.get(
       readQueryBoolean(request.query.includeActiveArchivedYears) ??
       readQueryBoolean(request.query.includeArchivedYears) ??
       true;
-    const includeAllCancelledSupplyOrderFiles =
-      readQueryBoolean(request.query.includeAllCancelledSupplyOrderFiles) ?? false;
+    const includeAllCancelledSupplyOrderFiles = false;
 
     if (request.query.year === allFilesYear) {
       // No status/year condition.

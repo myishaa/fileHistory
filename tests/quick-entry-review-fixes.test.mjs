@@ -64,6 +64,75 @@ test("common-payment billing cards use parent billing fields while IR remains st
   assert.equal(cards.find((card) => card.label === "Bill preparation").status, "Pending");
   assert.equal(cards.find((card) => card.label === "IR Receipt").status, "Completed");
 });
+test("cancelled S.O. stops incomplete milestones but keeps recorded history", () => {
+  const cancelled = {
+    ...order,
+    soCancelled: "Yes",
+    stageDeliveries: [order.stageDeliveries[0], {}],
+  };
+  const cards = env.getQuickViewerOrderMilestoneStatuses(file, cancelled);
+  assert.equal(cards.find((card) => card.label === "Supply Order").status, "Completed");
+  assert.equal(cards.find((card) => card.label === "Financial Sanction").status, "Stopped");
+  assert.equal(
+    cards.find((card) => card.label === "IR Receipt").status,
+    "1 of 2 stages complete",
+  );
+  assert.equal(cards.some((card) => card.status === "Pending"), false);
+});
+test("shortclosed S.O. with NFA No keeps delivery follow-up active", () => {
+  const stage = { dpDate: env.getQuickTodayIsoDate() };
+  const continuing = {
+    ...order,
+    shortclosure: "Yes",
+    noFurtherAction: "No",
+    stageDeliveries: [stage],
+    stageDeliveryCount: "1",
+  };
+  const continuingProgress = env.getQuickStageDeliveryProgress(file, continuing, [stage]);
+  assert.equal(continuingProgress.stopped, 0);
+  assert.equal(continuingProgress.dueToday, 1);
+  assert.equal(env.getQuickStageStatusLabel(file, continuing, stage), "Due today");
+
+  const stopped = { ...continuing, noFurtherAction: "Yes" };
+  const stoppedProgress = env.getQuickStageDeliveryProgress(file, stopped, [stage]);
+  assert.equal(stoppedProgress.stopped, 1);
+  assert.equal(env.getQuickStageStatusLabel(file, stopped, stage), "Stopped");
+});
+test("shortclosed S.O. with NFA Yes stops unfinished order milestone cards", () => {
+  const stoppedOrder = {
+    ...order,
+    shortclosure: "Yes",
+    noFurtherAction: "Yes",
+    stageDeliveries: [{}, {}],
+  };
+  const cards = env.getQuickViewerOrderMilestoneStatuses(file, stoppedOrder);
+  for (const label of ["IR Preparation", "IR Receipt", "Bill preparation", "Payment"]) {
+    assert.equal(cards.find((card) => card.label === label)?.status, "Stopped", label);
+  }
+  assert.equal(cards.some((card) => card.status === "Pending"), false);
+});
+test("S.O. timeline includes BG receipt and return dates", () => {
+  const bgOrder = {
+    ...order,
+    psbBgReceivedDate: "2026-06-01",
+    psbBgReturnDate: "2026-06-10",
+    pwbBgReceivedDate: "2026-07-01",
+    pwbBgReturnDate: "2026-07-10",
+    combinedBgReceivedDate: "2026-08-01",
+    combinedBgReturnDate: "2026-08-10",
+  };
+  const timeline = env.getQuickStatusOrderTimelineItems(file, bgOrder);
+  for (const label of [
+    "PSB received",
+    "PSB returned",
+    "PWB received",
+    "PWB returned",
+    "PSB+PWB received",
+    "PSB+PWB returned",
+  ]) {
+    assert.ok(timeline.some((item) => item.label === label), label);
+  }
+});
 test("Quick Entry recognizes all recorded S.O. numbers, not only the first", () => {
   assert.equal(
     env.getQuickStatusMatchedIdentifier({ soNumbers: "SO1, SO2, GEM3" }, "SO2").value,

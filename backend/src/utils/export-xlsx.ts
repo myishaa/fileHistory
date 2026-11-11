@@ -335,8 +335,9 @@ export function renderXlsxDocument(document: ExportDocument) {
     .filter((plot) => plot.categories.length > 0 && plot.series.length > 0);
   const chartSpecs: Array<{ plot: ExportPlot; kind: "pie" | "bar" | "line" }> = [];
   for (const plot of plots) {
-    if (plot.kind === "pie") chartSpecs.push({ plot, kind: "pie" });
-    else chartSpecs.push({ plot, kind: "bar" }, { plot, kind: "line" });
+    // The plot kind is the view the user selected. Keep the workbook aligned
+    // with that view instead of generating an extra chart in another style.
+    chartSpecs.push({ plot, kind: plot.kind });
   }
   const reportRows: ExportCell[][] = [[document.title]];
   const emphasizedCells = new Map<number, Set<number>>();

@@ -14,5 +14,9 @@ export function isQaLabelSql(valueExpression: string) {
 
 export function visibleFileSql(alias = "f") {
   assertSqlIdentifier(alias);
-  return `coalesce(${alias}.unique_code, '') = '2620007'`;
+  // File visibility is governed by authentication, division/category access,
+  // archive, and report/search scope predicates. Do not apply a QA-only
+  // Unique Code restriction here: it hides otherwise valid files from every
+  // UI that uses the shared visibility helper.
+  return "true";
 }

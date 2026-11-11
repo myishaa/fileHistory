@@ -454,6 +454,7 @@ const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
 
 export function buildDashboardSummary({
   files,
+  bgExpiryFiles,
   firmHistoryFiles,
   milestoneClearingFiles,
   divisions,
@@ -472,6 +473,13 @@ export function buildDashboardSummary({
   includeAllCancelledSupplyOrderFiles = false,
 }: {
   files: FileRecord[];
+  /**
+   * File scope used for historical BG liability counts (expiry and return).
+   * It may retain an otherwise inactive, fully S.O.-cancelled file when that
+   * file still has an outstanding received BG. All other Status-1 measures
+   * continue to use `files`.
+   */
+  bgExpiryFiles?: FileRecord[];
   firmHistoryFiles?: FileRecord[];
   milestoneClearingFiles?: FileRecord[];
   financeFiles?: FileRecord[];
@@ -492,7 +500,14 @@ export function buildDashboardSummary({
   const activeDivision = division?.trim() || "all";
   const dashboardFiles =
     activeDivision === "all" ? files : files.filter((file) => file.division === activeDivision);
+  const dashboardBgExpiryFiles =
+    activeDivision === "all"
+      ? bgExpiryFiles ?? files
+      : (bgExpiryFiles ?? files).filter((file) => file.division === activeDivision);
   const dashboardProcessFiles = dashboardFiles.filter((file) => !isYes(file.demandCancelled));
+  const dashboardProcessBgExpiryFiles = dashboardBgExpiryFiles.filter(
+    (file) => !isYes(file.demandCancelled),
+  );
   const activeDashboardFiles = dashboardProcessFiles.filter(
     (file) => includeAllCancelledSupplyOrderFiles || !isCancelledFile(file),
   );
@@ -559,12 +574,28 @@ export function buildDashboardSummary({
         (!finance1InitiationTo || date <= finance1InitiationTo),
     );
   };
-  const finance1ScopeFiles = dashboardFinanceFiles.filter(matchesFinance1InitiationRange);
+  // FY Snapshot uses the active, reconciled file scope.  Fully S.O.-cancelled
+  // files (including ones subsequently marked File Closed) have no live
+  // financial position and must not contribute to Snapshot distributions,
+  // activity counts, exports, or drill-through IDs.
+  const finance1ScopeFiles = dashboardFinanceFiles.filter(
+    (file) => !isCancelledFile(file) && matchesFinance1InitiationRange(file),
+  );
+  // File Type Distribution's Cancelled column is a file-level historical
+  // characteristic: retain files with at least one cancelled S.O. (including
+  // files whose S.O.s are all cancelled), while keeping demand-cancelled files
+  // outside the Snapshot scope.  The main Snapshot calculations still use the
+  // reconciled finance1ScopeFiles above, so cancelled S.O. values cannot enter
+  // placement, payment, or financial totals.
+  const finance1CancelledFileTypeScopeFiles = dashboardProcessFinanceFiles.filter(
+    matchesFinance1InitiationRange,
+  );
   const globalFinance1ScopeFiles = activeDashboardFiles.filter(matchesFinance1InitiationRange);
   const finance1Summary = getFinance1Summary(
     finance1ScopeFiles,
     finance1FiscalYear,
     finance1AsOfDate,
+    finance1CancelledFileTypeScopeFiles,
   );
   const globalFinance1ScopeIds = new Set(globalFinance1ScopeFiles.map((file) => file.id));
   const finance1ScopesMatch =
@@ -572,7 +603,12 @@ export function buildDashboardSummary({
     finance1ScopeFiles.every((file) => globalFinance1ScopeIds.has(file.id));
   const globalFilterFinance1Summary = finance1ScopesMatch
     ? finance1Summary
-    : getFinance1Summary(globalFinance1ScopeFiles, finance1FiscalYear, finance1AsOfDate);
+    : getFinance1Summary(
+        globalFinance1ScopeFiles,
+        finance1FiscalYear,
+        finance1AsOfDate,
+        finance1CancelledFileTypeScopeFiles,
+      );
   finance1Summary.intendedAtFyEnd = globalFilterFinance1Summary.intendedAtFyEnd;
   finance1Summary.bookedAtFyEnd = globalFilterFinance1Summary.bookedAtFyEnd;
   finance1Summary.committedAtFyEnd = globalFilterFinance1Summary.committedAtFyEnd;
@@ -595,6 +631,7 @@ export function buildDashboardSummary({
     activeDivision,
     valueThresholdLevels: settings.valueThresholdLevels,
     dashboardFileCount: dashboardProcessFiles.length,
+    financeScopeFileCount: activeDashboardFiles.length,
     dashboardSupplyOrderCount: countPlacedSupplyOrders(dashboardProcessFiles),
     dashboardDivisions,
     modeCounts: getModeCounts(processHistoryDashboardFiles, settings.modes),
@@ -612,7 +649,11 @@ export function buildDashboardSummary({
       dashboardDivisions,
       visibleLiveMilestoneNames,
     ),
-    statusFlow: getMilestoneFlow(dashboardProcessFiles, settings.bgReturnOffsetDays ?? 60),
+    statusFlow: getMilestoneFlow(
+      dashboardProcessFiles,
+      settings.bgReturnOffsetDays ?? 60,
+      dashboardProcessBgExpiryFiles,
+    ),
     miscellaneousCounts: getMiscellaneousCounts(dashboardFiles),
     analytics: {
       ...analyticsSummary,
@@ -2111,7 +2152,11 @@ function isFinancialSanctionPreviousStageFile(file: FileRecord) {
     : current === "cfa" && !hasFilledString(file.cfaDate);
 }
 
-function getMilestoneFlow(files: FileRecord[], bgReturnOffsetDays = 60) {
+function getMilestoneFlow(
+  files: FileRecord[],
+  bgReturnOffsetDays = 60,
+  bgExpiryFiles = files,
+) {
   const flow = milestoneDefinitions.map((milestone) => {
     const applicableFiles = files.filter((file) => isMilestoneApplicable(file, milestone));
     const activeFiles = applicableFiles.filter((file) => isManualActiveMilestone(file, milestone));
@@ -2256,9 +2301,12 @@ function getMilestoneFlow(files: FileRecord[], bgReturnOffsetDays = 60) {
         reviewed: 0,
         hasReviewed: Boolean(milestone.reviewed),
         cleared: countBgReceivedOrders(files, milestone.key),
-        bgExpired: countBgExpiredOrders(files, milestone.key),
+        // BG expiry and return obligations are historical liabilities: retain
+        // an outstanding received BG even when its only S.O. is cancelled.
+        // Other BG counters retain their existing live-work scope.
+        bgExpired: countBgExpiredOrders(bgExpiryFiles, milestone.key),
         bgToBeReturned: countBgToBeReturnedOrders(
-          files,
+          bgExpiryFiles,
           milestone.key,
           bgReturnOffsetDays,
         ),
@@ -3034,6 +3082,7 @@ function getFinance1Summary(
   files: FileRecord[],
   fiscalYear: string,
   asOfDate = getFinanceSnapshotDate(),
+  cancelledFileTypeScopeFiles = files,
 ): Finance1Summary {
   const range = getFinancialYearDateRange(fiscalYear);
   const todayDate = asOfDate;
@@ -3260,11 +3309,9 @@ function getFinance1Summary(
     if (cancelledByFyEnd) fileTypeRow.cancelledByFyEnd += 1;
     else if (closedByFyEnd) fileTypeRow.closedByFyEnd += 1;
     else fileTypeRow.activeAtFyEnd += 1;
-    const cancelledLive = isCancelledFile(file);
     const closedLive = isFileClosed(file);
-    if (cancelledLive) fileTypeRow.cancelled += 1;
     if (closedLive) fileTypeRow.closed += 1;
-    if (!cancelledLive && !closedLive) fileTypeRow.active += 1;
+    if (!closedLive) fileTypeRow.active += 1;
     const fileTypeKey = `fileType:${fileTypeRow.fileType.toLowerCase()}`;
     addDrillFile(`${fileTypeKey}:files`, file);
     const eligibleSupplyOrders = normalizedEligibleSupplyOrders(file);
@@ -3278,9 +3325,8 @@ function getFinance1Summary(
     if (cancelledByFyEnd) addDrillFile(`${fileTypeKey}:cancelled`, file);
     if (closedByFyEnd) addDrillFile(`${fileTypeKey}:closed`, file);
     if (!cancelledByFyEnd && !closedByFyEnd) addDrillFile(`${fileTypeKey}:active`, file);
-    if (cancelledLive) addDrillFile(`${fileTypeKey}:liveCancelled`, file);
     if (closedLive) addDrillFile(`${fileTypeKey}:liveClosed`, file);
-    if (!cancelledLive && !closedLive) addDrillFile(`${fileTypeKey}:liveActive`, file);
+    if (!closedLive) addDrillFile(`${fileTypeKey}:liveActive`, file);
 
     const immsDoneByFyEnd = isDateOnOrBefore(file.immsDate, cutoffDate);
     const soRowsByFyEnd = eligibleSupplyOrders.filter(
@@ -3482,7 +3528,11 @@ function getFinance1Summary(
         }
         const isStagePaymentCase = isYes(entry.order.stageDelivery) && isYes(entry.order.stagePayment);
         const paymentDueDate = getPaymentWorkflowStartDate(entry.file, entry.order);
-        if (selectedActivityRange && isDateWithinRange(paymentDueDate, selectedActivityRange)) {
+        const paymentDueInSelectedFy = Boolean(
+          selectedActivityRange && isDateWithinRange(paymentDueDate, selectedActivityRange),
+        );
+        const paymentDueInLaterFy = isLaterActivityDate(paymentDueDate);
+        if (paymentDueInSelectedFy) {
           if (isStagePaymentCase) {
             summary.activityCounts.stagePaymentsDueInSelectedFy += 1;
             addDrillFile("activity:paymentDue:stage:selected", file);
@@ -3490,7 +3540,7 @@ function getFinance1Summary(
             summary.activityCounts.regularPaymentsDueInSelectedFy += 1;
             addDrillFile("activity:paymentDue:regular:selected", file);
           }
-        } else if (isLaterActivityDate(paymentDueDate)) {
+        } else if (paymentDueInLaterFy) {
           if (isStagePaymentCase) {
             summary.activityCounts.stagePaymentsDueLater += 1;
             addDrillFile("activity:paymentDue:stage:later", file);
@@ -3499,21 +3549,44 @@ function getFinance1Summary(
             addDrillFile("activity:paymentDue:regular:later", file);
           }
         }
-        if (selectedActivityRange && isDateWithinRange(entry.paymentDate, selectedActivityRange)) {
+        const paymentInSelectedFy = Boolean(
+          selectedActivityRange && isDateWithinRange(entry.paymentDate, selectedActivityRange),
+        );
+        const paymentInLaterFy = isLaterActivityDate(entry.paymentDate);
+        // Keep the payment-flow drill-through set independent: it represents
+        // every payment in the period. The Paid/Due counters below use a
+        // separate cohort set so their paid numerator stays within Due.
+        if (paymentInSelectedFy) {
+          addDrillFile(
+            isStagePaymentCase
+              ? "activity:paymentPaid:stage:selected"
+              : "activity:paymentPaid:regular:selected",
+            file,
+          );
+        }
+        if (paymentInLaterFy) {
+          addDrillFile(
+            isStagePaymentCase
+              ? "activity:paymentPaid:stage:later"
+              : "activity:paymentPaid:regular:later",
+            file,
+          );
+        }
+        if (paymentDueInSelectedFy && paymentInSelectedFy) {
           if (isStagePaymentCase) {
             summary.activityCounts.stagePaymentsPaidInSelectedFy += 1;
-            addDrillFile("activity:paymentPaid:stage:selected", file);
+            addDrillFile("activity:paymentPaid:stage:dueCohort:selected", file);
           } else {
             summary.activityCounts.regularPaymentsPaidInSelectedFy += 1;
-            addDrillFile("activity:paymentPaid:regular:selected", file);
+            addDrillFile("activity:paymentPaid:regular:dueCohort:selected", file);
           }
-        } else if (isLaterActivityDate(entry.paymentDate)) {
+        } else if (paymentDueInLaterFy && paymentInLaterFy) {
           if (isStagePaymentCase) {
             summary.activityCounts.stagePaymentsPaidLater += 1;
-            addDrillFile("activity:paymentPaid:stage:later", file);
+            addDrillFile("activity:paymentPaid:stage:dueCohort:later", file);
           } else {
             summary.activityCounts.regularPaymentsPaidLater += 1;
-            addDrillFile("activity:paymentPaid:regular:later", file);
+            addDrillFile("activity:paymentPaid:regular:dueCohort:later", file);
           }
         }
       }
@@ -3576,63 +3649,73 @@ function getFinance1Summary(
         } else summary.activityCounts.soPaymentsInFollowingFy += 1;
       }
     });
-    advancePaymentEntries([file]).forEach(({ order }) => {
-      const paymentDate = order.advancePaymentDetail?.paymentDate;
-      const billSentDate = order.advancePaymentDetail?.billSentForPaymentDate;
-      const selectedFyBill = Boolean(selectedActivityRange && isDateWithinRange(billSentDate, selectedActivityRange));
-      if (selectedFyBill) {
-        summary.activityCounts.billsSentInSelectedFy += 1;
-        addDrillFile("activity:billsSent:selected", file);
-      }
-      if (isLaterActivityDate(billSentDate)) {
-        summary.activityCounts.billsSentInFollowingFy += 1;
-        addDrillFile("activity:billsSent:later", file);
-      }
-      if (selectedActivityRange && isDateWithinRange(paymentDate, selectedActivityRange)) {
-        addFinance1Amount(
-          summary.paymentsRecordedInSelectedFy.advance,
-          getInrAmount(getAdvancePaymentCapital(order), file) ?? 0,
-          getInrAmount(getAdvancePaymentRevenue(order), file) ?? 0,
+    advancePaymentEntries([file])
+      .filter(({ file: entryFile, order }) => !isSupplyOrderCancelled(entryFile, order))
+      .forEach(({ order }) => {
+        const paymentDate = order.advancePaymentDetail?.paymentDate;
+        const billSentDate = order.advancePaymentDetail?.billSentForPaymentDate;
+        const selectedFyBill = Boolean(
+          selectedActivityRange && isDateWithinRange(billSentDate, selectedActivityRange),
         );
-        summary.activityCounts.advancePaymentsInSelectedFy += 1;
-        addDrillFile("activity:advancePaid:selected", file);
-        addDrillFile("activity:paymentPaid:all:selected", file);
-      }
-      if (isLaterActivityDate(paymentDate)) {
-        summary.activityCounts.advancePaymentsInFollowingFy += 1;
-        addDrillFile("activity:advancePaid:later", file);
-      }
-      if (selectedFyBill) {
-        if (
-          isDateOnOrBefore(paymentDate, todayDate) &&
-          hasFilledString(billSentDate) &&
-          paymentDate! < billSentDate!
-        ) {
-          summary.activityCounts.selectedFyBillsDateOrderConflict += 1;
-        } else if (selectedActivityRange && isDateWithinRange(paymentDate, selectedActivityRange)) {
-          summary.activityCounts.selectedFyBillsPaidInSelectedFy += 1;
-          addDrillFile("activity:selectedBillsPaid:selected", file);
-        } else if (isLaterActivityDate(paymentDate)) {
-          summary.activityCounts.selectedFyBillsPaidInFollowingFy += 1;
-          addDrillFile("activity:selectedBillsPaid:later", file);
-        } else if (!isDateOnOrBefore(paymentDate, todayDate)) {
-          if (isUnpaidAdvanceClearedByNoFurtherAction(order, todayDate)) {
-            summary.activityCounts.selectedFyBillsStoppedByNfa += 1;
-            addDrillFile("activity:selectedBillsStoppedNfa", file);
-            if (selectedActivityRange && isDateWithinRange(order.noFurtherActionDate, selectedActivityRange)) {
-              summary.activityCounts.selectedFyBillsStoppedByNfaInSelectedFy += 1;
-              addDrillFile("activity:selectedBillsStoppedNfa:selected", file);
+        if (selectedFyBill) {
+          summary.activityCounts.billsSentInSelectedFy += 1;
+          addDrillFile("activity:billsSent:selected", file);
+        }
+        if (isLaterActivityDate(billSentDate)) {
+          summary.activityCounts.billsSentInFollowingFy += 1;
+          addDrillFile("activity:billsSent:later", file);
+        }
+        if (selectedActivityRange && isDateWithinRange(paymentDate, selectedActivityRange)) {
+          addFinance1Amount(
+            summary.paymentsRecordedInSelectedFy.advance,
+            getInrAmount(getAdvancePaymentCapital(order), file) ?? 0,
+            getInrAmount(getAdvancePaymentRevenue(order), file) ?? 0,
+          );
+          summary.activityCounts.advancePaymentsInSelectedFy += 1;
+          addDrillFile("activity:advancePaid:selected", file);
+          addDrillFile("activity:paymentPaid:all:selected", file);
+        }
+        if (isLaterActivityDate(paymentDate)) {
+          summary.activityCounts.advancePaymentsInFollowingFy += 1;
+          addDrillFile("activity:advancePaid:later", file);
+        }
+        if (selectedFyBill) {
+          if (
+            isDateOnOrBefore(paymentDate, todayDate) &&
+            hasFilledString(billSentDate) &&
+            paymentDate! < billSentDate!
+          ) {
+            summary.activityCounts.selectedFyBillsDateOrderConflict += 1;
+          } else if (
+            selectedActivityRange &&
+            isDateWithinRange(paymentDate, selectedActivityRange)
+          ) {
+            summary.activityCounts.selectedFyBillsPaidInSelectedFy += 1;
+            addDrillFile("activity:selectedBillsPaid:selected", file);
+          } else if (isLaterActivityDate(paymentDate)) {
+            summary.activityCounts.selectedFyBillsPaidInFollowingFy += 1;
+            addDrillFile("activity:selectedBillsPaid:later", file);
+          } else if (!isDateOnOrBefore(paymentDate, todayDate)) {
+            if (isUnpaidAdvanceClearedByNoFurtherAction(order, todayDate)) {
+              summary.activityCounts.selectedFyBillsStoppedByNfa += 1;
+              addDrillFile("activity:selectedBillsStoppedNfa", file);
+              if (
+                selectedActivityRange &&
+                isDateWithinRange(order.noFurtherActionDate, selectedActivityRange)
+              ) {
+                summary.activityCounts.selectedFyBillsStoppedByNfaInSelectedFy += 1;
+                addDrillFile("activity:selectedBillsStoppedNfa:selected", file);
+              } else {
+                summary.activityCounts.selectedFyBillsStoppedByNfaLater += 1;
+                addDrillFile("activity:selectedBillsStoppedNfa:later", file);
+              }
             } else {
-              summary.activityCounts.selectedFyBillsStoppedByNfaLater += 1;
-              addDrillFile("activity:selectedBillsStoppedNfa:later", file);
+              summary.activityCounts.selectedFyBillsStillUnpaid += 1;
+              addDrillFile("activity:selectedBillsStillUnpaid", file);
             }
-          } else {
-            summary.activityCounts.selectedFyBillsStillUnpaid += 1;
-            addDrillFile("activity:selectedBillsStillUnpaid", file);
           }
         }
-      }
-    });
+      });
     const paymentLiabilitiesAtFyEnd = getFinancePaymentLiabilityEntries([file], cutoffDate);
     const hasRegularPaymentByFyEnd = paymentLiabilitiesAtFyEnd.some((entry) =>
       isDateOnOrBefore(entry.paymentDate, cutoffDate),
@@ -3892,6 +3975,22 @@ function getFinance1Summary(
     }
   });
 
+  // Unlike the other distribution columns, Cancelled is derived from the
+  // original S.O. rows so fully S.O.-cancelled files are represented too.
+  // Count each file once, regardless of how many of its S.O.s are cancelled.
+  cancelledFileTypeScopeFiles
+    .filter((file) => isDateWithinRange(file.receivedDate, range))
+    .forEach((file) => {
+      const hasCancelledSupplyOrder = normalizedRawSupplyOrders(file).some((order) =>
+        isYes(order.soCancelled),
+      );
+      if (!hasCancelledSupplyOrder) return;
+      const fileTypeRow = getFileTypeRow(file.fileType ?? "");
+      fileTypeRow.cancelled += 1;
+      const fileTypeKey = `fileType:${fileTypeRow.fileType.toLowerCase()}`;
+      addDrillFile(`${fileTypeKey}:liveCancelled`, file);
+    });
+
   summary.fileClosedByFyEnd = summary.closedByFyEnd;
   summary.fileTypeDistribution = Array.from(fileTypeDistribution.values()).sort((a, b) =>
     b.total !== a.total ? b.total - a.total : a.fileType.localeCompare(b.fileType),
@@ -3922,7 +4021,10 @@ function getFinance1Summary(
         addDrillFile("fyActivity:filesClosed", file);
       }
       normalizedEligibleSupplyOrders(file).forEach((order) => {
-        if (isDateWithinRange(order.soDate, selectedActivityRange)) {
+        if (
+          isDateWithinRange(order.soDate, selectedActivityRange) &&
+          !isSupplyOrderCancelled(file, order)
+        ) {
           activityCountsForFileScope.supplyOrdersPlacedInSelectedFy += 1;
           const initiationYearCounts = getActivityCountsForInitiationYear(file);
           initiationYearCounts.supplyOrdersPlaced += 1;
@@ -5564,7 +5666,10 @@ function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     isBgCategoryApplicable(file, order, category) &&
     isBgReceivedOrder(order, category) &&
     !hasFilledString(getBgReturnDate(order, category)) &&
-    !isSupplyOrderCancelled(file, order) &&
+    // A received BG remains an outstanding liability after S.O. cancellation
+    // until its return is recorded. Demand-cancelled files are not part of
+    // the BG-expiry source scope.
+    !isYes(file.demandCancelled) &&
     (normalizedCategory === "psb"
       ? !isPsbReturnPurposeComplete(file, order)
       : !hasFilledString(order.paymentDate)) &&

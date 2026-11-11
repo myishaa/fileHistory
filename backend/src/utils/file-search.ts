@@ -215,6 +215,8 @@ export type FileSearchParams = {
   dashboardFilter?: string;
   extraDashboardFilters?: string[];
   excludeDashboardFilters?: string[];
+  /** Dashboard status-summary drilldowns that must retain the live counter scope. */
+  statusSummaryScope?: "live";
   analyticsType?: "firm" | "indentor";
   analyticsNames?: string[];
   sortColumnKey?: string;
@@ -3353,7 +3355,9 @@ function isNormalRfpVettingDelayMatch(
 
 function isDelayStatusMatch(file: FileRecord, thresholdDays: number, selectedMilestoneKey: string) {
   const gemUndertakingMatch =
-    (selectedMilestoneKey === "all" || selectedMilestoneKey === "gemUndertaking") &&
+    (selectedMilestoneKey === "all" ||
+      (selectedMilestoneKey === "gemUndertaking" && !isYes(file.refloat)) ||
+      (selectedMilestoneKey === "refloatGemUndertaking" && isYes(file.refloat))) &&
     isGemUndertakingDelayMatch(file, thresholdDays);
   const refloatRfpVettingMatch = isRefloatRfpVettingDelayMatch(
     file,

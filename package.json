@@ -16,6 +16,7 @@
     "qa:analytics": "node scripts/audit-analytics.mjs",
     "qa:snapshot": "node scripts/audit-snapshot-clickers.mjs",
     "qa:parity": "backend/node_modules/.bin/tsx scripts/audit-search-ts-sql-parity.mjs && node scripts/audit-cash-out-go-plan.mjs",
+    "qa:scenarios": "node scripts/audit-scenario-batch.mjs",
     "qa:settings": "node scripts/qa-settings-role-browser-audit.mjs",
     "qa:mutation": "backend/node_modules/.bin/tsx scripts/mutation-test.mjs",
     "qa:perf:db": "node scripts/prepare-qa-performance-db.mjs",

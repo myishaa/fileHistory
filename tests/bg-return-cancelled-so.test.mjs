@@ -60,6 +60,43 @@ function rowFor(summary, milestone) {
     .find((row) => row.milestone === milestone);
 }
 
+test("BG liability sections use the dedicated source for fully cancelled S.O. files", () => {
+  const file = {
+    id: "fully-cancelled-bg-liability",
+    division: "Trial",
+    fileType: "Goods & Services",
+    fileTypeGroup: "goodsServices",
+    demandCancelled: "No",
+    bg: "Yes",
+    gem: "No",
+    supplyOrders: [{
+      financialSanctionDate: "2025-12-01",
+      soNo: "SO1",
+      soDate: "2025-12-02",
+      soValueRevenue: "100000",
+      firm: "Firm A",
+      firmType: "MSE",
+      soCancelled: "Yes",
+      stageDelivery: "No",
+      advancePayment: "No",
+      bgCoverageType: "PSB",
+      psbApplicable: "Yes",
+      psbBgReceivedDate: "2026-01-01",
+      psbBgReturnDate: "",
+    }],
+  };
+  const summary = buildReportsSummary({
+    files: [],
+    bgLiabilityFiles: [file],
+    division: "all",
+    delayDays: 30,
+    delayMilestone: "all",
+    sections: ["bgExpiry", "bg"],
+  });
+  assert.equal(summary.bgReturnDueCounts.psb, 1);
+  assert.equal(summary.bgCustodyCounts.psb, 1);
+});
+
 for (const { milestone, order } of cancelledBgCases) {
   test(`${milestone} return count includes an outstanding BG on a cancelled S.O.`, () => {
     const summary = summaryFor(order);

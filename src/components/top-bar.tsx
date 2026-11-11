@@ -153,16 +153,25 @@ export function TopBar() {
   const fontScale = normalizeAppFontScale(settings.fontScale ?? defaultAppFontScale);
   const fontScaleIndex = appFontScaleOptions.findIndex((option) => option.value === fontScale);
   const dashboardTab = typeof locationSearch.tab === "string" ? locationSearch.tab : undefined;
+  const status1View =
+    locationSearch.status1View === "cancelled" || locationSearch.status1View === "closed"
+      ? locationSearch.status1View
+      : undefined;
   const analyticsPanel =
     typeof locationSearch.analyticsPanel === "string" ? locationSearch.analyticsPanel : undefined;
   const reportMode = typeof locationSearch.mode === "string" ? locationSearch.mode : undefined;
   const isFinanceSnapshotContext =
     pathname === "/dashboard" && (dashboardTab === "snapshot" || dashboardTab === "finance1");
   const isFinanceActivityContext = pathname === "/dashboard" && dashboardTab === "fyActivity";
+  const isStatus1HistoricalContext =
+    pathname === "/dashboard" && dashboardTab === "status" && Boolean(status1View);
   const isSpecificFinanceYearContext = isFinanceSnapshotContext || isFinanceActivityContext;
   const effectiveSelectedYear = isSpecificFinanceYearContext
     ? normalizeFinancialYearLabel(settings.selectedYear) || settings.financialYear
-    : settings.selectedYear;
+    : isStatus1HistoricalContext
+      ? ALL_FILES_YEAR
+      : settings.selectedYear;
+  const yearSelectionEnabled = canSelectYear && !isStatus1HistoricalContext;
 
   useEffect(() => {
     if (!warningsOpen) return;
@@ -220,14 +229,16 @@ export function TopBar() {
       recommendedFilterLabel.fileYear,
     ],
   );
-  const globalFilterActive = isGlobalFilterNonSuggested(
-    pathname,
-    dashboardTab,
-    analyticsPanel,
-    reportMode,
-    effectiveSelectedYear,
-    settings.financialYear,
-  );
+  const globalFilterActive = isStatus1HistoricalContext
+    ? false
+    : isGlobalFilterNonSuggested(
+        pathname,
+        dashboardTab,
+        analyticsPanel,
+        reportMode,
+        effectiveSelectedYear,
+        settings.financialYear,
+      );
   const filterCombinationActive =
     globalFilterActive ||
     isSubfilterNonSuggested(
@@ -582,6 +593,7 @@ export function TopBar() {
       to: "/dashboard",
       search: {
         tab: "analytics",
+        status1View: undefined,
         analyticsPanel: "suspectedAnomaly",
         noticeBoardView: undefined,
         boardMetric: undefined,
@@ -931,6 +943,8 @@ export function TopBar() {
                 title={
                   pathname === "/quick-entry"
                     ? "Global Filter is unavailable on Quick Entry"
+                    : isStatus1HistoricalContext
+                      ? "Status-1 historical views use a locked All Files scope"
                     : undefined
                 }
                 className={
@@ -939,7 +953,7 @@ export function TopBar() {
                     `flex min-w-0 items-center gap-2 rounded-md border px-2 py-1 ${
                       hasCustomRibbon ? ribbonControlClass : "border-border bg-background"
                     }`,
-                  ) + (canSelectYear ? "" : " cursor-not-allowed opacity-60")
+                    ) + (yearSelectionEnabled ? "" : " cursor-not-allowed opacity-60")
                 }
               >
                 <CalendarDays
@@ -989,7 +1003,7 @@ export function TopBar() {
                     onClear={() => {
                       window.dispatchEvent(new Event("recordkeeper:global-filter-reset"));
                     }}
-                    disabled={!canSelectYear || filterCombinationLocked}
+                    disabled={!yearSelectionEnabled || filterCombinationLocked}
                     className={
                       "h-6 min-w-0 max-w-full truncate border-0 bg-transparent px-0 text-sm font-semibold outline-none focus:ring-0 " +
                       (globalFilterActive
@@ -1502,7 +1516,7 @@ function getFilterGuideCombinations(
         files:
           "Currently active files, subject to Search criteria. A file with at least one live S.O. remains eligible even if another S.O. is cancelled.",
         example:
-          "A file with all S.O.s cancelled is excluded; Search's Cancelled S.O. Include can bypass the active-status scope, subject to the archived-FY checkbox.",
+          "Search criteria further narrow this active-file scope.",
       },
       {
         globalFilter: "All files",
@@ -1643,8 +1657,8 @@ function SectionFilterGuideDialog({
             "The FY containing a dated event, but only for measures that use that event date. Other measures may show current status or recorded history.",
           ],
           [
-            "Cancelled S.O. filter (Search)",
-            "Include finds files with at least one cancelled S.O. Exclude removes only files whose S.O.s are all cancelled, so a file with one live and one cancelled S.O. remains visible. Include can bypass the active-status file scope, but not the archived-FY checkbox rule.",
+            "Cancelled S.O. and File Closed",
+            "Cancelled S.O. is an order-level condition, so one file can contain both cancelled and non-cancelled S.O.s. File Closed is a file-level terminal marker that applies to the whole file. Historical records may remain visible while individual measures apply their own record rules.",
           ],
         ],
         columnWidths: [140, 440],
@@ -1747,10 +1761,11 @@ function SectionFilterGuideDialog({
                 qualify under the closed-file branch.
               </li>
               <li>
-                In Search, <strong>Cancelled S.O. — Include</strong> finds files with a cancelled
-                S.O.; <strong>Exclude</strong> removes only files whose S.O.s are all cancelled.
-                Include can bypass the active-status scope, but the archived-FY checkbox still
-                applies. Individual panels may exclude cancelled S.O. rows from their counts.
+                <strong>Cancelled S.O. versus File Closed:</strong> Cancelled S.O. is an
+                order-level condition, so one file may contain both cancelled and non-cancelled
+                S.O.s. File Closed is a file-level terminal marker that applies to the whole file.
+                Historical records may remain visible while individual measures apply their own
+                record rules.
               </li>
               <li>
                 <strong>Specific FY:</strong> Files initiated in that FY, plus older files that were
@@ -1941,11 +1956,12 @@ function getSectionFilterGuide(currentFinancialYear: string): FilterGuideSection
       fileScope:
         "Global Filter selects the files; File Initiation Year can narrow them to one start year. The subfilter does not change the activity period.",
       activityYear:
-        "Payment counts use payment dates, and S.O. counts use placement dates. Carry-forward panels also show the related S.O. FY, which can differ from the payment FY.",
+        "FY Activity is a Finance view: cancelled S.O.s are excluded from every Finance count and value, including S.O., payment, carry-forward, and Firm Type measures. Payment counts use payment dates, and S.O. counts use placement dates. Carry-forward panels also show the related S.O. FY, which differs from the payment FY.",
       examples: [
         `An S.O. placed in ${currentFy} for a file initiated in ${previousFy} belongs to ${currentFy} activity with Subfilter All file years.`,
         `A ${previousFy} liability paid in ${currentFy} is a ${currentFy} payment that clears a ${previousFy} liability.`,
         `Global Filter ${currentFy} + Subfilter ${previousFy} keeps the activity period in ${currentFy} but limits files to those initiated in ${previousFy}.`,
+        "The header Files total uses the Finance file scope. A fully S.O.-cancelled file is excluded from that total and contributes no S.O., payment, carry-forward, or Firm Type count/value.",
       ],
     },
     {
@@ -2048,6 +2064,11 @@ function FilterCombinationGuideDialog({
             "File Initiation Year",
             "The FY when the file started. It narrows the Global Filter to files from that year.",
             `Global Filter ${displayFinancialYearLabel(currentFinancialYear)} + Subfilter 2025-26 shows files started in 2025-26 that also meet the selected FY rules.`,
+          ],
+          [
+            "Cancelled S.O. and File Closed",
+            "Cancelled S.O. is order-level history; File Closed is a file-level terminal marker. A file may therefore have cancelled and non-cancelled S.O.s while also carrying File Closed.",
+            "Read the selected section's count basis to see whether it counts files or individual S.O.s.",
           ],
         ],
         columnWidths: [90, 210, 280],
@@ -2463,14 +2484,11 @@ function getFilterCombinationGuide(currentFinancialYear: string) {
         ],
       },
       {
-        filter: "Cancelled S.O. (Search filter)",
-        useWhen: "Find files with cancelled S.O.s or hide fully cancelled-S.O. files.",
-        shows:
-          "Include finds files with at least one cancelled S.O. Exclude removes a file only when all its S.O.s are cancelled, so a file with one live and one cancelled S.O. remains visible. Include can bypass the active-status scope, but archived FYs still follow the Include active files from archived years checkbox.",
+        filter: "Cancelled S.O. criterion",
+        useWhen: "Apply the Cancelled S.O. criterion in Search.",
+        shows: "The selected Search criterion is applied to the result set.",
         examples: [
-          "One live S.O. + one cancelled S.O.: included by Include and retained by Exclude.",
-          "All S.O.s cancelled: included by Include and removed by Exclude.",
-          "Archived FY + all S.O.s cancelled: still excluded because the file is not active.",
+          "Apply this criterion together with the Global Filter and any other selected Search filters.",
         ],
       },
       {

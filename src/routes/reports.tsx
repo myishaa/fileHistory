@@ -4650,6 +4650,7 @@ function ReportsPage({
         to: "/dashboard",
         search: {
           tab: "analytics",
+          status1View: undefined,
           analyticsPanel: "suspectedAnomaly",
           noticeBoardView: undefined,
           boardMetric: undefined,
@@ -6081,6 +6082,7 @@ const reportModeHelperText = {
   bgCustody: [
     "Counts applicable PSB, PWB, and PSB+PWB guarantees received by MMG and not yet returned.",
     "Each guarantee instrument counts once. A combined PSB+PWB instrument is counted under PSB+PWB only.",
+    "An outstanding guarantee remains included after its S.O. is cancelled, including when all S.O.s in the file are cancelled; demand-cancelled files remain excluded.",
     "Click a count to view the files with matching guarantees in custody.",
   ],
   paymentCompletedMatrix: [
@@ -6915,7 +6917,7 @@ function getReportModeButtonHelperContent(
     return [
       "Counts S.O./stage records, not unique files. A staged S.O. can have completed stages and still have pending or expired stages.",
       "Pending and expired use the effective D.P. (Revised D.P. when present) or contract-period date. Completed deliveries use the recorded completion date.",
-      "Cancelled demands and S.O.s are excluded. The three measures are separate and should not be added as a unique-order total.",
+      "Cancelled demands and S.O.s are excluded. No Further Action = Yes removes unfinished D.P./contract-period work from pending and expired counts; recorded completed deliveries remain in the history. The three measures are separate and should not be added as a unique-order total.",
       "Click a month to view the calendar, then click a colored count to open its records.",
     ];
   }
@@ -6943,7 +6945,7 @@ function getReportModeButtonHelperContent(
       "Example row: PWB, contract file such as AMC, MPC, CARS, CAPSI, or O&M | PWB | S.O. date | Included while the BG is not received and the S.O. date is recorded.",
       "Example row: BG already received or marked completed | Any applicable BG category | Not applicable | Excluded from BG receipt delay.",
       "Example row: Demand Cancelled or S.O. Cancelled | Any applicable BG category | Not applicable | Excluded.",
-      "Example row: Short-closed S.O. with BG still pending | Any applicable BG category | Applicable category start date | Included unless the demand or S.O. is cancelled.",
+      "Example row: Short-closed S.O. with BG still pending | Any applicable BG category | Applicable category start date | Included only while the demand and S.O. are not cancelled and No Further Action is not Yes. No Further Action = Yes stops the pending BG receipt delay.",
       "Example row: Configured threshold band | Any applicable BG category | Applicable category start date | A delay is included only when it is greater than the lower threshold and, when another threshold exists, not greater than the next threshold; the final band is greater than its threshold.",
       "Filter: Global Filter, File Initiation Year, initiation date, Division, and File Type choose the files in scope. BG receipt-delay thresholds are shared in Settings and apply to all users.",
       "Clicking a result: Click a coloured count to open the matching files for that BG category and threshold band.",
@@ -7836,7 +7838,7 @@ function getMonthlyReportConfig(
         align: "center",
         color: "red",
         helper:
-          "Counts non-cancelled S.O./stage records whose effective D.P. (Revised D.P. when present) or contract-period date is before today, with no Material Receipt Date (inspection workflow) or Job Completion Date (non-inspection workflow).",
+          "Counts non-cancelled S.O./stage records where No Further Action is not Yes and the effective D.P. (Revised D.P. when present) or contract-period date is before today, with no Material Receipt Date (inspection workflow) or Job Completion Date (non-inspection workflow).",
         getFilter: (row) => `deliverySchedule:net:${row.monthKey}`,
         getTotalFilter: (_rows, context) =>
           getYearDashboardFilter("deliveryScheduleYear", "netCount", context.breakupYear ?? "all"),
@@ -22301,7 +22303,7 @@ function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     isBgCategoryApplicable(file, order, category) &&
     isBgReceivedOrder(order, category) &&
     !hasFilledString(getBgReturnDate(order, category)) &&
-    !isSupplyOrderCancelled(file, order) &&
+    !isYes(file.demandCancelled) &&
     (normalizedCategory === "psb"
       ? !isPsbReturnPurposeComplete(file, order)
       : !hasFilledString(order.paymentDate)) &&

@@ -433,6 +433,8 @@ const supplyOrderDateKeys = new Set<keyof SupplyOrderDetail>([
 
 export function buildReportsSummary({
   files,
+  bgLiabilityFiles,
+  historicalPlacementFiles,
   pendingBillingFiles,
   division,
   selectedYear,
@@ -448,6 +450,10 @@ export function buildReportsSummary({
   sections,
 }: {
   files: FileRecord[];
+  /** File scope for BG custody/return liabilities, including fully cancelled S.O. files. */
+  bgLiabilityFiles?: FileRecord[];
+  /** File scope for historical S.O. placement activity. */
+  historicalPlacementFiles?: FileRecord[];
   pendingBillingFiles?: FileRecord[];
   division: string;
   selectedYear?: string;
@@ -472,8 +478,22 @@ export function buildReportsSummary({
   const wantsBgExpiry = wantsSection("monthly") || wantsSection("bgExpiry");
   const divisionFiles =
     division === "all" ? files : files.filter((file) => file.division === division);
+  const divisionBgLiabilityFiles =
+    division === "all"
+      ? (bgLiabilityFiles ?? files)
+      : (bgLiabilityFiles ?? files).filter((file) => file.division === division);
+  const divisionHistoricalPlacementFiles =
+    division === "all"
+      ? (historicalPlacementFiles ?? files)
+      : (historicalPlacementFiles ?? files).filter((file) => file.division === division);
   const reportFiles = divisionFiles.filter((file) => !isCancelledFile(file));
   const nonDemandCancelledReportFiles = divisionFiles.filter((file) => !isDemandCancelled(file));
+  const nonDemandCancelledBgLiabilityFiles = divisionBgLiabilityFiles.filter(
+    (file) => !isDemandCancelled(file),
+  );
+  const nonDemandCancelledHistoricalPlacementFiles = divisionHistoricalPlacementFiles.filter(
+    (file) => !isDemandCancelled(file),
+  );
   const pendingBillingDivisionFiles =
     division === "all"
       ? (pendingBillingFiles ?? files)
@@ -498,11 +518,11 @@ export function buildReportsSummary({
       ? getStatusSummaryTableGroups(
           activeStatusFiles,
           bgReturnOffsetDays,
-          nonDemandCancelledReportFiles,
+          nonDemandCancelledBgLiabilityFiles,
         )
       : [],
     bgReturnDueCounts: wantsSection("bgExpiry")
-      ? getBgReturnDueCounts(nonDemandCancelledReportFiles, bgReturnOffsetDays)
+      ? getBgReturnDueCounts(nonDemandCancelledBgLiabilityFiles, bgReturnOffsetDays)
       : { psb: 0, pwb: 0, psbPwb: 0 },
     expectedCashOutgoDpRows: wantsCashOutgoRow("cashOutgoExpectedDp")
       ? getExpectedCashOutgoByDpRows(reportFiles, expectedCashOutgoDays, cashOutgoAsOfDate)
@@ -590,13 +610,13 @@ export function buildReportsSummary({
       ? getMonthlyFileInflow(nonDemandCancelledReportFiles, selectedYear)
       : [],
     monthWiseSupplyOrder: wantsSection("monthly")
-      ? getMonthWiseSupplyOrder(nonDemandCancelledReportFiles, selectedYear)
+      ? getMonthWiseSupplyOrder(nonDemandCancelledHistoricalPlacementFiles, selectedYear)
       : [],
     dailyFileInflow: wantsSection("monthly")
       ? getDailyFileInflow(nonDemandCancelledReportFiles, selectedYear)
       : [],
     dailySupplyOrder: wantsSection("monthly")
-      ? getDailySupplyOrder(nonDemandCancelledReportFiles, selectedYear)
+      ? getDailySupplyOrder(nonDemandCancelledHistoricalPlacementFiles, selectedYear)
       : [],
     dailyDeliverySchedule: wantsDeliverySchedule
       ? getDailyDeliverySchedule(nonDemandCancelledReportFiles, selectedYear)
@@ -638,7 +658,7 @@ export function buildReportsSummary({
       ? getBgReceiptDelayRows(nonDemandCancelledReportFiles, bgReceiptDelayDays)
       : [],
     bgCustodyCounts: wantsSection("bg")
-      ? getBgCustodyCounts(nonDemandCancelledReportFiles)
+      ? getBgCustodyCounts(nonDemandCancelledBgLiabilityFiles)
       : { psb: 0, pwb: 0, psbpwb: 0 },
     warrantyBgMismatchRows: wantsSection("bg")
       ? getWarrantyBgMismatchRows(nonDemandCancelledReportFiles, bgReturnOffsetDays)
@@ -941,7 +961,11 @@ function getMonthWiseDeliverySchedule(files: FileRecord[], selectedYear?: string
   effectiveSupplyOrderEntries(files).forEach(({ file, order }) => {
     if (isDemandCancelled(file) || isSupplyOrderCancelled(file, order)) return;
     const deliveryPeriodDate = getDeliveryPeriodDate(order);
-    if (!isDeliveryFructified(file, order) && (!activityRange || isDateInRange(deliveryPeriodDate, activityRange))) {
+    if (
+      !isShortclosureNoFurtherAction(order) &&
+      !isDeliveryFructified(file, order) &&
+      (!activityRange || isDateInRange(deliveryPeriodDate, activityRange))
+    ) {
       const month = getMonthKey(deliveryPeriodDate);
       if (month) {
         const current = rows.get(month) ?? { grossCount: 0, netCount: 0, completedCount: 0 };
@@ -970,7 +994,12 @@ function getDailyDeliverySchedule(files: FileRecord[], selectedYear?: string) {
   effectiveSupplyOrderEntries(files).forEach(({ file, order }) => {
     if (isDemandCancelled(file) || isSupplyOrderCancelled(file, order)) return;
     const deliveryPeriodDate = getDeliveryPeriodDate(order);
-    if (!isDeliveryFructified(file, order) && hasDate(deliveryPeriodDate) && (!activityRange || isDateInRange(deliveryPeriodDate, activityRange))) {
+    if (
+      !isShortclosureNoFurtherAction(order) &&
+      !isDeliveryFructified(file, order) &&
+      hasDate(deliveryPeriodDate) &&
+      (!activityRange || isDateInRange(deliveryPeriodDate, activityRange))
+    ) {
       const current = rows.get(deliveryPeriodDate!) ?? { grossCount: 0, netCount: 0, completedCount: 0 };
       if (!isDateBeforeToday(deliveryPeriodDate)) current.grossCount += 1;
       else current.netCount += 1;
@@ -2411,6 +2440,12 @@ function getCurrentMilestoneDelay(
   if (milestone.key === "bidding") return undefined;
   if (milestone.key === "refloatBidding") return undefined;
   if (milestone.key === "postTcec" || milestone.key === "refloatPostTcec") return undefined;
+  // PWB is an order-level follow-up milestone. Its start date must come from
+  // getPwbFollowUpTriggerDate() (IR Receipt, staged IR Receipt, or the
+  // contract/non-IR trigger as applicable), which is handled by
+  // getCurrentOrderMilestoneDelayRows below. Do not let the generic file-level
+  // predecessor calculation create a conflicting PWB row.
+  if (milestone.key === "pwb") return undefined;
   if (milestone.key === "supplyOrder" && shouldUseOrderMilestoneRows(file)) return undefined;
   if (selectedMilestoneKey !== "all" && milestone.key !== selectedMilestoneKey) return undefined;
   if (isMilestoneComplete(file, milestone)) return undefined;
@@ -5340,7 +5375,10 @@ function isBgExpiredOrder(file: FileRecord, order: SupplyOrderDetail, category: 
     isBgCategoryApplicable(file, order, category) &&
     isBgReceivedOrder(order, category) &&
     !hasFilledString(getBgReturnDate(order, category)) &&
-    !isSupplyOrderCancelled(file, order) &&
+    // A received BG remains an outstanding liability after S.O. cancellation
+    // until its return is recorded. Demand-cancelled files are outside the
+    // report's BG-expiry scope.
+    !isYes(file.demandCancelled) &&
     (normalizedCategory === "psb"
       ? !isPsbReturnPurposeComplete(file, order)
       : !hasFilledString(order.paymentDate)) &&

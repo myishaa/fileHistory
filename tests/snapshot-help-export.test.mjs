@@ -148,7 +148,7 @@ test("PSB and Non PSB tooltip entries remain unchanged, whether supplied or abse
   });
 });
 
-test("PDF and Excel export authoritative Files and S.O. totals and both checkbox states", async () => {
+test("PDF and Excel export authoritative Files and S.O. totals and archived-year state", async () => {
   const stats = categories(backend, false);
   const rows = env.getSnapshotExportRows(stats, backend);
   assert.equal(rows[0].metric, "Files");
@@ -168,36 +168,30 @@ test("PDF and Excel export authoritative Files and S.O. totals and both checkbox
     visibleFileCategoryOptions: [],
   });
   const descriptions = new Set();
-  for (const archived of [true, false])
-    for (const cancelled of [true, false]) {
-      const description = env.getSnapshotExportDescription(base, archived, cancelled);
-      descriptions.add(description);
-      assert.ok(
-        description.includes(
-          `Active files from archived years: ${archived ? "Checked" : "Unchecked"}`,
-        ),
+  for (const archived of [true, false]) {
+    const description = env.getSnapshotExportDescription(base, archived);
+    descriptions.add(description);
+    assert.ok(
+      description.includes(
+        `Active files from archived years: ${archived ? "Checked" : "Unchecked"}`,
+      ),
+    );
+    for (const format of ["pdf", "excel"]) {
+      await env.downloadSnapshotRows(rows, "Snapshot", format, description);
+      const doc = payload();
+      assert.equal(doc.format, format);
+      assert.equal(doc.description, description);
+      const totals = doc.tables.find((table) => table.title === "Snapshot");
+      assert.equal(
+        JSON.stringify(totals.rows),
+        JSON.stringify([
+          ["Files", backend.dashboardFileCount],
+          ["S.O.", backend.dashboardSupplyOrderCount],
+        ]),
       );
-      assert.ok(
-        description.includes(
-          `Files with all S.O.s cancelled: ${cancelled ? "Checked" : "Unchecked"}`,
-        ),
-      );
-      for (const format of ["pdf", "excel"]) {
-        await env.downloadSnapshotRows(rows, "Snapshot", format, description);
-        const doc = payload();
-        assert.equal(doc.format, format);
-        assert.equal(doc.description, description);
-        const totals = doc.tables.find((table) => table.title === "Snapshot");
-        assert.equal(
-          JSON.stringify(totals.rows),
-          JSON.stringify([
-            ["Files", backend.dashboardFileCount],
-            ["S.O.", backend.dashboardSupplyOrderCount],
-          ]),
-        );
-      }
     }
-  assert.equal(descriptions.size, 4);
+  }
+  assert.equal(descriptions.size, 2);
 });
 
 test("zero matching files exports explicit zero totals without inventing category values", () => {

@@ -107,3 +107,31 @@ test("additional export sheets are registered and rendered in the workbook", () 
   assert.match(scopeSheet, /Export mode/);
   assert.match(scopeSheet, /FY Based/);
 });
+
+test("Excel chart export preserves the requested chart kind", () => {
+  const basePlot = {
+    title: "Monthly values",
+    measure: "Amount",
+    unit: "Lakhs",
+    categories: ["Apr", "May"],
+    series: [{ name: "Total", values: [1, 2] }],
+  };
+
+  const lineWorkbook = renderXlsxDocument({
+    title: "Line report",
+    tables: [{ headers: ["Month", "Amount"], rows: [["Apr", 1]] }],
+    plot: { ...basePlot, kind: "line" },
+  });
+  const lineChart = readZipEntry(lineWorkbook, "xl/charts/chart1.xml");
+  assert.match(lineChart, /<c:lineChart>/);
+  assert.doesNotMatch(lineChart, /<c:barChart>/);
+
+  const barWorkbook = renderXlsxDocument({
+    title: "Bar report",
+    tables: [{ headers: ["Month", "Amount"], rows: [["Apr", 1]] }],
+    plot: { ...basePlot, kind: "bar", orientation: "horizontal" },
+  });
+  const barChart = readZipEntry(barWorkbook, "xl/charts/chart1.xml");
+  assert.match(barChart, /<c:barChart>/);
+  assert.doesNotMatch(barChart, /<c:lineChart>/);
+});

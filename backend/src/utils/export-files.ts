@@ -230,9 +230,6 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
     return page;
   }
   const isVerticalBarChart = plot.kind === "bar" && plot.orientation === "vertical";
-  const chartLeft = plot.kind === "bar" && !isVerticalBarChart ? pdfMargin + 160 : pdfMargin + 38;
-  const chartRight = pdfPageWidth - pdfMargin - 12;
-  const chartWidth = chartRight - chartLeft;
   const details = [`Measure: ${plot.measure}`, plot.unit, plot.expandedYears?.length ? `Expanded years: ${plot.expandedYears.join(", ")}` : ""]
     .filter(Boolean)
     .join(" · ");
@@ -272,15 +269,32 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
       drawText(page, item.name, x + 11, y - 1, pdfFontSize - 1);
     });
 
-    const chartTop = page.y - 24;
-    const chartBottom = pdfMargin + 54;
+    // Keep exported charts compact and centered instead of stretching them to
+    // the full page. The frame is deliberately white so it remains readable
+    // when copied out of the PDF, and its solid border defines the chart area.
+    const frameWidth = plot.kind === "pie" ? 390 : isVerticalBarChart ? 620 : 650;
+    const frameHeight = plot.kind === "pie" ? 285 : 300;
+    const frameLeft = (pdfPageWidth - frameWidth) / 2;
+    const frameTop = page.y - 8;
+    const frameBottom = frameTop - frameHeight;
+    const frameRight = frameLeft + frameWidth;
+    const labelGutter = plot.kind === "bar" && !isVerticalBarChart ? 132 : 42;
+    const chartLeft = frameLeft + labelGutter;
+    const chartRight = frameRight - 22;
+    const chartWidth = chartRight - chartLeft;
+    const chartTop = frameTop - 22;
+    const chartBottom = frameBottom + 30;
     const chartHeight = chartTop - chartBottom;
+    page.commands.push("1 1 1 rg");
+    page.commands.push(`${formatPdfNumber(frameLeft)} ${formatPdfNumber(frameBottom)} ${formatPdfNumber(frameWidth)} ${formatPdfNumber(frameHeight)} re f`);
+    page.commands.push("0.18 0.22 0.28 RG 1.1 w");
+    page.commands.push(`${formatPdfNumber(frameLeft)} ${formatPdfNumber(frameBottom)} ${formatPdfNumber(frameWidth)} ${formatPdfNumber(frameHeight)} re S`);
     if (plot.kind === "pie") {
       const pieValues = series[0].values.slice(offset, offset + pageCategories.length).map((value) => Math.max(0, value));
       const pieTotal = pieValues.reduce((sum, value) => sum + value, 0);
-      const centerX = pdfMargin + 290;
-      const centerY = chartBottom + Math.min(170, chartHeight * 0.48);
-      const radius = Math.min(115, chartHeight * 0.38);
+      const centerX = frameLeft + frameWidth * 0.32;
+      const centerY = frameBottom + frameHeight * 0.5;
+      const radius = Math.min(95, chartHeight * 0.42, frameWidth * 0.24);
       let angle = -Math.PI / 2;
       pageCategories.forEach((category, index) => {
         const value = pieValues[index] ?? 0;
@@ -295,17 +309,22 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
         }
         page.commands.push("h f");
         const share = pieTotal ? Math.round((value / pieTotal) * 100) : 0;
-        const legendY = chartTop - 24 - index * 15;
+        const legendY = frameTop - 24 - index * 15;
         page.commands.push(`${colors[index % colors.length]} rg`);
-        page.commands.push(`${formatPdfNumber(pdfMargin + 515)} ${formatPdfNumber(legendY - 2)} 7 7 re f`);
-        drawText(page, `${category.slice(0, 32)}: ${value} (${share}%)`, pdfMargin + 527, legendY - 1, pdfFontSize - 1);
+        page.commands.push(`${formatPdfNumber(frameLeft + frameWidth - 170)} ${formatPdfNumber(legendY - 2)} 7 7 re f`);
+        drawText(page, `${category.slice(0, 22)}: ${value} (${share}%)`, frameLeft + frameWidth - 158, legendY - 1, pdfFontSize - 1);
         angle += sweep;
       });
     } else if (plot.kind === "line") {
       const plotTop = chartTop - 12;
       const plotBottom = chartBottom + 10;
       const xStep = pageCategories.length > 1 ? chartWidth / (pageCategories.length - 1) : 0;
-      page.commands.push("0.7 0.73 0.78 RG 0.7 w");
+      page.commands.push("0.84 0.86 0.89 RG 0.5 w");
+      for (let gridIndex = 0; gridIndex <= 4; gridIndex += 1) {
+        const y = plotBottom + (gridIndex / 4) * (plotTop - plotBottom);
+        page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(y)} m ${formatPdfNumber(chartRight)} ${formatPdfNumber(y)} l S`);
+      }
+      page.commands.push("0.18 0.22 0.28 RG 0.9 w");
       page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(plotBottom)} m ${formatPdfNumber(chartRight)} ${formatPdfNumber(plotBottom)} l S`);
       series.forEach((item, seriesIndex) => {
         page.commands.push(`${seriesColors[seriesIndex]} RG 1.8 w`);
@@ -329,7 +348,12 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
       const plotBottom = chartBottom + 22;
       const plotHeight = plotTop - plotBottom;
       const categoryWidth = chartWidth / Math.max(1, pageCategories.length);
-      page.commands.push("0.7 0.73 0.78 RG 0.7 w");
+      page.commands.push("0.84 0.86 0.89 RG 0.5 w");
+      for (let gridIndex = 0; gridIndex <= 4; gridIndex += 1) {
+        const y = plotBottom + (gridIndex / 4) * (plotTop - plotBottom);
+        page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(y)} m ${formatPdfNumber(chartRight)} ${formatPdfNumber(y)} l S`);
+      }
+      page.commands.push("0.18 0.22 0.28 RG 0.9 w");
       page.commands.push(`${formatPdfNumber(chartLeft)} ${formatPdfNumber(plotBottom)} m ${formatPdfNumber(chartRight)} ${formatPdfNumber(plotBottom)} l S`);
       pageCategories.forEach((category, categoryIndex) => {
         const centerX = chartLeft + (categoryIndex + 0.5) * categoryWidth;
@@ -351,9 +375,14 @@ function drawExportPlot(page: PdfPage, plot: ExportPlot, addPage: AddPdfPage) {
     } else {
       const rowHeight = chartHeight / pageSize;
       const groupHeight = Math.max(4, rowHeight / (series.length + 1));
+      page.commands.push("0.84 0.86 0.89 RG 0.5 w");
+      for (let gridIndex = 0; gridIndex <= 4; gridIndex += 1) {
+        const x = chartLeft + (gridIndex / 4) * chartWidth;
+        page.commands.push(`${formatPdfNumber(x)} ${formatPdfNumber(chartBottom)} m ${formatPdfNumber(x)} ${formatPdfNumber(chartTop)} l S`);
+      }
       pageCategories.forEach((category, categoryIndex) => {
         const yTop = chartTop - categoryIndex * rowHeight;
-        drawText(page, category.slice(0, 28), pdfMargin, yTop - groupHeight, pdfFontSize - 1);
+        drawText(page, category.slice(0, 28), frameLeft + 8, yTop - groupHeight, pdfFontSize - 1);
         if (plot.stackedBars) {
           let x = chartLeft;
           let total = 0;

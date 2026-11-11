@@ -5613,7 +5613,8 @@ function ModeSettings() {
   const files = useSettingsUsageFiles();
   const [name, setName] = useState("");
   const modes = normalizeModes(settings.modes);
-  const rows = getMasterValueUsageRows(modes, getModeUsage(files), { uppercase: true });
+  const modeUsage = getModeUsage(files);
+  const rows = getMasterValueUsageRows(modes, modeUsage, { uppercase: true });
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -7981,7 +7982,7 @@ function DemandProcessingPresetSettings() {
   const syncedPresetSignatureRef = useRef(savedPresetDraftSignature);
   const syncedDayRangesSignatureRef = useRef(dayRangesSignature);
   const cancelPresetDraftRef = useRef(() => undefined);
-  const savePresetDraftRef = useRef(async () => undefined);
+  const savePresetDraftRef = useRef<() => Promise<void>>(async () => undefined);
   const cancelDayRangeDraftRef = useRef(() => undefined);
   cancelPresetDraftRef.current = () => {
     const next = readDemandProcessingPresetDraft(savedSettings.demandProcessingPresets);
@@ -9052,7 +9053,7 @@ function FirmRatingSettings() {
   const savedFields = readFirmRatingDraft(savedSettings.firmRatingConfig);
   const fieldsDirty = !isSettingsDirtyValueEqual(fields, savedFields);
   const syncedConfigSignatureRef = useRef(savedConfigSignature);
-  const saveRef = useRef(async () => undefined);
+  const saveRef = useRef<() => Promise<void>>(async () => undefined);
   const cancelRef = useRef(() => undefined);
 
   cancelRef.current = () => {

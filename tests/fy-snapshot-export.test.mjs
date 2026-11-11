@@ -89,7 +89,6 @@ function exportFromToolbar(format, overrides = {}) {
     dashboardSupplyOrderCount: 888,
     dashboardExportDescription: "Global Filter: 2025-26\nDivision: ACC",
     includeArchivedYears: true,
-    includeAllCancelledSupplyOrderFilesForView: true,
     finance1FileTypeView: "bar",
     finance1FileTypeMetric: "closed",
     finance1FirmTypeView: "pie",
@@ -131,69 +130,71 @@ function zipEntries(buffer) {
 }
 
 for (const format of ["pdf", "excel"]) {
-  test(`${format} toolbar export includes header totals, checkbox states, and displayed charts`, () => {
+  test(`${format} toolbar export includes header totals, archive scope, and displayed charts`, () => {
     const descriptions = new Set();
-    for (const archived of [true, false])
-      for (const cancelled of [true, false]) {
-        const doc = exportFromToolbar(format, {
-          includeArchivedYears: archived,
-          includeAllCancelledSupplyOrderFilesForView: cancelled,
-        });
-        assert.equal(doc.format, format);
-        assert.match(doc.description, /As on date: 09-11-2026/);
-        assert.match(doc.description, /Global Filter: 2025-26\nDivision: ACC/);
-        assert.ok(
-          doc.description.includes(
-            `Active files from archived years: ${archived ? "Checked" : "Unchecked"}`,
-          ),
-        );
-        assert.ok(
-          doc.description.includes(
-            `Files with all S.O.s cancelled: ${cancelled ? "Checked" : "Unchecked"}`,
-          ),
-        );
-        descriptions.add(doc.description);
-        assert.deepEqual(doc.tables[0], {
-          title: "Scope summary",
-          headers: ["Measure", "Count"],
-          rows: [
-            ["Files", 7],
-            ["S.O.", 11],
-          ],
-        });
-        assert.equal(doc.tables[1].title, "Financial Position");
-        assert.equal(doc.plots.length, 4);
-        assert.deepEqual(
-          doc.plots.map((plot) => plot.kind),
-          ["bar", "bar", "pie", "pie"],
-        );
-        assert.equal(doc.plots[0].orientation, "vertical");
-        assert.equal(doc.plots[1].orientation, "horizontal");
-        assert.deepEqual(doc.plots[1].series[0].values, [2, 1]);
-        assert.deepEqual(doc.plots[2].series[0].values, [6.25, 3.75]);
-        assert.deepEqual(doc.plots[3].series[0].values, [2, 1]);
+    for (const archived of [true, false]) {
+      const doc = exportFromToolbar(format, {
+        includeArchivedYears: archived,
+      });
+      assert.equal(doc.format, format);
+      assert.match(doc.description, /As on date: 09-11-2026/);
+      assert.match(doc.description, /Global Filter: 2025-26\nDivision: ACC/);
+      assert.ok(
+        doc.description.includes(
+          `Active files from archived years: ${archived ? "Checked" : "Unchecked"}`,
+        ),
+      );
+      assert.match(
+        doc.description,
+        /Cancelled column counts each retained file once.*fully S\.O\.-cancelled files/,
+      );
+      assert.match(
+        doc.description,
+        /those files remain excluded from the ordinary Snapshot header, position, activity, and financial totals/,
+      );
+      assert.ok(!doc.description.includes("Files with all S.O.s cancelled:"));
+      descriptions.add(doc.description);
+      assert.deepEqual(doc.tables[0], {
+        title: "Scope summary",
+        headers: ["Measure", "Count"],
+        rows: [
+          ["Files", 7],
+          ["S.O.", 11],
+        ],
+      });
+      assert.equal(doc.tables[1].title, "Financial Position");
+      assert.equal(doc.plots.length, 4);
+      assert.deepEqual(
+        doc.plots.map((plot) => plot.kind),
+        ["bar", "bar", "pie", "pie"],
+      );
+      assert.equal(doc.plots[0].orientation, "vertical");
+      assert.equal(doc.plots[1].orientation, "horizontal");
+      assert.deepEqual(doc.plots[1].series[0].values, [2, 1]);
+      assert.deepEqual(doc.plots[2].series[0].values, [6.25, 3.75]);
+      assert.deepEqual(doc.plots[3].series[0].values, [2, 1]);
 
-        const document = doc;
-        if (format === "excel") {
-          const entries = zipEntries(renderExcelDocument(document));
-          const sheet = entries.get("xl/worksheets/sheet1.xml");
-          assert.ok(sheet.includes("Scope summary") && sheet.includes("S.O."));
-          assert.ok(sheet.includes(archived ? "Checked" : "Unchecked"));
-          const charts = [...entries]
-            .filter(([name]) => /^xl\/charts\/chart\d+\.xml$/.test(name))
-            .map(([, xml]) => xml);
-          assert.equal(charts.filter((xml) => xml.includes("<c:pieChart>")).length, 2);
-          assert.ok(charts.some((xml) => xml.includes('<c:barDir val="bar"/>')));
-          assert.ok(charts.some((xml) => xml.includes('<c:barDir val="col"/>')));
-        } else {
-          const pdf = renderPdfDocument(document).toString("utf8");
-          assert.ok(pdf.startsWith("%PDF"));
-          assert.ok(pdf.includes("Scope summary") && pdf.includes("S.O."));
-          assert.ok(pdf.includes("MSE: 6.25") && pdf.includes("DPSU: 3.75"));
-          assert.ok(pdf.includes("MSE: 2") && pdf.includes("DPSU: 1"));
-        }
+      const document = doc;
+      if (format === "excel") {
+        const entries = zipEntries(renderExcelDocument(document));
+        const sheet = entries.get("xl/worksheets/sheet1.xml");
+        assert.ok(sheet.includes("Scope summary") && sheet.includes("S.O."));
+        assert.ok(sheet.includes(archived ? "Checked" : "Unchecked"));
+        const charts = [...entries]
+          .filter(([name]) => /^xl\/charts\/chart\d+\.xml$/.test(name))
+          .map(([, xml]) => xml);
+        assert.equal(charts.filter((xml) => xml.includes("<c:pieChart>")).length, 2);
+        assert.ok(charts.some((xml) => xml.includes('<c:barDir val="bar"/>')));
+        assert.ok(charts.some((xml) => xml.includes('<c:barDir val="col"/>')));
+      } else {
+        const pdf = renderPdfDocument(document).toString("utf8");
+        assert.ok(pdf.startsWith("%PDF"));
+        assert.ok(pdf.includes("Scope summary") && pdf.includes("S.O."));
+        assert.ok(pdf.includes("MSE: 6.25") && pdf.includes("DPSU: 3.75"));
+        assert.ok(pdf.includes("MSE: 2") && pdf.includes("DPSU: 1"));
       }
-    assert.equal(descriptions.size, 4);
+    }
+    assert.equal(descriptions.size, 2);
   });
 }
 

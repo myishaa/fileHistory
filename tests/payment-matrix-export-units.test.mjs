@@ -127,7 +127,7 @@ for (const name of ["exportSoPaymentMatrix", "exportPaymentCompletedMatrix"]) {
     test(`${name} ${format}: every monetary column uses Lakhs`, () => {
       const doc = exportMatrix(name, format, [row("Capital"), row("Revenue")]);
       assert.equal(doc.format, format);
-      assert.match(doc.description, /All the values are in Lakh/);
+      assert.match(doc.description, /All monetary values are shown in Lakhs/);
       const [revenue, capital, total] = doc.tables;
       assert.deepEqual(capital.rows[0], [
         "2620007",

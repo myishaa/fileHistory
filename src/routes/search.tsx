@@ -116,13 +116,13 @@ export const Route = createFileRoute("/search")({
     const validated: {
       dashboardFilter?: string;
       extraDashboardFilters?: string;
+      statusSummaryScope?: "live";
       valueThresholdFilter?: string;
       soValueThresholdFilter?: string;
       division?: string;
       includeModes?: string;
       selectedYear?: string;
       includeArchivedYears?: boolean;
-      includeAllCancelledSupplyOrderFiles?: boolean;
       milestoneClearingScope?: boolean;
       fileYear?: string;
       fileInitiationFrom?: string;
@@ -147,6 +147,7 @@ export const Route = createFileRoute("/search")({
       validated.dashboardFilter = search.dashboardFilter;
     if (typeof search.extraDashboardFilters === "string")
       validated.extraDashboardFilters = search.extraDashboardFilters;
+    if (search.statusSummaryScope === "live") validated.statusSummaryScope = "live";
     if (typeof search.valueThresholdFilter === "string")
       validated.valueThresholdFilter = search.valueThresholdFilter;
     if (typeof search.soValueThresholdFilter === "string")
@@ -156,12 +157,6 @@ export const Route = createFileRoute("/search")({
     if (typeof search.selectedYear === "string") validated.selectedYear = search.selectedYear;
     const includeArchivedYears = parseRouteBoolean(search.includeArchivedYears);
     if (includeArchivedYears !== undefined) validated.includeArchivedYears = includeArchivedYears;
-    const includeAllCancelledSupplyOrderFiles = parseRouteBoolean(
-      search.includeAllCancelledSupplyOrderFiles,
-    );
-    if (includeAllCancelledSupplyOrderFiles !== undefined) {
-      validated.includeAllCancelledSupplyOrderFiles = includeAllCancelledSupplyOrderFiles;
-    }
     const milestoneClearingScope = parseRouteBoolean(search.milestoneClearingScope);
     if (milestoneClearingScope !== undefined) {
       validated.milestoneClearingScope = milestoneClearingScope;
@@ -444,7 +439,6 @@ const searchFilterHelpers = {
   ],
   closureAndCancellation: [
     "For File Closed, Cancelled S.O., Shortclosed S.O., and Multiple S.O., choose Include, Exclude, or None.",
-    "For Cancelled S.O., Include finds files with a cancelled order; Exclude removes a file only when all its S.O.s are cancelled. A file with an active S.O. remains visible.",
     "For the other choices, Include keeps files with that condition and Exclude removes them. Click the selected choice again to clear it.",
     "Multiple S.O. means the file has more than one expected S.O. entry.",
     "Include on File Closed or cancellation-history filters can show matching files outside the Active-files Global Filter scope.",
@@ -513,9 +507,6 @@ const searchFilterExamples: Record<string, SearchHelperExamples> = {
   },
   "Closure & cancellation help": {
     items: [
-      "Example table: File S.O.s | Cancelled S.O. filter | Result",
-      "Example row: S.O. 1 cancelled; S.O. 2 active | Include | File appears because it has cancelled S.O. history; its active order is retained.",
-      "Example row: All S.O.s cancelled | Exclude | File is removed only when every S.O. is cancelled.",
       "Example row: Closed file | File Closed = Include | Can appear even when Global Filter is Active files.",
       "Example row: Any file | All choices = None | Global Filter governs scope as usual.",
     ],
@@ -573,7 +564,7 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
       { label: "S.O. not placed", filter: "soRemaining" },
       { label: "Live S.O.", filter: "liveSupplyOrders" },
       { label: "Multiple S.O. files", filter: "miscMultipleSupplyOrders" },
-      { label: "Cancelled S.O.", filter: "miscSoCancelled" },
+      { label: "Saved Cancelled S.O. rule", filter: "miscSoCancelled" },
       { label: "Shortclosed S.O.", filter: "miscShortclosedSo" },
     ],
   },
@@ -1746,13 +1737,20 @@ function getCurrentHref() {
   return `${window.location.pathname}${window.location.search}`;
 }
 
-function getSearchReturnHref(localFilterQuery: string) {
+function getSearchReturnHref(
+  localFilterQuery: string,
+  inheritedSoCancelledFilter?: IncludeExcludeFilter,
+) {
   const href = getCurrentHref();
   if (!href) return undefined;
   const [path, query = ""] = href.split("?");
   const params = new URLSearchParams(query);
   const localFilters = new URLSearchParams(localFilterQuery);
   ["anomalyFileIds", "anomalyFileIdsReady", "drillPath"].forEach((key) => localFilters.delete(key));
+  if (inheritedSoCancelledFilter !== undefined) {
+    if (inheritedSoCancelledFilter === "none") localFilters.delete("soCancelledPresenceFilter");
+    else localFilters.set("soCancelledPresenceFilter", inheritedSoCancelledFilter);
+  }
   params.set("localFilters", localFilters.toString());
   return `${path}?${params.toString()}`;
 }
@@ -1799,6 +1797,7 @@ function SearchPage() {
   const isSearchDrilldown = Boolean(
     search.dashboardFilter ||
     search.extraDashboardFilters ||
+    search.statusSummaryScope ||
     search.valueThresholdFilter ||
     search.soValueThresholdFilter ||
     search.division ||
@@ -1849,6 +1848,12 @@ function SearchPage() {
       search.analyticsNames ||
       search.fileCategories
     );
+  const landingIncludesCancelledSo =
+    search.dashboardFilter === "miscSoCancelled" ||
+    parseDashboardFilterListParam(search.extraDashboardFilters).includes("miscSoCancelled");
+  const defaultSoCancelledPresenceFilter = landingIncludesCancelledSo
+    ? "include"
+    : (search.soCancelledPresenceFilter ?? (defaultSearchExclusions ? "exclude" : "none"));
   const defaultDemandCancelledExclusion =
     !allFilesScope && (defaultSearchExclusions || search.analyticsType === "indentor");
   const drillPath = useMemo(() => parseDrillPath(search.drillPath), [search.drillPath]);
@@ -1916,10 +1921,10 @@ function SearchPage() {
   useEffect(() => {
     if (!search.localFilters) {
       setSoCancelledPresenceFilter(
-        search.soCancelledPresenceFilter ?? (defaultSearchExclusions ? "exclude" : "none"),
+        defaultSoCancelledPresenceFilter,
       );
     }
-  }, [search.soCancelledPresenceFilter, search.localFilters, defaultSearchExclusions]);
+  }, [search.localFilters, defaultSoCancelledPresenceFilter]);
   useEffect(() => {
     setShortclosedSoPresenceFilter(search.shortclosedSoPresenceFilter ?? "none");
   }, [search.shortclosedSoPresenceFilter]);
@@ -2078,8 +2083,40 @@ function SearchPage() {
     useState<IncludeExcludeFilter>("none");
   const [rstFilter, setRstFilter] = useState(false);
   const [soCancelledPresenceFilter, setSoCancelledPresenceFilter] = useState<IncludeExcludeFilter>(
-    search.soCancelledPresenceFilter ?? (defaultSearchExclusions ? "exclude" : "none"),
+    defaultSoCancelledPresenceFilter,
   );
+  const inheritedSoCancelledPresenceFilter = search.localFilters
+    ? soCancelledPresenceFilter
+    : defaultSoCancelledPresenceFilter;
+  const soCancelledScopeKey = [
+    settings.selectedYear,
+    search.selectedYear ?? "",
+    search.dashboardFilter ?? "",
+    search.extraDashboardFilters ?? "",
+    search.soCancelledPresenceFilter ?? "",
+    search.localFilters ?? "",
+  ].join("\u0000");
+  const [localSoCancelledFilterState, setLocalSoCancelledFilterState] = useState<{
+    scopeKey: string;
+    value: IncludeExcludeFilter;
+  } | null>(null);
+  const localSoCancelledFilter =
+    localSoCancelledFilterState?.scopeKey === soCancelledScopeKey
+      ? localSoCancelledFilterState.value
+      : null;
+  const setLocalSoCancelledFilter = (value: IncludeExcludeFilter | null) =>
+    setLocalSoCancelledFilterState(
+      value === null ? null : { scopeKey: soCancelledScopeKey, value },
+    );
+  const effectiveSoCancelledPresenceFilter =
+    localSoCancelledFilter ?? inheritedSoCancelledPresenceFilter;
+  const previousSoCancelledScopeKey = useRef(soCancelledScopeKey);
+  useEffect(() => {
+    if (previousSoCancelledScopeKey.current !== soCancelledScopeKey) {
+      previousSoCancelledScopeKey.current = soCancelledScopeKey;
+      setLocalSoCancelledFilterState(null);
+    }
+  }, [soCancelledScopeKey]);
   const [shortclosedSoPresenceFilter, setShortclosedSoPresenceFilter] =
     useState<IncludeExcludeFilter>(search.shortclosedSoPresenceFilter ?? "none");
   const [multipleSupplyOrdersPresenceFilter, setMultipleSupplyOrdersPresenceFilter] =
@@ -2441,6 +2478,7 @@ function SearchPage() {
     setCncPresenceFilter(parseIncludeExcludeFilter(read("cncPresenceFilter")));
     setFileClosedPresenceFilter(parseIncludeExcludeFilter(read("fileClosedPresenceFilter")));
     setSoCancelledPresenceFilter(parseIncludeExcludeFilter(read("soCancelledPresenceFilter")));
+    setLocalSoCancelledFilter(null);
     setShortclosedSoPresenceFilter(parseIncludeExcludeFilter(read("shortclosedSoPresenceFilter")));
     setMultipleSupplyOrdersPresenceFilter(
       parseIncludeExcludeFilter(read("multipleSupplyOrdersPresenceFilter")),
@@ -2630,7 +2668,9 @@ function SearchPage() {
     setExpandAllSearchResults(false);
   };
   const openTimeline = (file: FileRecord) => {
-    const returnHref = getSearchReturnHref(searchFilterQuery) ?? currentSearchHref;
+    const returnHref =
+      getSearchReturnHref(searchFilterQuery, inheritedSoCancelledPresenceFilter) ??
+      currentSearchHref;
     const nextDrillPath = returnHref
       ? serializeDrillPath([...drillPath, { label: "Search Files", href: returnHref }])
       : search.drillPath;
@@ -3112,8 +3152,8 @@ function SearchPage() {
   addIncludeExcludeChip("IFA", ifaPresenceFilter);
   addIncludeExcludeChip("CNC", cncPresenceFilter);
   addIncludeExcludeChip("File Closed", fileClosedPresenceFilter);
-  if (!(defaultSearchExclusions && soCancelledPresenceFilter === "exclude")) {
-    addIncludeExcludeChip("Cancelled S.O.", soCancelledPresenceFilter);
+  if (localSoCancelledFilter !== null) {
+    addIncludeExcludeChip("Cancelled S.O.", effectiveSoCancelledPresenceFilter);
   }
   addIncludeExcludeChip("Shortclosed S.O.", shortclosedSoPresenceFilter);
   addIncludeExcludeChip("Files with Multiple S.O.", multipleSupplyOrdersPresenceFilter);
@@ -3342,8 +3382,7 @@ function SearchPage() {
         ),
     ) ||
     rstFilter ||
-    (soCancelledPresenceFilter !== "none" &&
-      !(defaultSearchExclusions && soCancelledPresenceFilter === "exclude")) ||
+    (localSoCancelledFilter !== null && effectiveSoCancelledPresenceFilter !== "none") ||
     shortclosedSoPresenceFilter !== "none" ||
     multipleSupplyOrdersPresenceFilter !== "none" ||
     freeText ||
@@ -3508,7 +3547,7 @@ function SearchPage() {
     );
     appendIncludeExcludeParam(params, "fileClosedPresenceFilter", fileClosedPresenceFilter);
     appendSearchBool(params, "rstFilter", rstFilter);
-    appendIncludeExcludeParam(params, "soCancelledPresenceFilter", soCancelledPresenceFilter);
+    appendIncludeExcludeParam(params, "soCancelledPresenceFilter", effectiveSoCancelledPresenceFilter);
     appendIncludeExcludeParam(params, "shortclosedSoPresenceFilter", shortclosedSoPresenceFilter);
     appendIncludeExcludeParam(
       params,
@@ -3519,16 +3558,12 @@ function SearchPage() {
     appendSearchParam(params, "freeDate", freeDate);
     appendSearchParam(params, "selectedYear", search.selectedYear ?? settings.selectedYear);
     appendSearchBool(params, "includeArchivedYears", includeArchivedYears);
-    appendSearchBool(
-      params,
-      "includeAllCancelledSupplyOrderFiles",
-      search.includeAllCancelledSupplyOrderFiles ?? false,
-    );
     appendSearchBool(params, "milestoneClearingScope", search.milestoneClearingScope ?? false);
     appendSearchParam(params, "fileYear", search.fileYear);
     appendSearchParam(params, "fileInitiationFrom", search.fileInitiationFrom);
     appendSearchParam(params, "fileInitiationTo", search.fileInitiationTo);
     appendSearchParam(params, "dashboardFilter", search.dashboardFilter);
+    appendSearchParam(params, "statusSummaryScope", search.statusSummaryScope);
     appendSearchList(params, "extraDashboardFilters", combinedExtraDashboardFilters);
     appendSearchList(params, "excludeDashboardFilters", excludedImportantWorkflowFilters);
     appendSearchParam(params, "fileCategories", search.fileCategories);
@@ -3558,6 +3593,7 @@ function SearchPage() {
     visibleRequiredFilledColumnSignature,
     yearFilter,
     search.dashboardFilter,
+    search.statusSummaryScope,
     combinedExtraDashboardFilters,
     excludedImportantWorkflowFilters,
     search.fileYear,
@@ -3691,14 +3727,13 @@ function SearchPage() {
     dateFilterModeSignature,
     fileClosedPresenceFilter,
     rstFilter,
-    soCancelledPresenceFilter,
+    effectiveSoCancelledPresenceFilter,
     shortclosedSoPresenceFilter,
     multipleSupplyOrdersPresenceFilter,
     freeText,
     freeDate,
     search.selectedYear,
     includeArchivedYears,
-    search.includeAllCancelledSupplyOrderFiles,
     settings.selectedYear,
     search.analyticsType,
     search.analyticsNames,
@@ -3849,7 +3884,11 @@ function SearchPage() {
           ]
         : []),
       ...(group.title === "Supply Order / Firm"
-        ? [...firmTypeOptions, ...firmSearchScopeOptions.map((scope) => scope.label)]
+        ? [
+            "Cancelled S.O.",
+            ...firmTypeOptions,
+            ...firmSearchScopeOptions.map((scope) => scope.label),
+          ]
         : []),
     ]);
   const otherFilterMatches =
@@ -4115,6 +4154,7 @@ function SearchPage() {
     setFileClosedPresenceFilter("none");
     setRstFilter(false);
     setSoCancelledPresenceFilter(defaultSearchExclusions ? "exclude" : "none");
+    setLocalSoCancelledFilter(null);
     setShortclosedSoPresenceFilter("none");
     setMultipleSupplyOrdersPresenceFilter("none");
     setFreeText("");
@@ -4385,7 +4425,7 @@ function SearchPage() {
         setFileClosedPresenceFilter("none");
         break;
       case "Cancelled S.O.":
-        setSoCancelledPresenceFilter("none");
+        setLocalSoCancelledFilter(null);
         break;
       case "Shortclosed S.O.":
         setShortclosedSoPresenceFilter("none");
@@ -4459,10 +4499,15 @@ function SearchPage() {
                   ...drillPath,
                   {
                     label: "Search Files",
-                    href: getSearchReturnHref(searchFilterQuery) ?? currentSearchHref,
+                    href:
+                      getSearchReturnHref(searchFilterQuery, inheritedSoCancelledPresenceFilter) ??
+                      currentSearchHref,
                   },
                 ]}
-                fallbackHref={getSearchReturnHref(searchFilterQuery) ?? currentSearchHref}
+                fallbackHref={
+                  getSearchReturnHref(searchFilterQuery, inheritedSoCancelledPresenceFilter) ??
+                  currentSearchHref
+                }
               />
             ) : null}
             <p className="mt-1 text-sm text-muted-foreground">
@@ -4957,6 +5002,10 @@ function SearchPage() {
                               importantWorkflowFilterModes[filter] === "exclude"
                             ),
                         ).length
+                      : 0) +
+                    (group.title === "Supply Order / Firm" &&
+                    localSoCancelledFilter !== null
+                      ? 1
                       : 0);
                   return (
                     <details
@@ -4989,7 +5038,14 @@ function SearchPage() {
                       </summary>
                       <div className="space-y-3 border-t border-border p-3">
                         <div className="grid grid-cols-1 gap-2">
-                          {group.options.map((option) => (
+                          {group.options
+                            .filter(
+                              (option) =>
+                                option.filter !== "miscSoCancelled" ||
+                                (importantWorkflowFilterModes.miscSoCancelled ?? "none") !==
+                                  "none",
+                            )
+                            .map((option) => (
                             <ThreeWayFilter
                               key={option.filter}
                               label={option.label}
@@ -4999,7 +5055,7 @@ function SearchPage() {
                                 setImportantWorkflowFilterMode(option.filter, mode)
                               }
                             />
-                          ))}
+                            ))}
                         </div>
 
                         {group.title === "Demand / Initiation" ? (
@@ -5149,6 +5205,40 @@ function SearchPage() {
 
                         {group.title === "Supply Order / Firm" ? (
                           <>
+                            <div className="rounded-md border border-border bg-background p-2">
+                              <CheckFilter
+                                label="Activate Cancelled S.O. filter"
+                                checked={localSoCancelledFilter !== null}
+                                onChange={(active) =>
+                                  setLocalSoCancelledFilter(
+                                    active ? inheritedSoCancelledPresenceFilter : null,
+                                  )
+                                }
+                              />
+                              {localSoCancelledFilter !== null ? (
+                                <label className="mt-2 flex items-center gap-2 text-xs">
+                                  <span>Cancelled S.O.</span>
+                                  <select
+                                    aria-label="Cancelled S.O. condition"
+                                    value={localSoCancelledFilter}
+                                    onChange={(event) =>
+                                      setLocalSoCancelledFilter(
+                                        event.target.value as IncludeExcludeFilter,
+                                      )
+                                    }
+                                    className="h-9 rounded-md border border-input bg-background px-2"
+                                  >
+                                    <option value="none">None</option>
+                                    <option value="include">Include</option>
+                                    <option value="exclude">Exclude</option>
+                                  </select>
+                                </label>
+                              ) : (
+                                <p className="mt-2 text-xs text-muted-foreground">
+                                  Inactive: using the current Global Filter or landing condition.
+                                </p>
+                              )}
+                            </div>
                             <FilterGroup label="Firm type" helper={searchFilterHelpers.firmType}>
                               <div className="grid grid-cols-2 gap-2">
                                 {firmTypeOptions.map((firmType) => (

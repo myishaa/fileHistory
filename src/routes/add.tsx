@@ -9153,7 +9153,7 @@ function isFocusRowMatch(
 
 function isPwbTriggerRecordedForForm(
   row: SupplyOrderFocusRow | MilestoneRowState,
-  form: Pick<FormState, "fileType" | "fileTypeGroup" | "ir">,
+  form: { fileType?: string; fileTypeGroup?: string; ir?: string },
 ) {
   return isPwbFollowUpStarted(
     {
@@ -11520,7 +11520,7 @@ function getTimelineStageStatusLabel(
   return status === "complete" ? "Complete" : "Stopped";
 }
 
-function isValidTimelineDate(value: string | undefined) {
+function isValidTimelineDate(value: string | undefined): value is string {
   if (!value) return false;
   const parsed = parseLocalDate(value);
   return Boolean(parsed && formatLocalDate(parsed) === value);

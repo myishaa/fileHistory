@@ -41,6 +41,55 @@ function deferred() {
   });
   return { resolve, promise };
 }
+test("All Files starts with a neutral cancelled S.O. condition", () => {
+  const env = {
+    search: {},
+    settings: { selectedYear: "__all_files__" },
+    ALL_FILES_YEAR: "__all_files__",
+  };
+  evaluate(
+    block(["allFilesScope", "defaultSearchExclusions"]) +
+      "\nglobalThis.defaultExclusion=defaultSearchExclusions;",
+    env,
+  );
+  assert.equal(env.defaultExclusion, false);
+});
+test("a cancelled S.O. landing initializes the optional filter to Include", () => {
+  const env = {
+    search: { dashboardFilter: "miscSoCancelled" },
+    settings: { selectedYear: "__all_files__" },
+    ALL_FILES_YEAR: "__all_files__",
+    parseDashboardFilterListParam: () => [],
+  };
+  evaluate(
+    block([
+      "allFilesScope",
+      "defaultSearchExclusions",
+      "landingIncludesCancelledSo",
+      "defaultSoCancelledPresenceFilter",
+    ]) + "\nglobalThis.initialCondition=defaultSoCancelledPresenceFilter;",
+    env,
+  );
+  assert.equal(env.initialCondition, "include");
+});
+test("leaving Search drops the temporary cancelled S.O. choice", () => {
+  const helper = ast.statements.find(
+    (item) => ts.isFunctionDeclaration(item) && item.name.text === "getSearchReturnHref",
+  );
+  const env = {
+    URLSearchParams,
+    getCurrentHref: () => "/search?selectedYear=__all_files__",
+  };
+  evaluate(helper.getText(ast) + "\nglobalThis.returnHref=getSearchReturnHref;", env);
+  const local = "soCancelledPresenceFilter=include&firmType=MSE";
+  const neutral = new URL(env.returnHref(local, "none"), "http://localhost");
+  assert.equal(new URLSearchParams(neutral.searchParams.get("localFilters")).has("soCancelledPresenceFilter"), false);
+  const excluded = new URL(env.returnHref(local, "exclude"), "http://localhost");
+  assert.equal(
+    new URLSearchParams(excluded.searchParams.get("localFilters")).get("soCancelledPresenceFilter"),
+    "exclude",
+  );
+});
 test("Reset clears every registered date range, including all eight refloat ranges", () => {
   const env = {
     search: {},

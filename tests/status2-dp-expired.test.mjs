@@ -6,8 +6,26 @@ import {
 } from "../backend/src/utils/effective-deliveries.ts";
 import { searchFiles } from "../backend/src/utils/file-search.ts";
 
-const baseOrder = { soDate: "2000-01-01", dpDate: "2000-02-01" };
-const baseFile = { ir: "Yes", fileType: "Goods", supplyOrders: [baseOrder] };
+const baseOrder = {
+  financialSanctionDate: "1999-12-01",
+  soNo: "SO-1",
+  soDate: "2000-01-01",
+  soValueCapital: "100",
+  firm: "Test firm",
+  firmType: "Private",
+  stageDelivery: "No",
+  stageDeliveryCount: "3",
+  stagePayment: "No",
+  advancePayment: "No",
+  dpDate: "2000-02-01",
+};
+const baseFile = {
+  ir: "Yes",
+  gem: "No",
+  fileType: "Goods",
+  valueCapital: "100",
+  supplyOrders: [baseOrder],
+};
 
 function expiredCases(file) {
   return effectiveSupplyOrderEntries([file]).filter(({ file: entryFile, order }) =>

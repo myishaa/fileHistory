@@ -1225,6 +1225,7 @@ function getQuickViewerOrderMilestoneStatuses(
     hasDate(order.billPreparationDate) || hasDate(order.billSentForPaymentDate);
   const paymentProgress = getQuickViewerOrderPaymentProgress(order);
   const hasPaymentEvidence = paymentProgress.paid > 0;
+  const followUpStopped = isYes(order.soCancelled) || isYes(order.noFurtherAction);
   const definitions = [
     { label: "Financial Sanction", applicable: true, date: order.financialSanctionDate },
     { label: "Supply Order", applicable: true, date: order.soDate },
@@ -1327,25 +1328,37 @@ function getQuickViewerOrderMilestoneStatuses(
             date,
             status: allComplete
               ? "Completed"
-              : selectedStage &&
-                  normalizeQuickEntryMilestone(selectedStage.currentMilestone ?? "") === key
-                ? "Current"
-                : completedStages.length
-                  ? `${completedStages.length} of ${stages.length} stages complete`
-                  : "Pending",
+              : completedStages.length
+                ? `${completedStages.length} of ${stages.length} stages complete`
+                : followUpStopped
+                  ? "Stopped"
+                  : selectedStage &&
+                      normalizeQuickEntryMilestone(selectedStage.currentMilestone ?? "") === key
+                    ? "Current"
+                    : "Pending",
           };
         }
       }
+      const hasRecordedCompletion =
+        completed.has(key) || hasDate(getQuickMilestoneCompletionDate(definition));
+      const fullyPaidStagePayment =
+        key === "payment" &&
+        paymentProgress.includesStagePayments &&
+        paymentProgress.total > 0 &&
+        paymentProgress.paid >= paymentProgress.total;
+      const partiallyPaidStagePayment =
+        key === "payment" && paymentProgress.includesStagePayments && paymentProgress.paid > 0;
       return {
         label: definition.label,
         date: definition.date,
-        status:
-          key === "payment" && paymentProgress.includesStagePayments
+        status: hasRecordedCompletion || fullyPaidStagePayment
+          ? "Completed"
+          : partiallyPaidStagePayment
             ? formatPaymentProgressStatus(paymentProgress.paid, paymentProgress.total, "stages")
-            : key === current
-              ? "Current"
-              : completed.has(key) || hasDate(getQuickMilestoneCompletionDate(definition))
-                ? "Completed"
+            : followUpStopped
+              ? "Stopped"
+              : key === current
+                ? "Current"
                 : "Pending",
       };
     });
@@ -1865,6 +1878,12 @@ function getQuickStatusOrderTimelineItems(file: FileRecord, order: SupplyOrderDe
     ["Job Completion Received Date", order.jobCompletionDate],
     ["IR Preparation", order.irPreparationDate],
     ["IR Receipt", order.irReceiptDate],
+    ["PSB received", order.psbBgReceivedDate],
+    ["PSB returned", order.psbBgReturnDate],
+    ["PWB received", order.pwbBgReceivedDate],
+    ["PWB returned", order.pwbBgReturnDate],
+    ["PSB+PWB received", order.combinedBgReceivedDate],
+    ["PSB+PWB returned", order.combinedBgReturnDate],
     ["Bill preparation", order.billPreparationDate],
     ["Bill sent for payment", order.billSentForPaymentDate],
     ["Payment", order.paymentDate],
@@ -1967,7 +1986,7 @@ function getQuickDeliveryCompletionDate(
 }
 
 function isQuickDeliveryFollowUpStopped(order: SupplyOrderDetail) {
-  return isYes(order.soCancelled) || isYes(order.shortclosure) || isYes(order.noFurtherAction);
+  return isYes(order.soCancelled) || isYes(order.noFurtherAction);
 }
 
 function getQuickStageDeliveryProgress(

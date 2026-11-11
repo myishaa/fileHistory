@@ -30,7 +30,9 @@ test("carry-forward Search honors Active, All Files, and selected-FY global scop
     "2026-27",
     { ...carryForwardParams, includeArchivedYears: true },
   );
-  assert.deepEqual(allFilesConditions, []);
+  assert.equal(allFilesConditions.length, 1);
+  assert.match(allFilesConditions[0], /financial_years archived_search_year/);
+  assert.match(allFilesConditions[0], /so_active\.file_id = f\.id/);
 
   const archivedExcludedConditions = [];
   appendSearchGlobalYearScope(
@@ -38,11 +40,13 @@ test("carry-forward Search honors Active, All Files, and selected-FY global scop
     [],
     "__all_files__",
     "2026-27",
-    carryForwardParams,
+    { ...carryForwardParams, includeActiveArchivedYears: false },
   );
-  // Explicit All Files scope intentionally bypasses the normal archive
-  // predicate; archived-year filtering is only for normal searchable scopes.
-  assert.deepEqual(archivedExcludedConditions, []);
+  // All Files removes year and status restrictions, but keeps archived-year
+  // visibility consistent with the archived-year option.
+  assert.equal(archivedExcludedConditions.length, 1);
+  assert.match(archivedExcludedConditions[0], /financial_years archived_search_year/);
+  assert.doesNotMatch(archivedExcludedConditions[0], /so_active\.file_id = f\.id/);
 
   const selectedFyConditions = [];
   appendSearchGlobalYearScope(

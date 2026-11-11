@@ -2196,6 +2196,13 @@ function isFileActiveInYear(file: FileRecord, year: string) {
   return true;
 }
 
+function isFullySupplyOrderCancelled(file: FileRecord) {
+  return Boolean(
+    file.supplyOrders?.length &&
+      file.supplyOrders.every((order: SupplyOrderDetail) => isYes(order.soCancelled)),
+  );
+}
+
 function isFileClosed(file: { completedMilestones?: string[] }) {
   return Boolean(
     file.completedMilestones?.some(
@@ -2238,16 +2245,24 @@ function isFileVisibleForSelectedYear(
   file: FileRecord,
   selectedYear: string | undefined,
   currentFinancialYear: string,
+  includeAllCancelledSupplyOrderFiles = false,
 ) {
   if (!selectedYear) return true;
   if (selectedYear === allFilesYear) return true;
-  if (selectedYear === allActiveFilesYear) return !isInactiveFile(file);
+  const historicalCancelledSo =
+    includeAllCancelledSupplyOrderFiles &&
+    !isFileClosed(file) &&
+    !isYes(file.demandCancelled) &&
+    isFullySupplyOrderCancelled(file);
+  if (selectedYear === allActiveFilesYear) return !isInactiveFile(file) || historicalCancelledSo;
   if (selectedYear === activePlusCurrentFyClosedYear) {
     return (
-      !isInactiveFile(file) || isDateInFinancialYear(file.fileClosureDate, currentFinancialYear)
+      !isInactiveFile(file) ||
+      historicalCancelledSo ||
+      isDateInFinancialYear(file.fileClosureDate, currentFinancialYear)
     );
   }
-  return isFileActiveInYear(file, selectedYear);
+  return isFileActiveInYear(file, selectedYear) || historicalCancelledSo;
 }
 
 function readNonNegativeInteger(value: unknown, fallback: number) {
@@ -2311,33 +2326,46 @@ function getFinancialYearDateRange(financialYear: string | undefined) {
   };
 }
 
-function activeFilesExpression() {
-  return `(not ${fileClosedExpression()}
-      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+function activeFilesExpression(includeAllCancelledSupplyOrderFiles = false) {
+  const cancelledSupplyOrderCondition = includeAllCancelledSupplyOrderFiles
+    ? ""
+    : `
       and not (${supplyOrderRowExists()} and not exists (
         select 1 from supply_orders so_active
         where so_active.file_id = f.id
           and not ${isYesExpression("so_active.so_cancelled")}
-      )))`;
+      ))`;
+  return `(not ${fileClosedExpression()}
+      and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
+      ${cancelledSupplyOrderCondition}
+  )`;
 }
 
-function specificFinancialYearExpression(selectedYear: string, values: unknown[]) {
+function specificFinancialYearExpression(
+  selectedYear: string,
+  values: unknown[],
+  includeAllCancelledSupplyOrderFiles = false,
+) {
   const range = getFinancialYearDateRange(selectedYear);
   if (!range) return "true";
   const yearPlaceholder = addValue(values, selectedYear);
   const startPlaceholder = addValue(values, range.start);
   const startYear = Number(range.start.slice(0, 4));
+  const cancelledSupplyOrderCondition = includeAllCancelledSupplyOrderFiles
+    ? ""
+    : `
+    and not (${supplyOrderRowExists()} and not exists (
+      select 1 from supply_orders so_active
+      where so_active.file_id = f.id
+        and not ${isYesExpression("so_active.so_cancelled")}
+    ))`;
   return `(f.year = ${yearPlaceholder}::text or exists (
     select 1 from file_year_activity a
     where a.file_id = f.id and a.financial_year = ${yearPlaceholder}::text and a.status = 'active'
   ) or (
     nullif(substring(coalesce(f.year, '') from '(19[0-9]{2}|20[0-9]{2})'), '')::integer <= ${startYear}
     and lower(coalesce(f.demand_cancelled, '')) <> 'yes'
-    and not (${supplyOrderRowExists()} and not exists (
-      select 1 from supply_orders so_active
-      where so_active.file_id = f.id
-        and not ${isYesExpression("so_active.so_cancelled")}
-    ))
+    ${cancelledSupplyOrderCondition}
     and (not ${fileClosedExpression()} or f.file_closure_date >= ${startPlaceholder}::date)
   ))`;
 }
@@ -2346,38 +2374,46 @@ function getSelectedYearCondition(
   selectedYear: string | undefined,
   values: unknown[],
   currentFinancialYear?: string,
+  includeAllCancelledSupplyOrderFiles = false,
 ) {
   if (!selectedYear) return undefined;
   if (selectedYear === allFilesYear) return undefined;
   if (selectedYear === allActiveFilesYear) {
-    return activeFilesExpression();
+    return activeFilesExpression(includeAllCancelledSupplyOrderFiles);
   }
   if (selectedYear === activePlusCurrentFyClosedYear) {
     const range = getFinancialYearDateRange(currentFinancialYear);
-    if (!range) return activeFilesExpression();
+    if (!range) return activeFilesExpression(includeAllCancelledSupplyOrderFiles);
     const start = addValue(values, range.start);
     const end = addValue(values, range.end);
-    return `(${activeFilesExpression()} or (${fileClosedExpression()}
+    return `(${activeFilesExpression(includeAllCancelledSupplyOrderFiles)} or (${fileClosedExpression()}
       and f.file_closure_date between ${start}::date and ${end}::date
       and lower(coalesce(f.demand_cancelled, '')) <> 'yes'))`;
   }
 
-  return specificFinancialYearExpression(selectedYear, values);
+  return specificFinancialYearExpression(
+    selectedYear,
+    values,
+    includeAllCancelledSupplyOrderFiles,
+  );
 }
 
 function getSelectedYearCandidateCondition(
   selectedYear: string | undefined,
   values: unknown[],
   currentFinancialYear?: string,
+  includeAllCancelledSupplyOrderFiles = false,
 ) {
   if (!selectedYear || selectedYear === allFilesYear) return undefined;
-  if (selectedYear === allActiveFilesYear) return activeFilesExpression();
+  if (selectedYear === allActiveFilesYear) {
+    return activeFilesExpression(includeAllCancelledSupplyOrderFiles);
+  }
   if (selectedYear === activePlusCurrentFyClosedYear) {
     const range = getFinancialYearDateRange(currentFinancialYear);
-    if (!range) return activeFilesExpression();
+    if (!range) return activeFilesExpression(includeAllCancelledSupplyOrderFiles);
     const start = addValue(values, range.start);
     const end = addValue(values, range.end);
-    return `(${activeFilesExpression()} or (${fileClosedExpression()}
+    return `(${activeFilesExpression(includeAllCancelledSupplyOrderFiles)} or (${fileClosedExpression()}
       and f.file_closure_date between ${start}::date and ${end}::date))`;
   }
 
@@ -2407,6 +2443,7 @@ function getReportWhereSql({
   division,
   fileCategories,
   includeArchivedYears = true,
+  includeAllCancelledSupplyOrderFiles = false,
 }: {
   scopeSql: string;
   scopeValues: unknown[];
@@ -2419,19 +2456,30 @@ function getReportWhereSql({
   division: string;
   fileCategories?: FileCategoryKey[];
   includeArchivedYears?: boolean;
+  includeAllCancelledSupplyOrderFiles?: boolean;
 }) {
   const values = [...scopeValues];
   const conditions: string[] = [];
   if (scopeSql) conditions.push(scopeSql);
   const searchableYearCondition = getSearchableFinancialYearSql(
-    activeFilesExpression(),
+    activeFilesExpression(includeAllCancelledSupplyOrderFiles),
     includeArchivedYears,
   );
   if (searchableYearCondition) conditions.push(searchableYearCondition);
   const selectedYearCondition =
     selectedYearMode === "candidate"
-      ? getSelectedYearCandidateCondition(selectedYear, values, currentFinancialYear)
-      : getSelectedYearCondition(selectedYear, values, currentFinancialYear);
+      ? getSelectedYearCandidateCondition(
+          selectedYear,
+          values,
+          currentFinancialYear,
+          includeAllCancelledSupplyOrderFiles,
+        )
+      : getSelectedYearCondition(
+          selectedYear,
+          values,
+          currentFinancialYear,
+          includeAllCancelledSupplyOrderFiles,
+        );
   if (selectedYearCondition) conditions.push(selectedYearCondition);
   if (fileYear?.trim() && fileYear.trim() !== "all") {
     const placeholder = addValue(values, fileYear.trim());
@@ -6107,7 +6155,6 @@ reportsRouter.get(
     response.json({ rows: await loadMerCashOutgoRows(financialYear) });
   }),
 );
-
 reportsRouter.put(
   "/mer-data",
   asyncHandler(async (request, response) => {
@@ -6159,7 +6206,6 @@ reportsRouter.put(
     response.json({ rows: await loadMerCashOutgoRows(validFinancialYear) });
   }),
 );
-
 reportsRouter.get(
   "/cash-out-go-plan/settings",
   asyncHandler(async (request, response) => {
@@ -6178,7 +6224,6 @@ reportsRouter.get(
     response.json({ settings });
   }),
 );
-
 reportsRouter.get(
   "/cash-out-go-plan",
   asyncHandler(async (request, response) => {
@@ -6274,7 +6319,6 @@ reportsRouter.get(
     response.json({ plan });
   }),
 );
-
 reportsRouter.put(
   "/cash-out-go-plan",
   asyncHandler(async (request, response) => {
@@ -6564,7 +6608,6 @@ reportsRouter.get(
     });
   }),
 );
-
 reportsRouter.put(
   "/pre-so-cash-outgo-plan",
   asyncHandler(async (request, response) => {
@@ -6991,10 +7034,31 @@ reportsRouter.get(
       fileCategories,
       includeArchivedYears,
     });
+    const needsBgLiabilitySource =
+      !sections || sections.some((section) => ["status", "bg", "bgExpiry"].includes(section));
+    const needsHistoricalPlacementSource =
+      !sections || sections.includes("monthly");
+    const needsHistoricalScopeSource = needsBgLiabilitySource || needsHistoricalPlacementSource;
+    const historicalScopeLoadWhere = needsHistoricalScopeSource
+      ? getReportWhereSql({
+          scopeSql: [scope.sql, categoryScope.sql].filter(Boolean).join(" and "),
+          scopeValues: scope.values,
+          selectedYear,
+          selectedYearMode: "candidate",
+          fileYear,
+          fileInitiationFrom,
+          fileInitiationTo,
+          currentFinancialYear: settings.financialYear,
+          division,
+          fileCategories,
+          includeArchivedYears,
+          includeAllCancelledSupplyOrderFiles: true,
+        })
+      : undefined;
     const useSqlScopedFileLoad = process.env.REPORTS_SQL_SCOPED_LOAD !== "false";
     const compareFileScope = process.env.REPORTS_FILE_SCOPE_COMPARE === "true";
     const cacheKey = `reports:summary:${JSON.stringify({
-      version: 13,
+      version: 15,
       scope: getAuthScopeCacheKey(user),
       selectedYear,
       fileYear,
@@ -7018,7 +7082,7 @@ reportsRouter.get(
     })}`;
     const summary = await getCached(cacheKey, cacheTtl.reportsSummaryMs, async () => {
       const combinedScopeSql = [scope.sql, categoryScope.sql].filter(Boolean).join(" and ");
-      const [sqlScopedFiles, legacyFiles] = await Promise.all([
+      const [sqlScopedFiles, legacyFiles, sqlHistoricalScopeFiles] = await Promise.all([
         useSqlScopedFileLoad || compareFileScope
           ? loadFiles(
               reportLoadWhere.whereSql,
@@ -7033,11 +7097,26 @@ reportsRouter.get(
               false,
             )
           : Promise.resolve(undefined),
+        historicalScopeLoadWhere && (useSqlScopedFileLoad || compareFileScope)
+          ? loadFiles(
+              historicalScopeLoadWhere.whereSql,
+              historicalScopeLoadWhere.values,
+              false,
+            )
+          : Promise.resolve(undefined),
       ]);
-      const selectReportFiles = (sourceFiles: FileRecord[]) => {
+      const selectReportFiles = (
+        sourceFiles: FileRecord[],
+        includeAllCancelledSupplyOrderFiles = false,
+      ) => {
         const selectedYearFiles = sourceFiles
           .filter((file) =>
-            isFileVisibleForSelectedYear(file, selectedYear, settings.financialYear),
+            isFileVisibleForSelectedYear(
+              file,
+              selectedYear,
+              settings.financialYear,
+              includeAllCancelledSupplyOrderFiles,
+            ),
           )
           .filter((file) => !fileYear || fileYear === "all" || file.year === fileYear)
           .filter((file) => {
@@ -7076,6 +7155,9 @@ reportsRouter.get(
       };
       const sqlSelectedFiles = sqlScopedFiles ? selectReportFiles(sqlScopedFiles) : undefined;
       const legacySelectedFiles = legacyFiles ? selectReportFiles(legacyFiles) : undefined;
+      const sqlHistoricalScopeSelectedFiles = sqlHistoricalScopeFiles
+        ? selectReportFiles(sqlHistoricalScopeFiles, true).divisionFiles
+        : undefined;
       if (compareFileScope && sqlSelectedFiles && legacySelectedFiles) {
         logFileScopeComparison(
           "Reports summary files",
@@ -7101,8 +7183,17 @@ reportsRouter.get(
             divisionFiles: [],
             pendingDivisionFiles: [],
           });
+      const historicalScopeFiles = needsHistoricalScopeSource
+        ? useSqlScopedFileLoad
+          ? (sqlHistoricalScopeSelectedFiles ?? [])
+          : selectReportFiles(legacyFiles ?? [], true).divisionFiles
+        : [];
       const normalizedSummary = buildReportsSummary({
         files: categoryFiles,
+        bgLiabilityFiles: needsBgLiabilitySource ? historicalScopeFiles : undefined,
+        historicalPlacementFiles: needsHistoricalPlacementSource
+          ? historicalScopeFiles
+          : undefined,
         pendingBillingFiles,
         division,
         selectedYear,
@@ -7192,3 +7283,4 @@ reportsRouter.get(
     });
   }),
 );
+
