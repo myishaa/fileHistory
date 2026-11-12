@@ -15472,6 +15472,7 @@ filesRouter.post(
     const document = {
       title: typeof body.title === "string" ? body.title.slice(0, 160) : "Quick Entry Export",
       primarySheetName: fullDatabase ? "Information" : undefined,
+      descriptionBeforeGeneratedAt: true,
       description: `${fullDatabase ? "All accessible file history, grouped into one worksheet per financial year" : scopeMode === "fy" ? `Files received in FY ${financialYear}` : `S.O.s dated in FY ${financialYear}, including files received in earlier years`}. ${viewMode === "expanded" ? "Expanded view exports one row per stage, plus selected payment/advance and supplementary/return detail rows." : "Collapsed view exports one row per S.O."} Status history follows oldest to newest. Files represented: ${records.length}; rows exported: ${rows.length}.`,
       tables: fullDatabase
         ? [

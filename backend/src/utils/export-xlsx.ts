@@ -33,6 +33,7 @@ type ExportDocument = {
   primarySheetName?: string;
   subtitle?: string;
   description?: string;
+  descriptionBeforeGeneratedAt?: boolean;
   tables: ExportTable[];
   sheets?: Array<{ name: string; tables: ExportTable[] }>;
   plot?: ExportPlot;
@@ -351,6 +352,14 @@ export function renderXlsxDocument(document: ExportDocument) {
     if (style) rowStyles.set(rowIndex, style);
     if (emphasizedColumns.length) emphasizedCells.set(rowIndex, new Set(emphasizedColumns));
   };
+  const appendDescription = () => {
+    if (document.subtitle) appendInfoLine(document.subtitle);
+    if (document.description) {
+      document.description.split(/\r?\n/).forEach((line) => appendInfoLine(line));
+      appendRow([]);
+    }
+  };
+  if (document.descriptionBeforeGeneratedAt) appendDescription();
   appendRow(["Generated at", new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
     month: "short",
@@ -368,11 +377,7 @@ export function renderXlsxDocument(document: ExportDocument) {
       appendRow([line], [], style);
     }
   };
-  if (document.subtitle) appendInfoLine(document.subtitle);
-  if (document.description) {
-    document.description.split(/\r?\n/).forEach((line) => appendInfoLine(line));
-    appendRow([]);
-  }
+  if (!document.descriptionBeforeGeneratedAt) appendDescription();
   const columnWidths: number[] = [];
   for (const table of document.tables) {
     if (table.title) appendRow([table.title], [], 5);
