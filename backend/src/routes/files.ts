@@ -15436,7 +15436,7 @@ filesRouter.post(
           : "All divisions",
       ],
       [
-        "Description",
+        "View",
         viewMode === "expanded"
           ? "Expanded (one row per stage, plus selected payment/advance and supplementary/return detail rows)"
           : "Collapsed (one row per S.O.)",
