@@ -10854,22 +10854,22 @@ export function Dashboard() {
                       <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
                       <XAxis
                         dataKey="position"
-                        axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                        tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                        tick={{ fontSize: "0.8125rem" }}
+                        axisLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                        tickLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                        tick={{ fill: "#374151", fontSize: "0.8125rem", fontWeight: 600 }}
                       />
                       <YAxis
                         width={finance1PositionYAxisWidth}
                         allowDecimals={false}
-                        axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                        tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                        tick={{ fontSize: "0.8125rem" }}
+                        axisLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                        tickLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                        tick={{ fill: "#374151", fontSize: "0.8125rem", fontWeight: 600 }}
                         tickFormatter={(value: number) =>
                           formatThousandsAndLakhs(value / 100_000, 0)
                         }
                       />
                       <ChartTooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
-                      <Legend wrapperStyle={{ fontSize: "0.8125rem" }} />
+                      <Legend wrapperStyle={{ color: "#1f2937", fontSize: "0.8125rem", fontWeight: 600 }} />
                       <Bar
                         dataKey="capital"
                         name="Capital"
@@ -13431,16 +13431,16 @@ export function Dashboard() {
                               <CartesianGrid stroke="var(--border)" strokeDasharray="3 3" />
                               <XAxis
                                 dataKey="position"
-                                axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                                tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                                tick={{ fontSize: "0.8125rem" }}
+                                axisLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                                tickLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                                tick={{ fill: "#374151", fontSize: "0.8125rem", fontWeight: 600 }}
                               />
                               <YAxis
                                 width={financePositionYAxisWidthCurrent}
                                 allowDecimals={false}
-                                axisLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                                tickLine={{ stroke: "#94a3b8", strokeDasharray: "3 3" }}
-                                tick={{ fontSize: "0.8125rem" }}
+                                axisLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                                tickLine={{ stroke: "#64748b", strokeWidth: 1.25, strokeDasharray: "3 3" }}
+                                tick={{ fill: "#374151", fontSize: "0.8125rem", fontWeight: 600 }}
                                 tickFormatter={(value: number) =>
                                   formatThousandsAndLakhs(value / 100_000, 0)
                                 }
@@ -13448,7 +13448,7 @@ export function Dashboard() {
                               <ChartTooltip
                                 formatter={(value) => formatCurrency(Number(value) || 0)}
                               />
-                              <Legend wrapperStyle={{ fontSize: "0.8125rem" }} />
+                              <Legend wrapperStyle={{ color: "#1f2937", fontSize: "0.8125rem", fontWeight: 600 }} />
                               <Bar
                                 dataKey="capital"
                                 name="Capital"
@@ -14058,7 +14058,7 @@ function CategoryBarChart({
         </div>
       ) : (
         <div className="mb-2 grid min-w-0 grid-cols-[1fr_auto_1fr] items-center gap-2">
-          <span className="min-w-0 text-sm font-semibold text-muted-foreground">{periodLabel}</span>
+          <span className="min-w-0 text-sm font-semibold text-foreground">{periodLabel}</span>
           <span
             data-chart-copy-title
             className="min-w-0 truncate text-center text-base font-semibold text-foreground"
@@ -14071,7 +14071,7 @@ function CategoryBarChart({
         </div>
       )}
       {legendItems?.length ? (
-        <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <div className="mb-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs font-semibold text-foreground">
           {legendItems.map((item) => (
             <span key={item.label} className="inline-flex items-center gap-1.5">
               <span className="size-3 rounded-sm" style={{ backgroundColor: item.color }} />
@@ -14091,7 +14091,7 @@ function CategoryBarChart({
               aria-hidden="true"
             >
               <svg
-                className="absolute left-0 text-muted-foreground"
+                className="absolute left-0 text-foreground"
                 style={{ top: 22, height: columnPlotHeight }}
                 width="24"
                 viewBox={`0 0 24 ${columnPlotHeight}`}
@@ -14105,7 +14105,7 @@ function CategoryBarChart({
                   dominantBaseline="middle"
                   fill="currentColor"
                   fontSize="0.75rem"
-                  fontWeight="500"
+                  fontWeight="700"
                 >
                   {valueLabel}
                 </text>
@@ -14113,7 +14113,7 @@ function CategoryBarChart({
               {axisTicks.map((value, index) => (
                 <span
                   key={value}
-                  className="absolute right-2 w-10 -translate-y-1/2 text-right text-xs tabular-nums text-muted-foreground"
+                  className="absolute right-2 w-10 -translate-y-1/2 text-right text-xs font-semibold tabular-nums text-foreground"
                   style={{ top: 22 + (index * columnPlotHeight) / (axisTicks.length - 1) }}
                 >
                   {value.toLocaleString("en-IN")}
@@ -14189,7 +14189,7 @@ function CategoryBarChart({
                   className="grid min-w-0 text-center disabled:cursor-default"
                   style={{ gridTemplateRows: `22px ${columnPlotHeight}px ${columnLabelHeight}px` }}
                 >
-                  <span className="truncate text-[0.6875rem] font-semibold tabular-nums">
+                  <span className="truncate text-[0.6875rem] font-semibold tabular-nums text-foreground">
                     {(showColumnAxis && !showColumnValues) || rows.length > 14
                       ? ""
                       : (row.displayValue ?? formatValue(row.value))}
@@ -14232,7 +14232,7 @@ function CategoryBarChart({
                       />
                     )}
                   </span>
-                  <span className="relative block min-w-0 overflow-visible pt-2 text-[0.6875rem] leading-tight text-muted-foreground">
+                  <span className="relative block min-w-0 overflow-visible pt-2 text-[0.6875rem] font-medium leading-tight text-foreground">
                     {straightColumnLabels ? (
                       <span className="block whitespace-nowrap text-center" title={row.label}>
                         {row.label}
@@ -14255,7 +14255,7 @@ function CategoryBarChart({
       ) : (
         <div role="group" aria-label="Category bar chart" className="space-y-3">
           {!showHorizontalAxis && (horizontalValueLabel ?? valueLabel) ? (
-            <div className="text-right text-xs font-medium text-muted-foreground">
+            <div className="text-right text-xs font-semibold text-foreground">
               {showHorizontalAxis
                 ? `X-axis: ${horizontalValueLabel ?? valueLabel}`
                 : (horizontalValueLabel ?? valueLabel)}
@@ -14277,7 +14277,7 @@ function CategoryBarChart({
                 {rows.map((row, index) => (
                   <span
                     key={row.label}
-                    className="flex items-center justify-end break-words pr-1 text-right text-xs leading-tight text-muted-foreground"
+                    className="flex items-center justify-end break-words pr-1 text-right text-xs font-medium leading-tight text-foreground"
                     style={{ minHeight: horizontalAxisRowHeights[index] }}
                   >
                     {row.label}
@@ -14391,12 +14391,12 @@ function CategoryBarChart({
                 </div>
               </div>
               <span />
-              <div className="flex justify-between pt-1 text-[0.6875rem] tabular-nums text-muted-foreground">
+              <div className="flex justify-between pt-1 text-[0.6875rem] font-semibold tabular-nums text-foreground">
                 {[...axisTicks].reverse().map((value) => (
                   <span key={value}>{value.toLocaleString("en-IN")}</span>
                 ))}
               </div>
-              <span className="col-span-2 pt-1 text-center text-xs font-medium text-muted-foreground">
+              <span className="col-span-2 pt-1 text-center text-xs font-semibold text-foreground">
                 {horizontalValueLabel ?? valueLabel}
               </span>
             </div>

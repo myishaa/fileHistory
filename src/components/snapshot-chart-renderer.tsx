@@ -4,6 +4,7 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Customized,
   LabelList,
   Line,
   LineChart,
@@ -15,6 +16,33 @@ import {
   YAxis,
 } from "recharts";
 import { ChartCopyButton } from "@/components/table-chart-toggle";
+
+type PlotAreaBoundaryProps = {
+  offset?: {
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  };
+};
+
+function PlotAreaBoundary({ offset }: PlotAreaBoundaryProps) {
+  if (!offset) return null;
+
+  return (
+    <rect
+      x={offset.left}
+      y={offset.top}
+      width={offset.width}
+      height={offset.height}
+      fill="none"
+      stroke="#64748b"
+      strokeWidth={1.5}
+      vectorEffect="non-scaling-stroke"
+      pointerEvents="none"
+    />
+  );
+}
 
 export type SnapshotChartRow = {
   label: string;
@@ -119,12 +147,18 @@ export function SnapshotChartRenderer({
   const monthly =
     categories.length > 0 &&
     categories.every((label) => /^(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$/.test(label));
-  const axisStyle = { fill: "#707078", fontSize: "0.75rem" };
-  const axisStroke = { stroke: "#9ca3af", strokeWidth: 1 };
+  const axisStyle = { fill: "#374151", fontSize: "0.8125rem", fontWeight: 600 };
+  const axisStroke = { stroke: "#64748b", strokeWidth: 1.25 };
   const categoryLabel = monthly ? "Month" : "Category";
   const axisTitleStyle = {
-    fill: "#707078",
+    fill: "#1f2937",
+    fontSize: "0.8125rem",
+    fontWeight: 700,
+  };
+  const valueLabelStyle = {
+    fill: "#111827",
     fontSize: "0.75rem",
+    fontWeight: 700,
   };
   const formatter = (value: number, name: string) =>
     formatValue?.(Number(value), series.find((item) => item.label === name)?.key ?? name) ??
@@ -174,7 +208,7 @@ export function SnapshotChartRenderer({
       style={maxWidth ? { maxWidth } : undefined}
     >
       <div className="mb-2 grid min-w-0 grid-cols-[1fr_auto] items-center gap-2 sm:grid-cols-[1fr_2fr_1fr]">
-        <span className="min-w-0 text-sm font-semibold text-muted-foreground">
+        <span className="min-w-0 text-sm font-semibold text-foreground">
           {fiscalYear ? `FY ${fiscalYear}` : ""}
         </span>
         <h3
@@ -188,7 +222,7 @@ export function SnapshotChartRenderer({
         </div>
       </div>
       {series.length > 1 && kind !== "pie" ? (
-        <div className="mb-2 flex flex-col items-start gap-y-1 text-xs text-muted-foreground">
+        <div className="mb-2 flex flex-col items-start gap-y-1 text-xs font-semibold text-foreground">
           {series.map((item) => (
             <span key={item.key} className="inline-flex items-center gap-1.5">
               <span className="size-3 rounded-sm" style={{ backgroundColor: item.color }} />
@@ -307,6 +341,7 @@ export function SnapshotChartRenderer({
                     activeDot={{ r: 5 }}
                   />
                 ))}
+                <Customized component={PlotAreaBoundary} />
               </LineChart>
             ) : (
               <BarChart
@@ -422,12 +457,13 @@ export function SnapshotChartRenderer({
                             : item.key
                         }
                         position={kind === "bar" ? "right" : "top"}
-                        fill={stacked ? "currentColor" : item.color}
+                        {...valueLabelStyle}
                         formatter={formatTick}
                       />
                     ) : null}
                   </Bar>
                 ))}
+                <Customized component={PlotAreaBoundary} />
               </BarChart>
             )}
           </ResponsiveContainer>
