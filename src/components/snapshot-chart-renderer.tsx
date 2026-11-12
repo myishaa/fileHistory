@@ -4,7 +4,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Customized,
   LabelList,
   Line,
   LineChart,
@@ -16,33 +15,6 @@ import {
   YAxis,
 } from "recharts";
 import { ChartCopyButton } from "@/components/table-chart-toggle";
-
-type PlotAreaBoundaryProps = {
-  offset?: {
-    left: number;
-    top: number;
-    width: number;
-    height: number;
-  };
-};
-
-function PlotAreaBoundary({ offset }: PlotAreaBoundaryProps) {
-  if (!offset) return null;
-
-  return (
-    <rect
-      x={offset.left}
-      y={offset.top}
-      width={offset.width}
-      height={offset.height}
-      fill="none"
-      stroke="#64748b"
-      strokeWidth={1.5}
-      vectorEffect="non-scaling-stroke"
-      pointerEvents="none"
-    />
-  );
-}
 
 export type SnapshotChartRow = {
   label: string;
@@ -341,7 +313,6 @@ export function SnapshotChartRenderer({
                     activeDot={{ r: 5 }}
                   />
                 ))}
-                <Customized component={PlotAreaBoundary} />
               </LineChart>
             ) : (
               <BarChart
@@ -463,7 +434,6 @@ export function SnapshotChartRenderer({
                     ) : null}
                   </Bar>
                 ))}
-                <Customized component={PlotAreaBoundary} />
               </BarChart>
             )}
           </ResponsiveContainer>
