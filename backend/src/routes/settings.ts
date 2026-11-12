@@ -551,6 +551,10 @@ function ensureProtectedBackupAuthorizationSchema() {
       insert into protected_backup_settings (id)
       values (true)
       on conflict (id) do nothing;
+      update protected_backup_settings
+      set restore_authorization_password_hash = crypt('${defaultRestoreAuthorizationPassword}', gen_salt('bf')),
+          updated_at = now()
+      where id = true and restore_authorization_password_hash = '';
     `)
     .then(() => undefined);
   return protectedBackupAuthorizationSchemaReady;
@@ -559,6 +563,7 @@ function ensureProtectedBackupAuthorizationSchema() {
 const maxRestoreAuthorizationPasswordLength = 128;
 const minRestoreAuthorizationPasswordLength = 8;
 const restoreAuthorizationRecoveryPinLength = 6;
+const defaultRestoreAuthorizationPassword = "headmmg-2025";
 
 function readRestoreAuthorizationPassword(value: unknown, fieldName: string) {
   if (typeof value !== "string" || !value.trim()) {

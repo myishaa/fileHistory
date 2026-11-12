@@ -782,7 +782,7 @@ const settingsSectionHelpers = {
     "Reorder: Use the arrows to change the displayed sequence.",
     "Reorder: File Closed remains last, and some standard milestones stay in positions controlled by the software.",
     "Reorder: This sequence breaks ties for events on the same day and orders undated milestones in Show all dates.",
-    "Remove: A milestone used by a file can only be inactivated. An unused milestone can be deleted permanently.",
+    "Existing milestones are defaults and cannot be deleted. They can be inactivated and activated again; custom milestones can be removed when unused.",
     "Remove: If a file using an inactive milestone is edited and saved, its completion mark for that milestone may be removed.",
     "Caution: Review the 'Used in files' figure before inactivating a milestone, because it may disappear from checklists on files that use it.",
   ],
@@ -6137,6 +6137,7 @@ function GemBiddingModeSettings() {
   const [name, setName] = useState("");
   const modes = normalizeGemBiddingModes(settings.gemBiddingModes);
   const modeUsage = getGemBiddingModeUsage(files);
+  const defaultModeKeys = new Set(defaultGemBiddingModes.map((mode) => mode.toLowerCase()));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
 
@@ -6167,12 +6168,17 @@ function GemBiddingModeSettings() {
       <ul className="mt-4 divide-y divide-border rounded-md border border-border">
         {modes.map((mode) => {
           const usageCount = modeUsage.get(normalizeMasterKey(mode))?.fileIds.size ?? 0;
-          const isBuiltIn = ["Custom", "Catalogue", "Comparison"].includes(mode);
+          const isBuiltIn = defaultModeKeys.has(mode.toLowerCase());
           const cannotDelete = usageCount > 0 || isBuiltIn;
           return (
             <li key={mode} className="flex items-center gap-3 px-4 py-2.5">
               <span className="min-w-0 flex-1 text-sm">
                 {mode}
+                {isBuiltIn ? (
+                  <span className="ml-2 rounded border border-border px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground">
+                    Default
+                  </span>
+                ) : null}
                 {usageCount > 0 ? (
                   <span className="ml-2 text-xs text-muted-foreground">
                     Used by {usageCount} file{usageCount === 1 ? "" : "s"}
@@ -6210,7 +6216,7 @@ function GemBiddingModeSettings() {
 }
 
 function normalizeGemBiddingModes(values: string[] | undefined) {
-  const defaults = ["Custom", "Catalogue", "Comparison"];
+  const defaults = defaultGemBiddingModes;
   const seen = new Set<string>();
   return [...defaults, ...(values ?? [])]
     .map((value) => value.trim())
@@ -6222,6 +6228,8 @@ function normalizeGemBiddingModes(values: string[] | undefined) {
       return true;
     });
 }
+
+const defaultGemBiddingModes = ["Custom", "Catalogue", "Comparison"];
 
 function FileTypeSettings() {
   const settings = useSettings();
@@ -7967,11 +7975,23 @@ function MilestoneSettings() {
       ? settings.milestones
       : defaultMilestoneSequence,
   );
-  const rows = getMasterValueUsageRows(milestones, getMilestoneUsage(files));
+  const milestoneUsage = getMilestoneUsage(files);
+  const configuredRows = getMasterValueUsageRows(milestones, milestoneUsage);
   const protectedMilestoneKeys = useMemo(
-    () => new Set([normalizeMilestoneName(fileClosedMilestone)]),
+    () => new Set(defaultMilestoneSequence.map(normalizeMilestoneName)),
     [],
   );
+  const activeKeys = new Set(milestones.map(normalizeMilestoneName));
+  const configuredKeys = new Set(configuredRows.map((row) => normalizeMilestoneName(row.value)));
+  const defaultInactiveRows = defaultMilestoneSequence
+    .filter((milestone) => !activeKeys.has(normalizeMilestoneName(milestone)))
+    .filter((milestone) => !configuredKeys.has(normalizeMilestoneName(milestone)))
+    .map((milestone) => ({
+      value: milestone,
+      usageCount: milestoneUsage.get(normalizeMilestoneName(milestone))?.fileIds.size ?? 0,
+      status: "inactive" as const,
+    }));
+  const rows = [...configuredRows, ...defaultInactiveRows];
   const [position, setPosition] = useState(String(milestones.length + 1));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
@@ -8125,9 +8145,23 @@ function MilestoneSettings() {
                       </>
                     ) : null}
                     {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
-                      <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground">
-                        Existing
-                      </span>
+                      active ? (
+                        <MasterValueActions
+                          row={row}
+                          onActivate={() => activate(milestone)}
+                          onDeactivate={() => remove(milestone)}
+                          onDelete={() => undefined}
+                          label={milestone}
+                        />
+                      ) : (
+                        <MasterValueActions
+                          row={row}
+                          onActivate={() => activate(milestone)}
+                          onDeactivate={() => undefined}
+                          onDelete={() => undefined}
+                          label={milestone}
+                        />
+                      )
                     ) : active ? (
                       <MasterValueActions
                         row={row}
@@ -8923,35 +8957,35 @@ function DemandProcessingDayRangeSettings({
         {ranges.map((range) => (
           <div
             key={range.id}
-            className="grid grid-cols-1 gap-2 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(180px,1fr)_120px_120px_80px]"
+            className="grid grid-cols-1 gap-3 rounded-md border border-border bg-secondary/20 p-3 md:grid-cols-[minmax(0,1fr)_minmax(0,180px)_minmax(0,180px)_auto] md:items-end"
           >
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
               <span>Label</span>
               <ClearableInput
                 value={range.label}
                 onChange={(event) => onUpdate(range.id ?? "", { label: event.target.value })}
                 onClear={() => onUpdate(range.id ?? "", { label: "" })}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
               <span>Min days</span>
               <ClearableInput
                 type="number"
                 value={range.minDays ?? ""}
                 onChange={(event) => onUpdate(range.id ?? "", { minDays: event.target.value })}
                 onClear={() => onUpdate(range.id ?? "", { minDays: "" })}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
-            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            <label className="flex min-w-0 flex-col gap-1 text-xs text-muted-foreground">
               <span>Max days</span>
               <ClearableInput
                 type="number"
                 value={range.maxDays ?? ""}
                 onChange={(event) => onUpdate(range.id ?? "", { maxDays: event.target.value })}
                 onClear={() => onUpdate(range.id ?? "", { maxDays: "" })}
-                className="h-9 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
+                className="h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus:ring-2 focus:ring-ring/40"
               />
             </label>
             <div className="flex items-end">
@@ -12031,7 +12065,7 @@ function UserSettings() {
                               {roleRequiresDivisionAssignment(user.role) &&
                               user.divisionIds.length === 0
                                 ? "No divisions assigned"
-                                : divisionAccessLabel(user.divisionIds, divisions)}
+                                : divisionAccessLabel(user.divisionIds, divisions, user.role)}
                             </span>
                           )}
                         </td>
@@ -13104,7 +13138,12 @@ function fileCategoryAccessLabel(
     .join(", ");
 }
 
-function divisionAccessLabel(selectedIds: string[], divisions: ReturnType<typeof useDivisions>) {
+function divisionAccessLabel(
+  selectedIds: string[],
+  divisions: ReturnType<typeof useDivisions>,
+  role?: AppUserRole,
+) {
+  if (role === "admin") return "All divisions (not restricted)";
   if (selectedIds.length === 0) return "No divisions selected";
   const names = selectedIds
     .map((id) => divisions.find((division) => division.id === id)?.name)

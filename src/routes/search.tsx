@@ -521,20 +521,28 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
   {
     title: "Vetting / Approvals",
     options: [
-      { label: "High Value", filter: "highValueFiles" },
-      { label: "AD", filter: "adYes" },
-      { label: "R&QA", filter: "rqaVetting" },
-      { label: "IFA", filter: "ifaConcurrence" },
-      { label: "RFP vetting", filter: "attribute:rfpVetting:yes" },
-      { label: "Refloat RFP vetting", filter: "attribute:refloatRfpVetting:yes" },
+      { label: "High Value: YES", filter: "highValueFiles" },
+      { label: "High Value: NO", filter: "attribute:highValue:no" },
+      { label: "AD: YES", filter: "adYes" },
+      { label: "AD: NO", filter: "attribute:ad:no" },
+      { label: "R&QA: YES", filter: "rqaVetting" },
+      { label: "R&QA: NO", filter: "attribute:rqa:no" },
+      { label: "IFA: YES", filter: "ifaConcurrence" },
+      { label: "IFA: NO", filter: "attribute:ifa:no" },
+      { label: "RFP vetting: YES", filter: "attribute:rfpVetting:yes" },
+      { label: "RFP vetting: NO", filter: "attribute:rfpVetting:no" },
+      { label: "Refloat RFP vetting: YES", filter: "attribute:refloatRfpVetting:yes" },
+      { label: "Refloat RFP vetting: NO", filter: "attribute:refloatRfpVetting:no" },
+      { label: "GeM: YES", filter: "attribute:gem:yes" },
+      { label: "GeM: NO", filter: "attribute:gem:no" },
       { label: "CFA completed", filter: "cfaCompleted" },
     ],
   },
   {
     title: "TCEC / CNC / Committee",
     options: [
-      { label: "TCEC", filter: "tcecFiles" },
-      { label: "Non-TCEC", filter: "nonTcecFiles" },
+      { label: "TCEC: YES", filter: "tcecFiles" },
+      { label: "TCEC: NO", filter: "nonTcecFiles" },
       { label: "Pre-TCEC completed", filter: "preTcecCompleted" },
       { label: "Pre-TCEC pending", filter: "preTcecRemaining" },
       { label: "CNC", filter: "manualMilestoneCompleted:CNC" },
@@ -547,13 +555,20 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
       { label: "Bid opening overdue", filter: "bidOverdue" },
       { label: "Pre-Bid due", filter: "preBidMeetingCombined:due" },
       { label: "Pre-Bid completed", filter: "preBidMeetingCombined:completed" },
-      { label: "Bidding stage over", filter: "attribute:biddingStageOver:yes" },
-      { label: "Refloat", filter: "attribute:refloat:yes" },
+      { label: "Bidding stage over: YES", filter: "attribute:biddingStageOver:yes" },
+      { label: "Bidding stage over: NO", filter: "attribute:biddingStageOver:no" },
+      { label: "Refloat: YES", filter: "attribute:refloat:yes" },
+      { label: "Refloat: NO", filter: "attribute:refloat:no" },
       {
-        label: "Refloat Bidding Stage Over",
+        label: "Refloat Bidding Stage Over: YES",
         filter: "attribute:refloatBiddingStageOver:yes",
       },
-      { label: "Refloat Bid Live", filter: "attribute:refloatTenderLive:yes" },
+      {
+        label: "Refloat Bidding Stage Over: NO",
+        filter: "attribute:refloatBiddingStageOver:no",
+      },
+      { label: "Refloat Bid Live: YES", filter: "attribute:refloatTenderLive:yes" },
+      { label: "Refloat Bid Live: NO", filter: "attribute:refloatTenderLive:no" },
       { label: "Refloat bidding current", filter: "manualMilestoneCurrent:Refloat bidding" },
     ],
   },
@@ -584,8 +599,10 @@ const importantWorkflowFilterGroups: ImportantWorkflowFilterGroup[] = [
   {
     title: "Bank Guarantee / Warranty",
     options: [
-      { label: "Warranty / BG applicable", filter: "attribute:bg:yes" },
-      { label: "PSB", filter: "attribute:psb:yes" },
+      { label: "Warranty / BG applicable: YES", filter: "attribute:bg:yes" },
+      { label: "Warranty / BG applicable: NO", filter: "attribute:bg:no" },
+      { label: "PSB: YES", filter: "attribute:psb:yes" },
+      { label: "PSB: NO", filter: "attribute:psb:no" },
       { label: "PWB", filter: "milestoneTotal:pwb" },
       { label: "PSB+PWB", filter: "milestoneTotal:psbPwb" },
       { label: "BG pending", filter: "bgToBeReceived" },
@@ -1647,7 +1664,10 @@ function addFilterChipIf(
 }
 
 function getImportantWorkflowFilterLabel(filter: string) {
-  return importantWorkflowFilterOptions.find((option) => option.filter === filter)?.label ?? filter;
+  const configuredLabel = importantWorkflowFilterOptions.find((option) => option.filter === filter)?.label;
+  if (configuredLabel) return configuredLabel;
+  if (filter === "attribute:gte:yes") return "GTE";
+  return filter.replace(/^attribute:/, "");
 }
 
 function parseDrillPath(value: unknown): DrillPathItem[] {
@@ -3029,9 +3049,9 @@ function SearchPage() {
     const description =
       !from && !to
         ? mode === "only"
-          ? "Date recorded"
-          : "Date blank"
-        : `${mode === "exclude" ? "Outside" : mode === "only" ? "Include" : "Dates"}: ${from || "Any"} to ${to || "Any"}`;
+          ? "Recorded"
+          : "Blank"
+        : `${mode === "exclude" ? "Outside: " : mode === "only" ? "Include: " : ""}${from || "Any"} to ${to || "Any"}`;
     addFilterChip(label, description, `dateRange:${entry?.key ?? label}`);
   };
   const addIncludeExcludeChip = (label: string, value: IncludeExcludeFilter) => {
@@ -3237,8 +3257,8 @@ function SearchPage() {
     )
       return;
     addFilterChip(
-      "Workflow",
       `${getImportantWorkflowFilterLabel(filter)} (${mode === "include" ? "Include" : "Exclude"})`,
+      undefined,
       `workflow:${filter}`,
     );
   });
@@ -4750,7 +4770,7 @@ function SearchPage() {
             : "border-border bg-card")
         }
       >
-        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        <div className="order-2 ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {visibleFilterChips.length ? (
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {visibleFilterChips.map((chip, index) => (
@@ -4799,7 +4819,7 @@ function SearchPage() {
             <span className="text-xs text-muted-foreground">No filters selected</span>
           )}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        <div className="order-1 flex min-w-0 flex-wrap items-center justify-start gap-2">
           <button
             type="button"
             onClick={() => setFiltersOpen((current) => !current)}
@@ -4902,7 +4922,7 @@ function SearchPage() {
       <div
         className={
           "grid min-w-0 grid-cols-1 gap-4 " +
-          (filtersOpen ? "xl:grid-cols-[minmax(15rem,17.5rem)_minmax(0,1fr)]" : "")
+          (filtersOpen ? "xl:grid-cols-[minmax(17rem,20rem)_minmax(0,1fr)]" : "")
         }
       >
         {filtersOpen ? (

@@ -1665,10 +1665,10 @@ function NoticeBoardEditor({ readOnly = false }: { readOnly?: boolean }) {
           <p className="text-xs font-medium text-muted-foreground">
             Transition durations (seconds)
           </p>
-          <div className="flex flex-wrap gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
             {noticeBoardTransitionFields.map(({ key, label }) => (
-              <label key={key} className="text-xs font-medium">
-                {label}
+              <label key={key} className="flex min-w-0 flex-col gap-1 text-xs font-medium">
+                <span className="truncate">{label}</span>
                 <ClearableInput
                   type="number"
                   min={0.1}
@@ -1677,7 +1677,7 @@ function NoticeBoardEditor({ readOnly = false }: { readOnly?: boolean }) {
                   value={personalTransitionDrafts[key]}
                   onChange={(event) => setTransitionDraft(key, event.target.value)}
                   onClear={() => setTransitionDraft(key, "")}
-                  className="mt-1 block h-9 w-32 rounded-md border border-input bg-background px-2 text-sm"
+                  className="block h-9 w-full min-w-0 rounded-md border border-input bg-background px-2 text-sm"
                 />
               </label>
             ))}
