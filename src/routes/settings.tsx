@@ -782,7 +782,7 @@ const settingsSectionHelpers = {
     "Reorder: Use the arrows to change the displayed sequence.",
     "Reorder: File Closed remains last, and some standard milestones stay in positions controlled by the software.",
     "Reorder: This sequence breaks ties for events on the same day and orders undated milestones in Show all dates.",
-    "Existing milestones are defaults and cannot be deleted. They can be inactivated and activated again; custom milestones can be removed when unused.",
+    "Existing milestones are defaults and cannot be deleted. They can be inactivated and activated again.",
     "Remove: If a file using an inactive milestone is edited and saved, its completion mark for that milestone may be removed.",
     "Caution: Review the 'Used in files' figure before inactivating a milestone, because it may disappear from checklists on files that use it.",
   ],
@@ -6289,12 +6289,7 @@ function FileTypeSettings() {
 
   const remove = (index: number) => {
     const removed = fileTypes[index];
-    if (
-      isDefaultFileType(removed) &&
-      !fileTypeUsage.get(normalizeMasterKey(removed ?? ""))?.fileIds.size
-    ) {
-      return;
-    }
+    if (isDefaultFileType(removed)) return;
     updateFileTypes(
       fileTypes.filter((_, itemIndex) => itemIndex !== index),
       fileTypeGroups.filter(
@@ -6363,8 +6358,8 @@ function FileTypeSettings() {
               );
               const fileType = row.value;
               const usedFileType = row.usageCount > 0;
-              const protectedFileType = isDefaultFileType(fileType) && !usedFileType;
-              const lockedFileTypeName = isDefaultFileType(fileType) || usedFileType;
+              const protectedFileType = isDefaultFileType(fileType);
+              const lockedFileTypeName = protectedFileType || usedFileType;
               return (
                 <li
                   key={`${fileType}-${index}`}
@@ -6976,7 +6971,7 @@ function MasterValueActions({
   row: MasterValueUsageRow;
   onActivate: () => void;
   onDeactivate: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   label: string;
 }) {
   if (row.status === "inactive") {
@@ -7002,6 +6997,14 @@ function MasterValueActions({
       >
         <Lock className="size-3.5" /> Inactivate
       </button>
+    );
+  }
+
+  if (!onDelete) {
+    return (
+      <span className="inline-flex h-8 min-w-8 items-center justify-center rounded-md border border-border px-2 text-[0.6875rem] font-medium text-muted-foreground">
+        Existing
+      </span>
     );
   }
 
@@ -7977,10 +7980,6 @@ function MilestoneSettings() {
   );
   const milestoneUsage = getMilestoneUsage(files);
   const configuredRows = getMasterValueUsageRows(milestones, milestoneUsage);
-  const protectedMilestoneKeys = useMemo(
-    () => new Set(defaultMilestoneSequence.map(normalizeMilestoneName)),
-    [],
-  );
   const activeKeys = new Set(milestones.map(normalizeMilestoneName));
   const configuredKeys = new Set(configuredRows.map((row) => normalizeMilestoneName(row.value)));
   const defaultInactiveRows = defaultMilestoneSequence
@@ -7992,6 +7991,10 @@ function MilestoneSettings() {
       status: "inactive" as const,
     }));
   const rows = [...configuredRows, ...defaultInactiveRows];
+  const nonDeletableMilestoneKeys = useMemo(
+    () => new Set(rows.map((row) => normalizeMilestoneName(row.value))),
+    [rows],
+  );
   const [position, setPosition] = useState(String(milestones.length + 1));
 
   if (activeUser && !canViewAdminSettings(activeUser.role)) return null;
@@ -8144,13 +8147,12 @@ function MilestoneSettings() {
                         </button>
                       </>
                     ) : null}
-                    {protectedMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
+                    {nonDeletableMilestoneKeys.has(normalizeMilestoneName(milestone)) ? (
                       active ? (
                         <MasterValueActions
                           row={row}
                           onActivate={() => activate(milestone)}
                           onDeactivate={() => remove(milestone)}
-                          onDelete={() => undefined}
                           label={milestone}
                         />
                       ) : (
@@ -8158,7 +8160,6 @@ function MilestoneSettings() {
                           row={row}
                           onActivate={() => activate(milestone)}
                           onDeactivate={() => undefined}
-                          onDelete={() => undefined}
                           label={milestone}
                         />
                       )
