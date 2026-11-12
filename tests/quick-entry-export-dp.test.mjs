@@ -278,6 +278,7 @@ test("expanded export keeps stages and supplementary bills on separate linked ro
       { billPreparationDate: "2026-10-15" },
     ], { supplementarySentDates: ["2026-07-01", "2026-09-01"] }),
     [
+      { rowType: "S.O. summary" },
       { rowType: "Stage", stageIndex: 0 },
       { rowType: "Stage", stageIndex: 1 },
       { rowType: "Stage", stageIndex: 2 },
@@ -295,8 +296,9 @@ test("two stages and two supplementary bills remain four independent child rows"
 
   assert.equal(rows.filter((row) => row.rowType === "Stage").length, 2);
   assert.equal(rows.filter((row) => row.rowType === "Supplementary bill").length, 2);
-  assert.equal(rows.length, 4);
+  assert.equal(rows.length, 5);
   assert.deepEqual(rows, [
+    { rowType: "S.O. summary" },
     { rowType: "Stage", stageIndex: 0 },
     { rowType: "Stage", stageIndex: 1 },
     { rowType: "Supplementary bill", supplementaryItemIndex: 0, stageIndex: 0 },
@@ -304,7 +306,7 @@ test("two stages and two supplementary bills remain four independent child rows"
   ]);
 });
 
-test("payment and advance records use independent rows with stage links", () => {
+test("stage payment data stays on the corresponding stage rows", () => {
   assert.deepEqual(
     getQuickEntryExportRowPlan("expanded", true, [
       { billPreparationDate: "2026-06-15" },
@@ -315,10 +317,9 @@ test("payment and advance records use independent rows with stage links", () => 
       supplementarySentDates: ["2026-07-01"],
     }),
     [
+      { rowType: "S.O. summary" },
       { rowType: "Stage", stageIndex: 0 },
       { rowType: "Stage", stageIndex: 1 },
-      { rowType: "Stage payment", stageIndex: 0 },
-      { rowType: "Stage payment", stageIndex: 1 },
       { rowType: "Advance", stageIndex: 0 },
       { rowType: "Supplementary bill", supplementaryItemIndex: 0, stageIndex: 0 },
     ],

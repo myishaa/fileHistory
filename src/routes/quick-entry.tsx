@@ -1497,11 +1497,13 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
   const hasAdvanceEvidence = orders.some((order) => isYes(order.advancePayment));
 
   return [
+    { label: "Demand Received", applicable: true, date: file.receivedDate },
     {
       label: "Scrutiny",
       applicable: true,
       date: file.scrutinyCompletionDate,
     },
+    { label: "Scrutiny Response", applicable: true, date: file.scrutinyResponseDate },
     {
       label: "High Value",
       applicable: isYes(file.highValue) || hasDate(file.highValueMeetingDate),
@@ -1628,6 +1630,11 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
         file.dpDate,
     },
     {
+      label: "Stage Delivery",
+      applicable: orders.some((order) => isYes(order.stageDelivery) && (order.stageDeliveries?.length ?? 0) > 0),
+      date: getFirstOrderDate(orders, "dpDate"),
+    },
+    {
       label: "PSB",
       applicable: orders.some((order) => isBgMilestoneApplicable(file, order, "psb")),
       date: getFirstOrderDate(orders, "psbBgReceivedDate"),
@@ -1675,9 +1682,49 @@ function getQuickViewerMilestoneDefinitions(file: FileRecord) {
       date: getFirstOrderDate(orders, "paymentDate"),
     },
     {
+      label: "Stage Payment",
+      applicable: orders.some((order) => isYes(order.stagePayment) && (order.stageDeliveries?.length ?? 0) > 0),
+      date: getFirstOrderDate(orders, "paymentDate"),
+    },
+    {
       label: "Advance Payment",
       applicable: hasAdvanceEvidence,
       date: getFirstAdvancePaymentDate(orders),
+    },
+    {
+      label: "Supplementary Bill",
+      applicable: orders.some((order) => (order.supplementaryBills ?? []).length > 0),
+      date: getFirstOrderDate(orders, "supplementaryBillDate"),
+    },
+    {
+      label: "S.O. Cancellation",
+      applicable: orders.some((order) => isYes(order.soCancelled) || hasDate(order.soCancelledDate)),
+      date: getFirstOrderDate(orders, "soCancelledDate"),
+    },
+    {
+      label: "Shortclosure",
+      applicable: orders.some((order) => isYes(order.shortclosure) || hasDate(order.shortclosureDate)),
+      date: getFirstOrderDate(orders, "shortclosureDate"),
+    },
+    {
+      label: "No Further Action",
+      applicable: orders.some((order) => isYes(order.noFurtherAction) || hasDate(order.noFurtherActionDate)),
+      date: getFirstOrderDate(orders, "noFurtherActionDate"),
+    },
+    {
+      label: "LD",
+      applicable: orders.some(
+        (order) =>
+          isYes(order.ld) ||
+          String(order.ldType ?? "").trim() !== "" ||
+          String(order.ldPercentage ?? "").trim() !== "",
+      ),
+      date: getFirstOrderDate(orders, "revisedDp"),
+    },
+    {
+      label: "Warranty",
+      applicable: orders.some((order) => hasDate(order.warrantyPeriodDate)),
+      date: getFirstOrderDate(orders, "warrantyPeriodDate"),
     },
     {
       label: "File Closed",
@@ -1964,6 +2011,17 @@ function exportQuickStatusDetails(
       "Payment mode",
       "Actual payment capital",
       "Actual payment revenue",
+      "Advance payment",
+      "Advance amount capital",
+      "Advance amount revenue",
+      "Advance expected payment",
+      "Advance bill preparation",
+      "Advance bill no.",
+      "Advance bill sent for payment",
+      "Advance payment date",
+      "Advance payment mode",
+      "Advance actual payment capital",
+      "Advance actual payment revenue",
       "S.O. cancelled",
       "Cancellation date",
       "Shortclosure",
@@ -1997,6 +2055,17 @@ function exportQuickStatusDetails(
           quickExportValue(order.paymentMode),
           quickExportValue(order.actualPaymentCapital),
           quickExportValue(order.actualPaymentRevenue),
+          quickExportValue(order.advancePayment),
+          quickExportValue(order.advancePaymentDetail?.stageAmountCapital),
+          quickExportValue(order.advancePaymentDetail?.stageAmountRevenue),
+          quickExportDate(order.advancePaymentDetail?.expectedPaymentDate),
+          quickExportDate(order.advancePaymentDetail?.billPreparationDate),
+          quickExportValue(order.advancePaymentDetail?.billNo),
+          quickExportDate(order.advancePaymentDetail?.billSentForPaymentDate),
+          quickExportDate(order.advancePaymentDetail?.paymentDate),
+          quickExportValue(order.advancePaymentDetail?.paymentMode),
+          quickExportValue(order.advancePaymentDetail?.actualPaymentCapital),
+          quickExportValue(order.advancePaymentDetail?.actualPaymentRevenue),
           quickExportValue(order.soCancelled),
           quickExportDate(order.soCancelledDate),
           quickExportValue(order.shortclosure),
@@ -2879,7 +2948,17 @@ function formatDays(days: number | undefined) {
 }
 
 const supplyOrderQuickEntryMilestones = new Set(
-  quickEntryStageSections
-    .find((stage) => stage.title === "Supply order and payment")!
-    .milestones.map(normalizeQuickEntryMilestone),
+  [
+    ...quickEntryStageSections
+      .find((stage) => stage.title === "Supply order and payment")!
+      .milestones.map(normalizeQuickEntryMilestone),
+    "Stage Delivery",
+    "Stage Payment",
+    "Supplementary Bill",
+    "S.O. Cancellation",
+    "Shortclosure",
+    "No Further Action",
+    "LD",
+    "Warranty",
+  ].map(normalizeQuickEntryMilestone),
 );

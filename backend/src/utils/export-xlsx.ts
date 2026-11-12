@@ -9,6 +9,7 @@ type ExportTable = {
   numericColumns?: number[];
   dateColumns?: number[];
   dateTimeColumns?: number[];
+  groupByColumn?: number;
   columnWidths?: number[];
   emphasizedColumns?: number[];
 };
@@ -137,7 +138,7 @@ function worksheetXml(
       const cells = row.map((value, columnIndex) => {
         const emphasized = emphasizedCells.get(rowIndex)?.has(columnIndex);
         const baseStyle = rowStyles.get(rowIndex) ?? 0;
-        const style = emphasized ? (baseStyle === 7 ? 8 : 1) : baseStyle;
+      const style = emphasized ? (baseStyle === 7 ? 8 : 1) : baseStyle;
         const reference = `${columnName(columnIndex)}${rowIndex + 1}`;
         if (typeof value === "number" && Number.isFinite(value)) {
           const dateStyle = dateTimeCells.get(rowIndex)?.has(columnIndex)
@@ -152,6 +153,7 @@ function worksheetXml(
           }
         }
         if (dateCells.get(rowIndex)?.has(columnIndex)) {
+          if (baseStyle === 6) return makeCell(reference, value, style);
           const dateSerial = toExcelDateSerial(value);
           if (dateSerial !== undefined) return makeNumberCell(reference, dateSerial, 9);
         }
@@ -159,6 +161,7 @@ function worksheetXml(
           dateTimeCells.get(rowIndex)?.has(columnIndex) ||
           (value instanceof Date && Number.isFinite(value.getTime()))
         ) {
+          if (baseStyle === 6) return makeCell(reference, value, style);
           const dateTimeSerial = toExcelDateTimeSerial(value);
           if (dateTimeSerial !== undefined) return makeNumberCell(reference, dateTimeSerial, 10);
         }
@@ -352,6 +355,14 @@ export function renderXlsxDocument(document: ExportDocument) {
     if (style) rowStyles.set(rowIndex, style);
     if (emphasizedColumns.length) emphasizedCells.set(rowIndex, new Set(emphasizedColumns));
   };
+  const appendInfoLine = (line: string, style = 4) => {
+    const separator = line.indexOf(":");
+    if (separator > 0) {
+      appendRow([line.slice(0, separator).trim(), line.slice(separator + 1).trim()], [], style);
+    } else {
+      appendRow([line], [], style);
+    }
+  };
   const appendDescription = () => {
     if (document.subtitle) appendInfoLine(document.subtitle);
     if (document.description) {
@@ -359,7 +370,9 @@ export function renderXlsxDocument(document: ExportDocument) {
       appendRow([]);
     }
   };
-  if (document.descriptionBeforeGeneratedAt) appendDescription();
+  if (document.descriptionBeforeGeneratedAt) {
+    appendDescription();
+  }
   appendRow(["Generated at", new Intl.DateTimeFormat("en-IN", {
     day: "2-digit",
     month: "short",
@@ -369,22 +382,23 @@ export function renderXlsxDocument(document: ExportDocument) {
     second: "2-digit",
     hour12: false,
   }).format(new Date())], [], 3);
-  const appendInfoLine = (line: string, style = 4) => {
-    const separator = line.indexOf(":");
-    if (separator > 0) {
-      appendRow([line.slice(0, separator).trim(), line.slice(separator + 1).trim()], [], style);
-    } else {
-      appendRow([line], [], style);
-    }
-  };
   if (!document.descriptionBeforeGeneratedAt) appendDescription();
   const columnWidths: number[] = [];
   for (const table of document.tables) {
     if (table.title) appendRow([table.title], [], 5);
     appendRow(table.headers, [], 6);
+    let previousGroup: string | undefined;
+    let alternateGroup = false;
     (table.rows.length ? table.rows : [["No rows found."]]).forEach((row) => {
       const rowIndex = reportRows.length;
-      appendRow(row, table.emphasizedColumns, 7);
+      const groupValue = table.groupByColumn === undefined
+        ? undefined
+        : String(row[table.groupByColumn] ?? "");
+      if (groupValue !== undefined && groupValue !== previousGroup) {
+        alternateGroup = !alternateGroup;
+        previousGroup = groupValue;
+      }
+      appendRow(row, table.emphasizedColumns, groupValue !== undefined && alternateGroup ? 6 : 7);
       if (table.numericColumns?.length && table.rows.length) {
         numericCells.set(rowIndex, new Set(table.numericColumns));
       }

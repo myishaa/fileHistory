@@ -411,6 +411,7 @@ type FileSearchExportTable = {
   headers: string[];
   rows: Array<Array<string | number>>;
   numericColumns?: number[];
+  groupByColumn?: number;
 };
 
 const supplyOrderFields = {
@@ -1779,6 +1780,20 @@ function getFileExportValue(file: FileRecord, key: string) {
   return String((file as Record<string, unknown>)[key] ?? "");
 }
 
+function normalizeSearchExportDate(value: string | number) {
+  const text = String(value ?? "").trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})(.*)$/);
+  if (iso) {
+    const [, year, month, day, suffix] = iso;
+    const monthName = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(month) - 1];
+    return monthName ? `${day}-${monthName}-${year}${suffix}` : text;
+  }
+  const named = text.match(/^(\d{1,2})-([A-Za-z]{3,9})-(\d{4})(.*)$/);
+  if (!named) return text;
+  const monthName = named[2].slice(0, 1).toUpperCase() + named[2].slice(1, 3).toLowerCase();
+  return `${named[1].padStart(2, "0")}-${monthName}-${named[3]}${named[4]}`;
+}
+
 function getFirmDetailExportValue(file: FileRecord, key: string) {
   const fieldKey = firmDetailExportFieldKey(key);
   if (!fieldKey) return undefined;
@@ -1861,6 +1876,7 @@ export function buildFileSearchExportTable(
       String(index + 1),
       ...exportColumns.map((column) => column.getValue(file)),
     ]),
+    groupByColumn: 0,
   };
 }
 
@@ -1892,7 +1908,7 @@ function buildSoWiseFileSearchExportTable(
       ]);
     });
   });
-  return { headers, rows };
+  return { headers, rows, groupByColumn: 0 };
 }
 
 function soExportNumber(value: unknown) {
@@ -2017,7 +2033,7 @@ function getSoWiseSupplyOrderExportValue(order: SupplyOrderDetail, key: string) 
   if (key === "ldPercentage") {
     return aggregateStageMaximum(stageRecords, "ldPercentage", order.ldPercentage);
   }
-  if (key === "dpDate") return String(order.dpDate ?? "");
+  if (key === "dpDate") return String(getQuickEntryExportDpDate(order));
   if (key === "revisedDp") return String(stages.at(-1)?.revisedDp ?? "");
   if (key === "stageDeliveryCount") return String(stages.length);
   const stageCapital = stages.reduce(
@@ -2092,7 +2108,7 @@ function buildRowwiseFileSearchExportTable(
       ]);
     });
   });
-  return { headers, rows };
+  return { headers, rows, groupByColumn: 0 };
 }
 
 function searchExportColumnKeys(
@@ -2248,6 +2264,13 @@ function getRowwiseFileSearchExportEntries(
     );
     if (needsStageRows && order.stageDelivery === "Yes" && order.stageDeliveries?.length) {
       entries.push(
+        {
+          order,
+          orderIndex,
+          stageIndex: -1,
+          supplementaryBillIndex: -1,
+          billReturnCycleIndex: -1,
+        },
         ...order.stageDeliveries.map((stage, stageIndex) => ({
           order,
           orderIndex,
@@ -14533,6 +14556,7 @@ function buildFullDatabaseSheets(
   rows: string[][],
   dataTable: {
     headers: string[];
+    groupByColumn?: number;
     numericColumns?: number[];
     dateColumns?: number[];
     dateTimeColumns?: number[];
@@ -14555,6 +14579,7 @@ function buildFullDatabaseSheets(
           title: `Financial Year ${year}`,
           headers: dataTable.headers,
           rows: groupedRows,
+          groupByColumn: dataTable.groupByColumn,
           numericColumns: dataTable.numericColumns,
           dateColumns: dataTable.dateColumns,
           dateTimeColumns: dataTable.dateTimeColumns,
@@ -14785,7 +14810,7 @@ filesRouter.post(
       order?: SupplyOrderDetail;
       orderIndex?: number;
       stageIndex?: number;
-      rowType:
+        rowType:
         | "File summary"
         | "S.O. summary"
         | "Stage"
@@ -15061,13 +15086,12 @@ filesRouter.post(
     columns.unshift(
       { header: "S.No." },
       { header: "Export Row Type" },
-      { header: "File ID" },
       { header: "S.O. S.No." },
-      { header: "S.O. ID" },
       { header: "Stage Label" },
       ...(hasReturnHistoryFields ? [{ header: "Bill ID" }] : []),
       ...(hasSupplementaryFields ? [{ header: "Supplementary Bill ID" }] : []),
     );
+    columns.push({ header: "File ID" }, { header: "S.O. ID" });
     const outputRecords =
       scopeMode === "so"
         ? records.flatMap(({ file, orders }, fileIndex) =>
@@ -15304,7 +15328,6 @@ filesRouter.post(
               return "";
           }
           if (column.field.source === "stage") {
-            if (rowType === "Stage" && stagePaymentFieldKeys.has(key)) return "";
             if (rowType === "Stage payment" && !stagePaymentFieldKeys.has(key)) return "";
             if (rowType === "S.O. summary" && column.aggregate === "latestStageDate") {
               // Collapsed view carries the latest dated stage value on the S.O. summary row.
@@ -15460,7 +15483,14 @@ filesRouter.post(
         .slice(0, 160) + ".xlsx";
     const dataTable = {
       headers: columns.map((column) => column.header),
-      rows,
+      rows: rows.map((row) =>
+        row.map((value, index) =>
+          columns[index]?.date || columns[index]?.statusPart === "dateTime"
+            ? normalizeSearchExportDate(value)
+            : value,
+        ),
+      ),
+      groupByColumn: columns.findIndex((column) => column.header === "S.O. ID"),
       numericColumns: columns.flatMap((column, index) =>
         column.numeric || column.field?.numeric ? [index] : [],
       ),
@@ -15639,6 +15669,14 @@ filesRouter.post(
       layout,
       format === "excel",
     );
+    const dateColumnIndexes = exportTable.headers.flatMap((header, index) =>
+      /\bdate\b|date\s*&\s*time/i.test(header) ? [index] : [],
+    );
+    exportTable.rows = exportTable.rows.map((row) =>
+      row.map((value, index) =>
+        dateColumnIndexes.includes(index) ? normalizeSearchExportDate(value) : value,
+      ),
+    );
     const exportDescription = [
       description,
       columns.some(
@@ -15660,6 +15698,7 @@ filesRouter.post(
         {
           headers: exportTable.headers,
           rows: exportTable.rows,
+          groupByColumn: exportTable.groupByColumn,
           numericColumns: format === "excel" ? exportTable.numericColumns : undefined,
         },
       ],

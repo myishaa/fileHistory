@@ -85,6 +85,7 @@ export function QuickEntryExcelExportList() {
     const fields = preset.fields.filter((field) => quickEntryExcelFieldLabels.has(field));
     if (!fields.length) return;
     const timestamp = getLocalExportTimestamp();
+    const viewLabel = expandedView ? "Expanded" : "Collapsed";
     const safeBaseName =
       preset.name
         .trim()
@@ -96,7 +97,7 @@ export function QuickEntryExcelExportList() {
     try {
       await downloadQuickEntryExcelExport({
         title: preset.name,
-        fileName: `${safeBaseName}_${timestamp}.xlsx`,
+        fileName: `${safeBaseName}_${viewLabel}_${timestamp}.xlsx`,
         fields,
         fileTypes: selectedFileTypes,
         divisionId: selectedDivision === "all" ? undefined : selectedDivision,
@@ -112,11 +113,12 @@ export function QuickEntryExcelExportList() {
   const exportFullDatabase = async () => {
     if (exportingId || !fullDatabaseFields.length) return;
     const timestamp = getLocalExportTimestamp();
+    const viewLabel = expandedView ? "Expanded" : "Collapsed";
     setExportingId("full-database");
     try {
       await downloadQuickEntryExcelExport({
         title: "Full Database Backup",
-        fileName: `Full_Database_Backup_${timestamp}.xlsx`,
+        fileName: `Full_Database_Backup_${viewLabel}_${timestamp}.xlsx`,
         fields: fullDatabaseFields,
         fileTypes: selectedFileTypes,
         divisionId: selectedDivision === "all" ? undefined : selectedDivision,

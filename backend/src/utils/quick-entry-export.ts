@@ -192,13 +192,13 @@ export function getQuickEntryExportRowPlan(
   const hasStages = isStaged && stages.length > 0;
   const includeStageRows = viewMode === "expanded" && hasStages;
   const rows: QuickEntryExportRowPlanItem[] = includeStageRows
-    ? stages.map((_, stageIndex) => ({ rowType: "Stage" as const, stageIndex }))
+    ? [
+        { rowType: "S.O. summary" as const },
+        ...stages.map((_, stageIndex) => ({ rowType: "Stage" as const, stageIndex })),
+      ]
     : [{ rowType: "S.O. summary" }];
   if (viewMode === "expanded") {
     if (options.includeOrderPayment) rows.push({ rowType: "S.O. payment" });
-    for (const stageIndex of options.stagePaymentIndexes ?? []) {
-      rows.push({ rowType: "Stage payment", stageIndex });
-    }
     if (options.includeAdvance) rows.push({ rowType: "Advance", ...(hasStages ? { stageIndex: 0 } : {}) });
   }
   // Collapsed/S.O. exports remain one row per S.O.; supplementary values are
